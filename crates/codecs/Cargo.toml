@@ -56,6 +56,17 @@ img-parts = "0.4"
 # NOTE: jxl-oxide is Rust edition 2024 and needs Rust 1.85; the workspace's effective
 # MSRV is higher because of sevenz-rust2 (see `rust-version` above).
 jxl-oxide = { version = "0.12", default-features = false, features = ["image"] }
+# AV1 (the picture inside every AVIF) - `rav1d`, the memory-safety project's Rust port of
+# dav1d (BSD-2-Clause). It replaced Windows' AV1 codec (a Store extension reached through WIC
+# and Media Foundation) on 2026-09-29: eight AVIF thumbnails asked for at once deadlocked the
+# shell's thumbnail host for good, and every thumbnail and taskbar icon on the machine with
+# it. `default-features = false` drops the `asm` backend (hand-written assembly that needs
+# nasm to build): measured without it, a 12 MP picture decodes in ~100 ms on four threads.
+# Its speed comes from `[profile.*.package.rav1d] opt-level = 3` in the workspace root.
+# OPTIONAL behind `av1`: it panics on some malformed input, so the shell DLL never links it
+# and asks the `st2k avif-frame` child instead (see `decode/avif.rs`); acceptance check:
+# `cargo tree -p sagethumbs2k-dll` lists no rav1d. The EXEs turn it on via `avif-video`.
+rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8", "bitdepth_16"], optional = true }
 # Audio cover-art reader (MP3/FLAC/Ogg/Opus/M4A/WMA/APE/WavPack/Musepack/…).
 # Pure-Rust, MIT OR Apache-2.0. Used read-only — we only pull the picture block.
 lofty = "0.25"
@@ -118,9 +129,13 @@ st2k_base = { package = "sagethumbs2k-base", path = "../base" }
 # Test-only 7z writer: builds non-solid/duplicate-name archives in memory for the extraction
 # tests. The dependency above stays decode-only (`compress` never ships).
 sevenz-rust2 = { version = "0.23", default-features = false, features = ["compress"] }
+# This crate's own tests decode AVIF in process whatever the features (see `decode/avif.rs`).
+rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
 
 [features]
 # Test fixtures and seams the layers above use from their own tests (a crate's `cfg(test)`
 # items do not exist when it is built as another crate's dependency). Never on in a
 # shipping build: only the [dev-dependencies] of the crates above turn it on.
 testkit = []
+# AVIF decoded in THIS process (rav1d linked in). EXE-only: see the `rav1d` dependency above.
+av1 = ["dep:rav1d"]

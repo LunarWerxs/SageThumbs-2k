@@ -192,12 +192,6 @@ fn capability_lists_are_subset_of_formats() {
             "HEIF_OS_CODEC_EXTS names `{ext}`, which is not in FORMATS"
         );
     }
-    for &ext in AV1_OS_CODEC_EXTS {
-        assert!(
-            in_formats(ext),
-            "AV1_OS_CODEC_EXTS names `{ext}`, which is not in FORMATS"
-        );
-    }
     for &ext in EMBEDDED_PREVIEW_EXTS {
         assert!(
             in_formats(ext),
@@ -281,14 +275,6 @@ fn flv_os_codec_is_none() {
     }
 }
 
-/// Audit E03 #2: AVIF has no in-process AV1 decoder (`Cargo.toml`'s `image` feature list
-/// excludes it) - its route is the OS's AV1 codec, named `OsCodec::Av1` even though it
-/// can't be probed the way `WmPhoto`/`Heif` can (see that variant's doc).
-#[test]
-fn avif_os_codec_is_av1() {
-    assert_eq!(capability("avif").os_codec, Some(OsCodec::Av1));
-}
-
 /// Archives never get the image verbs - `verbs::actions::is_image` excludes them so
 /// Convert/Rotate never act on an archive's extracted cover.
 #[test]
@@ -311,7 +297,7 @@ fn spot_check_one_extension_per_source_kind() {
         ("png", Source::FullDecode, None),
         ("jxr", Source::FullDecode, Some(OsCodec::WmPhoto)),
         ("heic", Source::FullDecode, Some(OsCodec::Heif)),
-        ("avif", Source::FullDecode, Some(OsCodec::Av1)),
+        ("avif", Source::FullDecode, None),
         ("cr2", Source::EmbeddedPreview, None),
         ("psd", Source::EmbeddedPreview, None),
         ("apk", Source::EmbeddedPreview, None),
@@ -344,7 +330,6 @@ fn wire_strings_are_stable_lowercase() {
         OsCodec::MediaFoundation.as_str(),
         OsCodec::WmPhoto.as_str(),
         OsCodec::Heif.as_str(),
-        OsCodec::Av1.as_str(),
     ] {
         assert_eq!(s, s.to_ascii_lowercase(), "`{s}` must be lowercase");
         assert!(!s.is_empty());

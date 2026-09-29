@@ -271,7 +271,7 @@ hdr-capture = ["st2k_screenshot/hdr-capture"]
 # VP6/Sorenson path; the DLL stays clean because crates/dll depends on this package with
 # `default-features = false` (its effective feature set was empty before this and is
 # unchanged). See the `flash-video` entry below for why the DLL must never enable it.
-default = ["flash-video", "vp9-video", "mpeg-video"]
+default = ["flash-video", "vp9-video", "mpeg-video", "avif-video"]
 # Quick preview's WebView2 HTML host (local .html render + optional .url live preview).
 # EXE-ONLY, off by default: build-release.ps1 enables it for the `-p sagethumbs2k` (EXE)
 # build; the separately-built slim DLL never requests it, so `webview2-com` never links
@@ -314,6 +314,12 @@ vp9-video = ["dep:vp9dec"]
 # without this feature answers that spawn with a clean non-zero exit (no thumbnail — exactly
 # the pre-support behaviour for these streams).
 mpeg-video = ["dep:oxideav-mpeg12video"]
+# AVIF decode in process (`rav1d`) for the EXEs, and for the hidden `st2k avif-frame` child verb
+# the shell extension asks instead. EXE-ONLY, the exact `flash-video` containment: rav1d panics
+# on some malformed input (an `unwrap` in its own error path, found by the fuzz gate on
+# 2026-09-29), and the DLL package opts out via `default-features = false` on its core
+# dependency (acceptance check: `cargo tree -p sagethumbs2k-dll` lists no rav1d).
+avif-video = ["st2k_codecs/av1"]
 # Lossy WebP encode via libwebp (C). Off by default → pure-Rust build; the release
 # installer enables it. Without it, lossy-WebP convert falls back to lossless WebP.
 webp-lossy = ["st2k_actions/webp-lossy"]
@@ -425,6 +431,15 @@ codegen-units = 1
 # an in-process shell extension. There's no scripted enforcement of the convention beyond
 # clippy's arithmetic lints + code review; a real audit tool for "unchecked arithmetic on
 # attacker-influenced values" is a static-analysis project of its own, not a Cargo.toml key.
+
+# The AV1 decoder is the one crate built for speed rather than size: at opt-level "z" it is
+# several times slower, and a picture it decodes is always a whole picture (AV1 has no
+# reduced-resolution decode). Debug builds get it too, or every AVIF test decodes unoptimised.
+[profile.release.package.rav1d]
+opt-level = 3
+
+[profile.dev.package.rav1d]
+opt-level = 3
 
 [[test]]
 name = "integration"

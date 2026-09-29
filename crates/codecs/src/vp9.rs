@@ -63,6 +63,7 @@ pub(crate) fn vp9_frame<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<imag
     let png = crate::flv::child_frame_png(
         "vp9-frame",
         &frame,
+        &[],
         VP9_CPU_BUDGET,
         VP9_WALL_CEILING,
         VP9_PNG_CAP,

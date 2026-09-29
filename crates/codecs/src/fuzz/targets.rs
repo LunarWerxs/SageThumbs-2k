@@ -158,6 +158,7 @@ pub(super) fn all_targets() -> Vec<Target> {
 /// or the SPS bit reader.
 pub(super) fn inner_targets() -> Vec<Target> {
     use crate::container::apk_fuzzapi as apk;
+    use crate::decode::avif_fuzzapi as avif;
     use crate::decode::cicp_fuzzapi as cicp;
     use crate::decode::dds_fuzzapi as dds;
     use crate::decode::jp2_fuzzapi as jp2;
@@ -204,6 +205,12 @@ pub(super) fn inner_targets() -> Vec<Target> {
         // the reduced path and the 1:1 path it falls back to are different code.
         ("jxl::reduced", jxl::reduced),
         ("jxl::full", jxl::full),
+        // Our own AVIF container reader (2026-09-29): the HEIF item tables the shell extension
+        // walks in process for every AVIF, ahead of the `st2k avif-frame` child. The AV1 decode
+        // itself is NOT fuzzed here: `rav1d` panics on some malformed input inside functions
+        // that cannot unwind, so in process it would abort this whole test binary - which is
+        // exactly why it runs only in that child, where a crash is a failed thumbnail.
+        ("avif::container", avif::container),
         // JPEG 2000 codestream walk, reached in-process by the thumbnail host.
         ("jp2::dimensions", jp2::dimensions),
         ("jp2::decode_reduced", jp2::decode_reduced),

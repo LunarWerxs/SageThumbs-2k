@@ -462,6 +462,7 @@ pub(crate) fn flash_frame<R: Read + Seek>(r: &mut R) -> Option<image::DynamicIma
     let png = child_frame_png(
         "flv-frame",
         &flv,
+        &[],
         FLASH_CPU_BUDGET,
         FLASH_WALL_CEILING,
         FLASH_PNG_CAP,
@@ -491,6 +492,7 @@ pub(crate) fn flash_frame<R: Read + Seek>(r: &mut R) -> Option<image::DynamicIma
 pub(crate) fn child_frame_png(
     verb: &'static str,
     input: &[u8],
+    args: &[String],
     cpu_budget: Duration,
     wall_ceiling: Duration,
     png_cap: usize,
@@ -498,6 +500,7 @@ pub(crate) fn child_frame_png(
     let exe = st2k_base::host::sibling_of_dll(st2k_base::host::CLI_EXE)?;
     let mut cmd = Command::new(exe);
     cmd.arg(verb)
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null()) // the child logs its own failures via the panic hook/log

@@ -9,6 +9,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+- **AVIF thumbnails can no longer freeze Explorer.** Asking for several AVIF thumbnails at once
+  (opening a folder of them, or scrolling quickly) could hang Windows' thumbnail host for good,
+  and with it every thumbnail and taskbar icon until you signed out. SageThumbs now reads AVIF
+  with its own decoder instead of Windows' AV1 extension, in a separate helper process, so a
+  damaged file cannot take Explorer down either. AVIF no longer needs the AV1 Video Extension
+  from the Microsoft Store, its colours no longer change when that extension updates itself, and
+  a 12-megapixel AVIF thumbnails in about a fifth of a second.
 - **Rename with pattern shows its Rename and Cancel buttons again** (fixes #48). The dialog was
   laid out for more room than its window left once the title bar was taken out, so the button
   row sat below the bottom edge with only a sliver showing. Every SageThumbs dialog now grows to

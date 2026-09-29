@@ -179,7 +179,7 @@ mod tests {
     #[test]
     fn size_one_without_an_extended_field_is_declined() {
         // A caller that never bothers reading the extended 8 bytes (because its format never
-        // needs 64-bit boxes, e.g. `avif_wic_misreads_color`) always passes `None` here and
+        // needs 64-bit boxes) always passes `None` here and
         // must get a clean decline, not a panic on an absent field.
         assert_eq!(decode_box_size(1, None, 0, 1000), None);
     }

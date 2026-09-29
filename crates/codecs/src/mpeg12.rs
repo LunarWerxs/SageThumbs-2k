@@ -754,6 +754,7 @@ pub(crate) fn mpeg_frame<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<ima
     let png = crate::flv::child_frame_png(
         "mpeg-frame",
         &unit,
+        &[],
         MPEG_CPU_BUDGET,
         MPEG_WALL_CEILING,
         MPEG_PNG_CAP,

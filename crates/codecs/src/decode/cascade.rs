@@ -2,32 +2,14 @@
 
 use super::*;
 
-/// Apply the WIC decode's AVIF high-bit-depth curve fix when [`route_isobmff_wic_quirks`] says
-/// it's needed, and log when we're falling back to the codec we deliberately tried to route
-/// around (`magick_attempted`).
-pub(super) fn finish_wic_fallback(
-    img: DynamicImage,
-    route: &WicQuirkRoute,
-    magick_attempted: bool,
-) -> DynamicImage {
-    let img = if matches!(
-        route.avif_verdict,
-        color::AvifWicVerdict::NeedsHighDepthCurve
-    ) {
-        st2k_base::safety::log_debug("decode: undoing WIC's high-bit-depth AV1 transfer curve");
-        color::undo_wic_high_depth_curve(img)
-    } else {
-        img
-    };
+/// Log when the WIC fallback answers a file we deliberately tried to route around
+/// (`magick_attempted`): the thumbnail is about to come from the codec we KNOW misreads it.
+pub(super) fn finish_wic_fallback(img: DynamicImage, magick_attempted: bool) -> DynamicImage {
     if magick_attempted {
-        // Reaching WIC after we deliberately tried to avoid it means the thumbnail is
-        // about to be produced by the codec we KNOW misreads this file, so say so
-        // rather than returning a quietly wrong picture. A wrong-coloured tile still
-        // beats no tile (it is what the Compact install shows anyway), but it must be
-        // diagnosable — the alternative is issue #9's "some files are just wrong
-        // sometimes", with nothing in the log to point at.
+        // A slightly wrong tile still beats no tile (it is what the Compact install shows
+        // anyway), but it must be diagnosable rather than a quietly wrong picture.
         st2k_base::safety::log_debug(
-            "decode: fell back to WIC after routing around it — colours may be off",
+            "decode: fell back to WIC after routing around it — the picture may be off",
         );
     }
     img
@@ -49,7 +31,7 @@ pub(super) fn last_resort_tiers(
 ) -> Result<DynamicImage> {
     let magick_attempted = route.magick_attempted;
     match wic_fallback(bytes, wic_thumbnail_cx) {
-        Ok(img) => return Ok(finish_wic_fallback(img, &route, magick_attempted)),
+        Ok(img) => return Ok(finish_wic_fallback(img, magick_attempted)),
         Err(e) => st2k_base::safety::log_debugf!("decode tier `WIC` failed: {e}"),
     }
     // TGA has no magic bytes, so the `image` guesser + magick-via-stdin both miss
@@ -232,6 +214,11 @@ pub(super) fn decode_any_with_wic_target(
     if let Some(img) = try_jxl_tier(bytes, wic_thumbnail_cx) {
         return Ok(img);
     }
+    // AVIF: our own decoder, and the only one. One that fails goes on to ImageMagick and the
+    // embedded-preview scan, never to WIC (whose AV1 codec deadlocked the thumbnail host).
+    if avif::is_avif(bytes) {
+        return decode_avif_tiers(bytes, raw_preview, external, wic_thumbnail_cx);
+    }
     if let Some(img) = try_dds_tier(bytes, wic_thumbnail_cx) {
         return Ok(img);
     }
@@ -284,6 +271,41 @@ pub(super) fn decode_any_with_wic_target(
         Ok(img) => Ok(img),
         Err(route) => last_resort_tiers(bytes, wic_cx, raw_preview, external, route, reduced_ifd0),
     }
+}
+
+/// An AVIF's tiers: ours, then (off Explorer's own process) ImageMagick, then the cheap
+/// embedded-JPEG scan. The shell extension decodes through the `st2k avif-frame` child, which
+/// the classic menu tile (`external` false, inside explorer.exe) does not spawn, exactly as it
+/// spawns no ImageMagick: an AVIF's menu tile is its caption, like a video's.
+fn decode_avif_tiers(
+    bytes: &[u8],
+    raw_preview: RawPreviewOrder,
+    external: bool,
+    wic_thumbnail_cx: Option<u32>,
+) -> Result<DynamicImage> {
+    let mut last_err = if external || avif::DECODES_HERE {
+        let threads = if external { avif::THREADS_ISOLATED } else { 1 };
+        match avif::decode_avif(bytes, threads, wic_thumbnail_cx) {
+            Ok(img) => return Ok(img),
+            Err(e) => {
+                st2k_base::safety::log_debugf!("decode tier `avif` failed: {e}");
+                e
+            }
+        }
+    } else {
+        Error::new(E_FAIL, "avif: not decoded inside Explorer")
+    };
+    if let Some(img) = try_external_tiers(
+        bytes,
+        wic_thumbnail_cx,
+        raw_preview,
+        external,
+        false,
+        &mut last_err,
+    ) {
+        return Ok(img);
+    }
+    try_embedded_jpeg_last_resort(bytes).ok_or(last_err)
 }
 
 /// JPEG XL: our own pure-Rust tier, FIRST and signature-gated. The `image` crate and
@@ -572,96 +594,49 @@ pub(super) fn try_raw_preview_tier(
 /// what the WIC fallback and the external tier below still need to know.
 pub(super) struct WicQuirkRoute {
     /// Set once ImageMagick was invoked (or attempted) to route around a known-bad WIC
-    /// decode, so the WIC fallback can log why colours may still be off, and the
+    /// decode, so the WIC fallback can log why the picture may still be off, and the
     /// external tier below can skip a redundant magick attempt.
     pub(super) magick_attempted: bool,
-    /// WIC's transfer-curve verdict for this AVIF (or `Trusted` when the file isn't
-    /// AVIF/HEIC at all), needed by the WIC fallback to decide whether to invert WIC's
-    /// high-bit-depth curve.
-    pub(super) avif_verdict: color::AvifWicVerdict,
     /// Set when magick was attempted here and failed, so it becomes the final
     /// fallback error instead of a generic E_FAIL.
     pub(super) magick_error: Option<Error>,
 }
 
-/// Two things Microsoft's WIC codecs get wrong on ISOBMFF images, both of which we can
-/// detect from the container CHEAPLY and route around when the Full install's external
-/// tier is available. In both cases WIC stays the eventual fallback: on the Compact
-/// install (no ImageMagick) a slightly wrong thumbnail still beats no thumbnail at all.
+/// HEIC: Microsoft's HEVC codec accepts auxiliary-alpha files and returns an opaque image.
+/// Gated on a checked `auxC` property carrying the exact HEVC alpha identifier, and routed to
+/// ImageMagick when the Full install's external tier is available; WIC stays the fallback,
+/// since on the Compact install an opaque thumbnail still beats none. (AVIF used to have a
+/// branch here too, for the colour Windows' AV1 codec got wrong; AVIF no longer reaches WIC.)
 ///
-///  * HEIC: the HEVC codec accepts auxiliary-alpha files and returns an opaque image.
-///    Gated on a checked `auxC` property carrying the exact HEVC alpha identifier.
-///  * AVIF: the AV1 codec misreads the `nclx` colour box that libaom writes by default,
-///    shifting colour on exactly the files `avifenc`/`ffmpeg` produce (issue #9).
-///
-/// Returns `Ok` when the decode is already resolved (avif-mf or magick succeeded), or
-/// `Err(route)` with what the caller needs to continue to the WIC fallback.
+/// Returns `Ok` when magick resolved the decode, or `Err(route)` with what the caller needs
+/// to continue to the WIC fallback.
 pub(super) fn route_isobmff_wic_quirks(
     bytes: &[u8],
     external: bool,
     wic_thumbnail_cx: Option<u32>,
     fidelity: Fidelity,
 ) -> std::result::Result<DynamicImage, WicQuirkRoute> {
-    let wic_hevc_alpha = isobmff_has_hevc_aux_alpha(bytes);
-    // Three outcomes, not two. Most high-bit-depth AVIF used to land in the ImageMagick bucket
-    // purely because the old predicate was a bool: WIC's error there is a pure transfer curve
-    // we can invert in-process for microseconds, so it now stays on the cheap path and gets
-    // corrected afterwards (~400 ms -> ~114 ms, and worst channel error 11 -> 1, i.e. BETTER
-    // colour than the subprocess route it replaces). Only the genuinely unrecoverable case -
-    // the 8-bit matrix error, where WIC clips as it converts - still pays for magick.
-    let avif_verdict = if wic_hevc_alpha {
-        color::AvifWicVerdict::Trusted
-    } else {
-        color::avif_wic_verdict(bytes)
-    };
-    let wic_avif_color = matches!(avif_verdict, color::AvifWicVerdict::Untrusted);
-    let magick_attempted = external && (wic_hevc_alpha || wic_avif_color);
+    let magick_attempted = external && isobmff_has_hevc_aux_alpha(bytes);
     if !magick_attempted {
         return Err(WicQuirkRoute {
             magick_attempted,
-            avif_verdict,
             magick_error: None,
         });
     }
-    let why = if wic_hevc_alpha {
-        "HEIC auxiliary alpha"
-    } else {
-        "AVIF nclx colour"
-    };
-    st2k_base::safety::log_debugf!("decode: routing around WIC ({why})");
-    // The 8-bit bucket first tries the OS's own AV1 decoder via Media Foundation
-    // (decode/avifmf.rs): same correct colour as ImageMagick, no subprocess, ~150 ms of
-    // the ~180 ms this route used to cost. Narrowly gated and best-effort - anything it
-    // declines (alpha, wide gamut, MF absent, decode failure) proceeds to magick exactly
-    // as before, so this can only ever be faster, never different.
-    if wic_avif_color {
-        if let Some(img) = avifmf::decode_8bit_avif_via_mf(bytes, wic_thumbnail_cx) {
-            st2k_base::safety::log_debug("decode: tier `avif-mf` decoded the 8-bit AVIF");
-            return Ok(img);
-        }
-    }
-    // Ask magick for no more than the caller's target edge, exactly as the generic
-    // magick tier below already does. This route used to take the uncapped
-    // `decode_via_magick`, so a 256 px Explorer tile rendered the full 4096 px guard
-    // and threw almost all of it away - then PNG-encoded that surface and decoded it
-    // back. Measured on a 3000x2000 AVIF at a 256 px target: 10-bit 1261 ms -> 400 ms,
-    // 8-bit 638 ms -> 388 ms. Nothing about the colour fix needs the larger render:
-    // the ICC below is applied from the ORIGINAL container, not magick's output, and
-    // full-fidelity callers reach here with `wic_thumbnail_cx == None` (uncapped) as
-    // before.
+    st2k_base::safety::log_debug("decode: routing around WIC (HEIC auxiliary alpha)");
+    // Ask magick for no more than the caller's target edge, exactly as the generic magick
+    // tier below does: a 256 px Explorer tile must not render the full 4096 px guard.
     match decode_via_magick_capped(bytes, wic_thumbnail_cx, fidelity) {
-        // `decode_via_magick` passes `-strip`, so the profile magick would otherwise
-        // have carried into its PNG output is gone by the time we read it back. Apply
-        // it here from the ORIGINAL container instead, exactly as the WIC path does,
-        // or a wide-gamut file routed here would come out in raw Adobe RGB / P3
-        // numbers - the same "decoded right, then threw the profile away" fault that
-        // was fixed for JPEG XL in 1.7.1.
+        // `decode_via_magick` passes `-strip`, so the profile magick would otherwise have
+        // carried into its PNG output is gone by the time we read it back. Apply it here from
+        // the ORIGINAL container instead, exactly as the WIC path does.
         Ok(img) => Ok(finish_magick_output(img, bytes, true)),
         Err(e) => {
-            st2k_base::safety::log_debugf!("decode tier `magick ({why})` failed: {e}");
+            st2k_base::safety::log_debugf!(
+                "decode tier `magick (HEIC auxiliary alpha)` failed: {e}"
+            );
             Err(WicQuirkRoute {
                 magick_attempted,
-                avif_verdict,
                 magick_error: Some(e),
             })
         }
@@ -677,7 +652,7 @@ pub(super) fn route_isobmff_wic_quirks(
 /// profile afterwards (see its call site), the generic last-resort tier never has, and this
 /// keeps both exactly as they were for every SDR file.
 pub(super) fn finish_magick_output(img: DynamicImage, bytes: &[u8], icc: bool) -> DynamicImage {
-    if let Some(cicp) = color::isobmff_hdr_cicp(bytes) {
+    if let Some(cicp) = avif::isobmff_hdr_cicp(bytes) {
         if let Some(linear) = cicp_hdr_to_linear(&img, &cicp) {
             return tone_map_float(&linear);
         }

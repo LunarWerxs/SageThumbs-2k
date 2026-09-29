@@ -748,10 +748,13 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   use in-box WinRT APIs (`Windows.Data.Pdf`, `Windows.Media.Ocr`); zero added
   bytes. The screenshot editor's **Copy text (OCR)** rides the same recognizer as the
   right-click verb, so screen OCR cost nothing in download size either. PDF *writing* (Combine-to-PDF) is a hand-rolled minimal `/DCTDecode` PDF;
-  no PDF library. HEIC/AVIF normally decode through WIC: Microsoft's free **HEIF Image
-  Extensions** (+ **HEVC Video Extensions** for iPhone HEIC) and **AV1 Video Extension**
-  provide that path. The installer also retains ImageMagick's HEIF engine because
-  the advertised AVIF writer requires it and it provides a long-tail fallback.
+  no PDF library. HEIC normally decodes through WIC: Microsoft's free **HEIF Image
+  Extensions** (+ **HEVC Video Extensions** for iPhone HEIC) provide that path. **AVIF is
+  decoded by SageThumbs itself** (the Rust AV1 decoder `rav1d` plus our own container,
+  colour and HDR code), in a short-lived helper process so a damaged file can never take
+  Explorer down; it needs no Store extension. The installer also retains ImageMagick's
+  HEIF engine because the advertised AVIF writer requires it and it provides a long-tail
+  fallback.
 - **Trimmed ImageMagick** is bundled for the long tail of formats (RAW, DICOM, PCX,
   J2K, …), and every install carries it. The measured magick-only set (the formats that
   depend on it): the JPEG-2000 family (j2c/j2k/jp2/jpc/jpf/jpm/jpx), film/print scans

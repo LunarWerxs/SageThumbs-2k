@@ -573,6 +573,12 @@ fn main() {
         #[cfg(not(feature = "vp9-video"))]
         missing_feature("vp9-video");
     }
+    if args.first().is_some_and(|a| a == "avif-frame") {
+        #[cfg(feature = "avif-video")]
+        std::process::exit(vdec::run_avif());
+        #[cfg(not(feature = "avif-video"))]
+        missing_feature("avif-video");
+    }
     if args.first().is_some_and(|a| a == "mpeg-frame") {
         #[cfg(feature = "mpeg-video")]
         std::process::exit(vdec::run_mpeg());

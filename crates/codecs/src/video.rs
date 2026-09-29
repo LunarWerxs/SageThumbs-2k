@@ -22,9 +22,7 @@ mod nv12;
 use blockstream::*;
 pub use blockstream::{frame_from_block_stream, frame_from_block_stream_file};
 pub use blockstream::{global_interface_table, with_stream_on_worker};
-pub use nv12::{
-    frame_from_bytes_repr, frame_from_owned_bytes, nv12_frame_from_owned_bytes, Nv12Frame,
-};
+pub use nv12::{frame_from_bytes_repr, frame_from_owned_bytes};
 pub use strands::{
     mf_grab_attempts, mf_usable, mf_wedged, oldest_strand_age, stranded_workers, STRAND_GRACE,
 };

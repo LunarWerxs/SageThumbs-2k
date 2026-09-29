@@ -142,6 +142,20 @@ pub(super) fn new_surface_seeds() -> Vec<(&'static str, Vec<u8>)> {
             "jxl-hdr-pq",
             include_bytes!("../../../../tests/fixtures/jxl/scene-pq2020.jxl").to_vec(),
         ),
+        // The AVIF shapes our decoder takes different paths for: 8-bit with a BT.601 matrix,
+        // 10-bit PQ HDR, and a picture with a separate alpha item.
+        (
+            "avif-8bit-601",
+            include_bytes!("../../../../tests/fixtures/avif/patches-8bit-bt601.avif").to_vec(),
+        ),
+        (
+            "avif-10bit-pq",
+            include_bytes!("../../../../tests/fixtures/avif/patches-10bit-pq2020.avif").to_vec(),
+        ),
+        (
+            "avif-alpha",
+            include_bytes!("../../../../tests/fixtures/avif/alpha-half.avif").to_vec(),
+        ),
         // The MPEG-1/2 shapes `mpeg12` walks: a bare MPEG-2 and MPEG-1 elementary stream (two
         // GOPs, an I and a P picture, extensions), the MPEG-1 SYSTEM wrapping (MPEG-1 pack +
         // PES headers, an audio and a padding packet) and the MPEG-2 PROGRAM wrapping
@@ -294,6 +308,25 @@ pub(super) fn every_new_surface_seed_reaches_its_parser() {
         assert!(
             crate::decode::decode_preview(&bytes).is_ok(),
             "{label} seed no longer decodes through the JPEG XL tier"
+        );
+    }
+    // The AVIF seeds, likewise: each must decode through our own tier.
+    for (label, name) in [
+        ("avif-8bit-601", "patches-8bit-bt601.avif"),
+        ("avif-10bit-pq", "patches-10bit-pq2020.avif"),
+        ("avif-alpha", "alpha-half.avif"),
+    ] {
+        let bytes = std::fs::read(
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+                .join("tests")
+                .join("fixtures")
+                .join("avif")
+                .join(name),
+        )
+        .unwrap_or_else(|e| panic!("{label}: read {name}: {e}"));
+        assert!(
+            crate::decode::decode_preview(&bytes).is_ok(),
+            "{label} seed no longer decodes through the AVIF tier"
         );
     }
     // The MPEG-1/2 seeds: every wrapping demuxes to its elementary stream and slices to a

@@ -40,12 +40,26 @@ unsafe fn wic_frame_from_bytes(
 }
 
 /// Decode via Windows Imaging Component using whatever codecs the OS has
-/// installed — this is what gives HEIC/HEIF, AVIF, camera RAW (with the
+/// installed — this is what gives HEIC/HEIF, camera RAW (with the
 /// Microsoft Raw Image Extension), and JPEG 2000 without bundling C/LGPL Rust
 /// crates. Output is straight (non-premultiplied) RGBA8 so it flows through
 /// the same resize/orientation/DIB path as the `image` tier.
 pub(super) fn wic_fallback(bytes: &[u8], thumbnail_cx: Option<u32>) -> Result<DynamicImage> {
     unsafe { wic_decode_with_thumbnail(bytes, thumbnail_cx) }
+}
+
+/// No AVIF ever reaches WIC. Windows' AV1 codec (a Store extension) deadlocked the shell's
+/// thumbnail host when several AVIFs were asked for at once, taking every thumbnail and taskbar
+/// icon on the machine with it (2026-09-29); AVIF has its own decoder (`avif.rs`). Checked at
+/// every entry below that opens a WIC decoder, from the bytes (or bounded prefix) it is given.
+fn refuse_avif(head: &[u8]) -> Result<()> {
+    if super::avif::is_avif(head) {
+        return Err(Error::new(
+            E_FAIL,
+            "wic: AVIF is decoded by avif.rs, never by WIC",
+        ));
+    }
+    Ok(())
 }
 
 /// Is a WIC codec registered for `container_format`? `st2k doctor` uses this to report on
@@ -73,6 +87,7 @@ pub(super) unsafe fn wic_decode_with_thumbnail(
     bytes: &[u8],
     thumbnail_cx: Option<u32>,
 ) -> Result<DynamicImage> {
+    refuse_avif(bytes)?;
     // The host thread has COM initialized; in unit tests we CoInitialize first.
     let factory: IWICImagingFactory = wic_factory()?;
     let frame = wic_frame_from_bytes(&factory, bytes)?;
@@ -95,6 +110,7 @@ pub(super) unsafe fn wic_decode_stream(
     thumbnail_cx: Option<u32>,
     head: &[u8],
 ) -> Result<DynamicImage> {
+    refuse_avif(head)?;
     let factory: IWICImagingFactory = wic_factory()?;
     // `OnDemand`, matching the by-path/by-bytes twins — see `wic_frame_from_bytes`'s
     // comment: nothing here reads WIC's cached metadata graph, so parsing it eagerly over
@@ -155,6 +171,7 @@ pub(super) unsafe fn wic_decode_path(
     thumbnail_cx: Option<u32>,
     head: &[u8],
 ) -> Result<DynamicImage> {
+    refuse_avif(head)?;
     let factory: IWICImagingFactory = wic_factory()?;
     let frame = wic_frame_from_filename(&factory, path)?;
     wic_decode_frame(&factory, &frame, thumbnail_cx, head)
@@ -198,6 +215,7 @@ pub(super) unsafe fn wic_decode_path_if_codec_scales(
     target_edge: u32,
     head: &[u8],
 ) -> Result<DynamicImage> {
+    refuse_avif(head)?;
     let factory: IWICImagingFactory = wic_factory()?;
     let frame = wic_frame_from_filename(&factory, path)?;
     wic_decode_reduced(&factory, &frame, target_edge, head)
@@ -220,6 +238,7 @@ pub(super) unsafe fn wic_decode_bytes_if_codec_scales(
     target_edge: u32,
     head: &[u8],
 ) -> Result<DynamicImage> {
+    refuse_avif(bytes)?;
     let factory: IWICImagingFactory = wic_factory()?;
     let frame = wic_frame_from_bytes(&factory, bytes)?;
     wic_decode_reduced(&factory, &frame, target_edge, head)

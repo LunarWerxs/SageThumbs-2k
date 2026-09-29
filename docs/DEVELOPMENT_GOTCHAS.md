@@ -559,7 +559,12 @@ Three things kept it invisible, and each one is the generalisable part:
 - **Nothing in the suite decoded a real AVIF and looked at the colour.** The corpus proved "still
   renders", exactly as it did for the red/blue transposition above.
 
-The fix is `decode/wicprobe.rs`: six ~360-byte AVIFs compiled into the binary, one per colour
+(Postscript, 2026-09-29: the probe and the whole WIC AVIF path are gone. The same codec also
+DEADLOCKED the thumbnail surrogate when eight AVIFs were asked for at once, taking every
+thumbnail and taskbar icon on the machine with it, so AVIF now has its own decoder: see "A hang
+only the real host can show" below. The paragraph that follows is the history.)
+
+The fix was `decode/wicprobe.rs`: six ~360-byte AVIFs compiled into the binary, one per colour
 class, decoded through the real WIC path on the first AVIF of each process and graded against
 values we know. Within tolerance is trusted, wrong-but-correctable selects the correction,
 wrong either way pays for ImageMagick. It re-measures itself on every machine and after every
@@ -572,6 +577,34 @@ not the answer.** A probe is a few hundred bytes and one decode; a table is a co
 into a lie. When you cannot probe, at least make the staleness loud - name the version you
 measured, and treat an unrecognised one as untrusted rather than assuming it behaves like the
 one you tested.
+
+## A hang only the real host can show
+
+3.4.0 passed every gate and still froze users' Explorer: AVIF thumbnails "work for a while, then
+randomly break, then zero thumbnails are created anywhere, and the taskbar icons die too"
+(a user's report, 2026-09-29). Reproduced the same day: eight clients asking the installed
+handler for AVIF thumbnails at once wedged the thumbnail surrogate (`dllhost` with our DLL
+loaded) for good; one client at a time never did. The decode went through Microsoft's Store AV1
+codec (WIC, plus a Media Foundation probe), and that codec could not take concurrent requests
+inside the surrogate.
+
+Why nothing caught it: every test decodes in the TEST process, one file at a time. The failure
+needed three things no in-process test has - the shell's own surrogate, the Store codec loaded
+inside it, and several requests in flight - so the suite could only ever prove "one AVIF
+decodes". Two rules came out of it:
+
+- **Anything that runs inside the shell's host gets a concurrency check against the INSTALLED
+  handler.** `scripts/check-thumbnail-concurrency.ps1` is it: N hidden clients, each asking
+  `IThumbnailCache` for thumbnails of GUID-named copies (never cached, so every request reaches
+  the handler), exit 1 on any failure or any client still running at the deadline, which it then
+  kills along with the wedged surrogate. Run it after installing any change to a decode path the
+  shell reaches, with files of the formats the change touched.
+- **Don't put a component you cannot fix inside Explorer's process.** AVIF now decodes with our
+  own container and colour code plus `rav1d` (BSD-2), and even that runs in the `st2k
+  avif-frame` child, because `rav1d` panics on some malformed input (the always-on fuzz harness
+  found an `unwrap` in its error path on its first run) and a panic under `panic = "abort"` in
+  the surrogate is the same outage by another route. The fuzz harness drives only the container
+  walk, which is the part the DLL runs.
 
 ## The magick watchdog must charge CPU time, not wall clock
 

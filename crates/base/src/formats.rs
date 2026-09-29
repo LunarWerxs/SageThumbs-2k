@@ -185,22 +185,12 @@ pub enum OsCodec {
     WmPhoto,
     /// HEIC/HEIF and the AVC-coded sibling AVCI - decoded via the OS's HEIF WIC codec (the
     /// "HEIF Image Extensions" / "HEVC Video Extensions" Store package on a clean Windows
-    /// install). Confirmed from `crates/codecs/src/decode/wic.rs`'s own module doc, which lists "HEIC/HEIF,
-    /// AVIF, camera RAW, JPEG 2000, JPEG XR" as the formats WIC (not a bundled crate) decodes;
+    /// install). WIC (not a bundled crate) decodes it;
     /// there is no in-process HEIF decoder anywhere in this tree, so a HEIC/HEIF file decodes
     /// only if that OS codec is present - exactly the same shape as the WMPhoto trio, just a
     /// different Store package underneath. `st2k doctor` probes for it the same way, via WIC's
     /// own `IWICImagingFactory::CreateDecoder(GUID_ContainerFormatHeif, ...)` component lookup.
     Heif,
-    /// AVIF - decoded via WIC's AV1 image codec (the "AV1 Video Extension" Store package),
-    /// then Media Foundation, then external `magick`, per `Cargo.toml`'s `image` crate feature
-    /// list (no `avif`/`av1` feature enabled - there is no in-process AV1 decoder here at all).
-    /// UNLIKE `Heif`/`WmPhoto`, there is no `GUID_ContainerFormat*` for AVIF/AV1 in the
-    /// `windows` crate (checked against `windows` 0.62.2's
-    /// `Win32::Graphics::Imaging` module, which defines Heif/Wmp/… but nothing AV1-shaped) -
-    /// so `st2k doctor` cannot do the same `CreateDecoder` component lookup it does for the
-    /// other two, and reports this one honestly as unverified rather than guessing.
-    Av1,
 }
 
 impl OsCodec {
@@ -210,7 +200,6 @@ impl OsCodec {
             OsCodec::MediaFoundation => "media_foundation",
             OsCodec::WmPhoto => "wmphoto",
             OsCodec::Heif => "heif",
-            OsCodec::Av1 => "av1",
         }
     }
 }
@@ -273,12 +262,6 @@ const WMPHOTO_EXTS: &[&str] = &["jxr", "wdp", "hdp", "wmp"];
 /// HEIC/HEIF/AVCI family - decoded via the OS's HEIF WIC codec (see [`OsCodec::Heif`]).
 /// Must stay a subset of `FORMATS` (enforced by `capability_lists_are_subset_of_formats`).
 const HEIF_OS_CODEC_EXTS: &[&str] = &["heic", "heif", "heics", "heifs", "hif", "avci"];
-
-/// AVIF (AV1 Image File Format) and its image-sequence sibling `avifs` (whose first frame the
-/// same AV1 codec decodes) - see [`OsCodec::Av1`] for why this can't be probed the way
-/// `WMPHOTO_EXTS`/`HEIF_OS_CODEC_EXTS` are.
-/// Must stay a subset of `FORMATS` (enforced by `capability_lists_are_subset_of_formats`).
-const AV1_OS_CODEC_EXTS: &[&str] = &["avif", "avifs"];
 
 /// `Category::Image` extensions whose cover is an EMBEDDED preview the container already
 /// carries (`container::extract_cover`), never a full raster decode of the image itself -
@@ -428,13 +411,12 @@ pub fn capability(ext: &str) -> Capability {
         Category::Video => Source::VideoFrame,
         Category::Archive => Source::ContainedImages,
     };
-    let os_codec = if AV1_OS_CODEC_EXTS.contains(&ext) {
-        Some(OsCodec::Av1)
+    // AVIF needs no OS codec: it has its own decoder (`decode/avif.rs`) since 2026-09-29.
     // The extensions whose own codecs are decoded by `st2k flv-frame` / `st2k mpeg-frame`
     // - never Media Foundation - are excluded from the blanket video->MediaFoundation rule
     // below (audit E03 #5; see `SELF_DECODED_VIDEO_EXTS` for why the answer is per
     // extension, not per file).
-    } else if VIDEO_EXTS.contains(&ext) && !SELF_DECODED_VIDEO_EXTS.contains(&ext) {
+    let os_codec = if VIDEO_EXTS.contains(&ext) && !SELF_DECODED_VIDEO_EXTS.contains(&ext) {
         Some(OsCodec::MediaFoundation)
     } else if WMPHOTO_EXTS.contains(&ext) {
         Some(OsCodec::WmPhoto)

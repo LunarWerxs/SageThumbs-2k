@@ -201,9 +201,6 @@ pub(super) fn check_format_capability(r: &mut Report) {
     r.line(S::Info, "By source", &by_source.join(", "));
 
     use st2k_base::formats::OsCodec;
-    // `Av1` is deliberately NOT in this array - it has no `os_codec_available` component
-    // lookup to run at all (no WIC container GUID exists for it), so it gets its own honest
-    // block below instead of a present/MISSING verdict this loop can't actually back up.
     for codec in [OsCodec::MediaFoundation, OsCodec::WmPhoto, OsCodec::Heif] {
         let exts: Vec<&str> = FORMATS
             .iter()
@@ -215,28 +212,6 @@ pub(super) fn check_format_capability(r: &mut Report) {
         }
         report_os_codec(r, codec, &exts);
     }
-
-    // AV1 (AVIF): no WIC container GUID exists to probe (see `OsCodec::Av1`'s doc), so - unlike
-    // the loop above - this is reported honestly as unverified rather than guessed at (audit
-    // E03 #2). Consistent with `video_codec_note`'s AV1 handling: both name the dependency
-    // without claiming a verdict the code can't actually back up.
-    let av1_exts: Vec<&str> = FORMATS
-        .iter()
-        .filter(|&&(ext, _)| st2k_base::formats::capability(ext).os_codec == Some(OsCodec::Av1))
-        .map(|&(ext, _)| ext)
-        .collect();
-    if !av1_exts.is_empty() {
-        r.line(
-            S::Info,
-            "OS codec: AV1 (AVIF)",
-            &format!(
-                "needs the AV1 Video Extension; not probed (no WIC container GUID for it) - \
-                 {} format(s) affected ({})",
-                av1_exts.len(),
-                av1_exts.join(", ")
-            ),
-        );
-    }
 }
 
 /// Reports one OS-codec dependency: its label and whether the codec is present here, over the
@@ -247,7 +222,6 @@ fn report_os_codec(r: &mut Report, codec: st2k_base::formats::OsCodec, exts: &[&
         OsCodec::MediaFoundation => "OS codec: Media Foundation (video)",
         OsCodec::WmPhoto => "OS codec: WIC JPEG XR / HD Photo",
         OsCodec::Heif => "OS codec: WIC HEIC/HEIF",
-        OsCodec::Av1 => unreachable!("Av1 excluded from this loop above"),
     };
     if st2k_codecs::decode::os_codec_available(codec) {
         if codec == OsCodec::Heif {

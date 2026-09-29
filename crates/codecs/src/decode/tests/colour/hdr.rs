@@ -23,19 +23,16 @@ fn hdr_pq_jxl_renders_as_bright_as_its_sdr_twin() {
     assert_hdr_twin_matches_its_sdr_twin("jxl tier", &jxl(JXL_PQ2020), &jxl(JXL_SDR709));
 }
 
-/// Issue #39, the routing half, which needs no AV1 codec: an AVIF whose `nclx` names a PQ
-/// transfer is an HDR picture whatever its depth or matrix says, gets the HDR probe class
-/// rather than "unmeasured, ask ImageMagick", and hands the magick tiers the cICP they need to
-/// convert magick's raw signal. Its SDR twin - the same scene, sRGB / BT.709 - is none of those.
+/// Issue #39, the signal half: an AVIF whose `nclx` names a PQ transfer is an HDR picture
+/// whatever its depth or matrix says, and hands the ImageMagick tier the cICP it needs to
+/// convert magick's raw signal (the fallback for an AVIF our own decoder cannot read, and every
+/// HDR HEIC). Its SDR twin - the same scene, sRGB / BT.709 - hands over nothing.
 #[test]
-fn hdr_pq_avif_is_routed_as_hdr_and_its_sdr_twin_is_not() {
-    use crate::decode::color::{avif_wic_class_of, isobmff_hdr_cicp};
-    use crate::decode::wicprobe::WicClass;
+fn hdr_pq_avif_signals_hdr_and_its_sdr_twin_does_not() {
+    use crate::decode::avif::isobmff_hdr_cicp;
     let pq = isobmff_hdr_cicp(AVIF_PQ2020).expect("the PQ twin signals an HDR transfer");
     assert_eq!((pq.primaries, pq.transfer, pq.full_range), (9, 16, true));
-    assert_eq!(avif_wic_class_of(AVIF_PQ2020), Some(WicClass::HighHdr));
     assert_eq!(isobmff_hdr_cicp(AVIF_SDR709), None);
-    assert_eq!(avif_wic_class_of(AVIF_SDR709), Some(WicClass::HighBt709));
     assert_eq!(
         isobmff_hdr_cicp(JXL_PQ2020),
         None,

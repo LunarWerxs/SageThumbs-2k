@@ -117,7 +117,7 @@ impl RawPreviewOrder {
     }
 }
 
-mod avifmf;
+mod avif;
 mod cicp;
 mod color;
 mod dds;
@@ -173,7 +173,6 @@ pub(crate) use pdf_tier::{
 };
 mod tiers;
 mod wic;
-mod wicprobe;
 
 // Parent-hub imports: each child is glob-imported PRIVATELY so this file (and, through
 // it, every sibling's `use super::*`) sees the whole pipeline as one flat namespace,
@@ -202,6 +201,11 @@ pub(crate) use cascade::declared_dimensions;
 pub use cascade::luma_sd;
 use imagetier::*;
 
+#[cfg(feature = "av1")]
+pub use avif::decode_avif_here;
+#[cfg(test)]
+pub(crate) use avif::fuzzapi as avif_fuzzapi;
+pub use avif::{AVIF_CHILD_INPUT_CAP, AVIF_CHILD_MAX_EDGE};
 /// Direct fuzz entry points for the DDS block decoder. Re-exported by name so `crate::fuzz`
 /// can reach it without widening `dds`'s own visibility.
 #[cfg(test)]
@@ -252,12 +256,6 @@ pub fn os_codec_available(codec: st2k_base::formats::OsCodec) -> bool {
         OsCodec::MediaFoundation => crate::video::media_foundation_available(),
         OsCodec::WmPhoto => wic_container_codec_available(&GUID_ContainerFormatWmp),
         OsCodec::Heif => wic_container_codec_available(&GUID_ContainerFormatHeif),
-        // No `GUID_ContainerFormat*` for AVIF/AV1 exists in the `windows` crate (see
-        // `OsCodec::Av1`'s doc), so there is no real component lookup to run here - unlike
-        // the two arms above, `false` is NOT "checked and absent", it is "can't check".
-        // `st2k doctor` knows this and never calls this function for `Av1`; it reports the
-        // format honestly as unverified instead of printing a guess this arm could produce.
-        OsCodec::Av1 => false,
     }
 }
 

@@ -1,12 +1,13 @@
-"""Regenerate the AVIF colour probes in `assets/wicprobe/`.
+"""Regenerate the AVIF colour patches in `tests/fixtures/avif/patches-*.avif`.
 
-    python scripts/make-wic-probes.py            # rewrite the probes
-    python scripts/make-wic-probes.py --verify   # decode them and check they still say what
-                                                 # `decode/wicprobe.rs` expects (no rewrite)
+    python scripts/make-avif-patches.py            # rewrite the patches
+    python scripts/make-avif-patches.py --verify   # decode them with libdav1d and check they
+                                                   # still say what the tests expect
 
-These are the files `crates/codecs/src/decode/wicprobe.rs` compiles into the binary to measure what
-Microsoft's AV1 WIC codec does with colour on the machine it is running on. See that module for
-why a measured answer replaced a hand-written table (issue #9, twice).
+The reference pictures `decode::avif::tests` decodes with our own AVIF decoder, one per
+colour signalling (depth, matrix, range, a missing `colr`, monochrome, PQ HDR), each checked
+here against libdav1d so the expectations are the reference decoder's, not ours. They were
+Windows' AV1 codec probes until 2026-09-29, when our decoder replaced that codec.
 
 Shape, and why each part of it is load-bearing:
 
@@ -40,30 +41,30 @@ from PIL import Image
 from hdr_scene import M709_2020, pq_oetf, srgb_eotf, srgb_oetf
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, "assets", "wicprobe")
+OUT = os.path.join(ROOT, "tests", "fixtures", "avif")
 S = 16
 
-# Must match EXPECT_COLOUR / EXPECT_MONO in crates/codecs/src/decode/wicprobe.rs.
+# Must match COLOUR / MONO in crates/codecs/src/decode/avif/tests.rs.
 COLOUR = [(255, 0, 0), (0, 255, 0), (128, 128, 128), (222, 178, 145)]
 MONO = [32, 96, 160, 224]
 
 # The PQ probe's patches, in LINEAR light relative to a 203-nit diffuse white, BT.709
 # primaries: the same red, green and skin as COLOUR, with the grey at half of white so the
 # tone map has a curve to be wrong about. The file carries them PQ-encoded in BT.2020 (see
-# `pq_chart`); what the Rust side expects back is EXPECT_PQ in crates/codecs/src/decode/wicprobe.rs, which
+# `pq_chart`); what the Rust side expects back is PQ in crates/codecs/src/decode/avif/tests.rs, which
 # `--verify` derives and prints so the two can be compared by eye.
 PQ_LINEAR = [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.5, 0.5, 0.5), None]  # None: skin, from COLOUR
 
 CASES = [
     # file stem,          pix_fmt,       ffmpeg matrix name, strip the colr box?
-    ("avif-8bit-bt709",   "yuv444p",     "bt709",            False),
-    ("avif-8bit-bt601",   "yuv444p",     "smpte170m",        False),
-    ("avif-8bit-nocolr",  "yuv444p",     "bt709",            True),
-    ("avif-10bit-bt709",  "yuv444p10le", "bt709",            False),
-    ("avif-10bit-bt601",  "yuv444p10le", "smpte170m",        False),
-    ("avif-10bit-mono",   "gray10le",    "bt709",            False),
-    ("avif-10bit-pq2020", "yuv444p10le", "bt2020nc",         False),
-    ("avif-10bit-nocolr", "yuv444p10le", "bt709",            True),
+    ("patches-8bit-bt709",   "yuv444p",     "bt709",            False),
+    ("patches-8bit-bt601",   "yuv444p",     "smpte170m",        False),
+    ("patches-8bit-nocolr",  "yuv444p",     "bt709",            True),
+    ("patches-10bit-bt709",  "yuv444p10le", "bt709",            False),
+    ("patches-10bit-bt601",  "yuv444p10le", "smpte170m",        False),
+    ("patches-10bit-mono",   "gray10le",    "bt709",            False),
+    ("patches-10bit-pq2020", "yuv444p10le", "bt2020nc",         False),
+    ("patches-10bit-nocolr", "yuv444p10le", "bt709",            True),
 ]
 
 # The BT.709 -> BT.2020 matrix and the three transfer functions are `hdr_scene.py`'s, shared
@@ -131,9 +132,15 @@ def encode(stem, src, dst, pix_fmt, matrix, strip):
     else:
         primaries, trc = "bt709", "iec61966-2-1"
     cmd += ["-i", src]
-    if not pix_fmt.startswith("gray"):
-        # Convert RGB -> YUV with the matrix we are about to declare, so pixels and tag agree.
-        cmd += ["-vf", f"scale=out_color_matrix={matrix}:out_range=pc"]
+    # Convert RGB -> YUV with the matrix we are about to declare, so pixels and tag agree, then
+    # stamp the tags on the frames: ffmpeg 7+ takes a stream's colour tags from the filter chain,
+    # and `scale` leaves primaries and transfer "unspecified", which is how the PQ patches went
+    # out labelled 2/2 (nothing in the file said PQ) until 2026-09-29.
+    tags = f"setparams=color_primaries={primaries}:color_trc={trc}:colorspace={matrix}:range=pc"
+    if pix_fmt.startswith("gray"):
+        cmd += ["-vf", tags]
+    else:
+        cmd += ["-vf", f"scale=out_color_matrix={matrix}:out_range=pc,{tags}"]
     cmd += ["-c:v", "libaom-av1", "-still-picture", "1", "-cpu-used", "0",
             "-aom-params", "lossless=1", "-pix_fmt", pix_fmt,
             "-color_primaries", primaries, "-color_trc", trc,
@@ -194,7 +201,7 @@ def verify(tmp):
             ok = False
         print(f"  {flag} {stem:<20} dav1d worst error {worst:5.1f}  "
               f"{os.path.getsize(p):>4} bytes")
-    print("  EXPECT_PQ in crates/codecs/src/decode/wicprobe.rs must read:",
+    print("  PQ in crates/codecs/src/decode/avif/tests.rs must read:",
           [list(p) for p in tone_mapped_patches()])
     print("probes verified" if ok else "PROBES FAILED VERIFICATION")
     return 0 if ok else 1

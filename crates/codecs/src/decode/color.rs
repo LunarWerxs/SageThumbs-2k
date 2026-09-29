@@ -6,17 +6,8 @@
 //! All pure Rust - no ImageMagick, no C colour engine.
 
 use super::*;
-mod avifwic;
 mod isobmff;
-use isobmff::*;
 mod tiffprofile;
-#[cfg(test)]
-pub(super) use avifwic::av1_obus_color_config;
-#[cfg(test)]
-pub(super) use avifwic::avif_wic_class_of;
-pub(super) use avifwic::{
-    avif_wic_verdict, isobmff_hdr_cicp, undo_wic_high_depth_curve, AvifWicVerdict,
-};
 pub(super) use isobmff::{isobmff_color_icc, isobmff_has_hevc_aux_alpha};
 pub(super) use tiffprofile::tiff_icc;
 

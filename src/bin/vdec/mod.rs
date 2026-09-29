@@ -7,6 +7,9 @@
 //! * `st2k vp9-frame` ([`vp9`], feature `vp9-video`): one raw VP9 keyframe on STDIN → a
 //!   PNG on STDOUT (`vp9dec` — Profile 2/3 10/12-bit, which Media Foundation cannot
 //!   decode at all; issue #26's last open codec).
+//! * `st2k avif-frame <edge>` ([`avif`], feature `avif-video`): an AVIF on STDIN → its
+//!   picture fitted within `edge` px as a PNG on STDOUT (`rav1d` for the AV1, our own
+//!   container and colour code around it).
 //! * `st2k mpeg-frame` ([`mpeg`], feature `mpeg-video`): one MPEG-1/2 elementary-stream
 //!   unit (sequence header + one intra picture, cut by the parent's own demux) on STDIN →
 //!   a PNG on STDOUT (`oxideav-mpeg12video` — VideoCD-era MPEG-1 system streams and bare
@@ -28,6 +31,8 @@
 
 use std::io::{Cursor, Read, Write};
 
+#[cfg(feature = "avif-video")]
+mod avif;
 #[cfg(feature = "flash-video")]
 mod flv;
 #[cfg(feature = "mpeg-video")]
@@ -99,7 +104,7 @@ fn cap_own_memory() {
 
 /// Encode one decoded frame's top-down RGBA bytes as a PNG — the shared tail of every
 /// `frame_png` here, so the failure strings and the encoder cannot drift apart.
-fn encode_png(width: u32, height: u32, rgba: Vec<u8>) -> Result<Vec<u8>, String> {
+pub(super) fn encode_png(width: u32, height: u32, rgba: Vec<u8>) -> Result<Vec<u8>, String> {
     let img = image::RgbaImage::from_raw(width, height, rgba)
         .ok_or("decoded plane sizes do not match the frame dimensions")?;
     let mut png = Vec::new();
@@ -154,6 +159,16 @@ fn run_child(verb: &str, input_cap: usize, frame_png: fn(&[u8]) -> Result<Vec<u8
             1
         }
     }
+}
+
+/// Entry point for `st2k avif-frame <edge>`: returns the process exit code.
+#[cfg(feature = "avif-video")]
+pub fn run_avif() -> i32 {
+    run_child(
+        "avif-frame",
+        st2k_codecs::decode::AVIF_CHILD_INPUT_CAP,
+        avif::frame_png,
+    )
 }
 
 /// Entry point for `st2k flv-frame`: returns the process exit code.

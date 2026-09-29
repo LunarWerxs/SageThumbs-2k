@@ -191,7 +191,8 @@ The three ❌ rows all need machine-wide registration, which is exactly what the
 IThumbnailProvider  →  runs in Explorer's isolated dllhost surrogate
         │  (first tier that decodes wins; SVG detected up front → resvg)
    image crate  →  WIC (OS codecs)  →  ImageMagick (sandboxed child)  →  headerless-Targa
-  (safe Rust)      HEIC/AVIF/RAW       the obscure long tail             fallback
+  (safe Rust)      HEIC/RAW            the obscure long tail             fallback
+  AVIF: our own decoder (container + colour code, rav1d for AV1) in a throwaway child
         │
         ▼   premultiplied-BGRA top-down DIB  →  Explorer (real alpha)
 ```
