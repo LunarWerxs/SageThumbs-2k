@@ -149,8 +149,14 @@ foreach ($f in $samples) {
     $row.magick = ''
     if (-not $cliOk -and $Magick) {
         $mPng = Join-Path $Out "magick-$($row.ext).png"
-        try { & $Magick "$($f.FullName)[0]" -resize "$($Size)x$($Size)" "png:$mPng" *> $null } catch { }
-        if (Test-Path $mPng) {
+        $launch = $null
+        try { & $Magick "$($f.FullName)[0]" -resize "$($Size)x$($Size)" "png:$mPng" *> $null }
+        catch { $launch = $_.Exception.Message }
+        if ($launch) {
+            # ImageMagick itself did not run (wrong build for this CPU, missing file): that is
+            # no opinion at all, and the row says so rather than reading as "cannot read".
+            $row.magick = "magick did not run: $launch"
+        } elseif (Test-Path $mPng) {
             $mBmp = New-Object System.Drawing.Bitmap $mPng
             $t = Test-Corners $mBmp; $row.magick = if ($t.Ok) { 'ok' } else { $t.Detail }
             $mBmp.Dispose()
