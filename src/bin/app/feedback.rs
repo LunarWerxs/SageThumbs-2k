@@ -140,7 +140,11 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     let btn_y = ch - m - btn_h;
     let email_h = 24;
     let email_y = btn_y - 16 - email_h;
-    let email_lbl_y = email_y - 20;
+    // The reply-address hint as tall as it wraps to: Ukrainian's takes two lines, and the
+    // message box above gives up the difference.
+    let email_lbl_h =
+        st2k_appkit::win::wrapped_text_h(hwnd, t("fb_email_hint"), cw - 2 * m).max(18);
+    let email_lbl_y = email_y - 2 - email_lbl_h;
     // The intro as tall as it wraps to (at least the two lines it was designed for), and the
     // category label as wide as its text: both were cut off in four languages.
     let head_h = st2k_appkit::win::wrapped_text_h(hwnd, t("fb_heading"), cw - 2 * m).max(34);
@@ -239,7 +243,7 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
         m,
         email_lbl_y,
         cw - 2 * m,
-        18,
+        email_lbl_h,
         ID_EMAIL_LBL,
         hinst,
     );

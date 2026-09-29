@@ -245,6 +245,48 @@ pub(super) unsafe fn run_shot_mode(
     }
 }
 
+/// `--audit-layout <out.jsonl> [--dpi N]`: build every window the shot harness can build, one
+/// after another in this one process, and record what `win::audit_layout` finds in each to
+/// `out` (a finding per problem, plus one `audited` line per shot; see `win::audit_window`).
+/// Every [`WINDOW_SHOTS`] dialog but the eyedropper, which captures the live screen, then the
+/// OCR result window over canned text, then every Settings page from one window.
+///
+/// One process per language and scaling instead of one per window: the full 36-language
+/// sweep ran ~2,600 `--shot` processes and rebuilt Settings eleven times each, most of an hour
+/// on a box where creating a control costs milliseconds. Returns false when any window did
+/// not build or showed no controls, and says which in `out` as `{"shot", "error"}`.
+pub(super) unsafe fn run_audit_layout(hinst: HINSTANCE, dark: bool, out: &str) -> bool {
+    use st2k_appkit::win::{record_audit_error, set_audit_shot, take_audited};
+    st2k_appkit::win::set_audit_sink(std::path::Path::new(out));
+    let mut ok = true;
+    let mut settle = |shot: &str, built: bool| {
+        let why = match (built, take_audited()) {
+            (false, _) => "did not build",
+            (true, None) => "was not audited",
+            (true, Some(0)) => "showed no controls",
+            (true, Some(_)) => return,
+        };
+        record_audit_error(shot, why);
+        ok = false;
+    };
+    for &(name, shot) in WINDOW_SHOTS.iter().filter(|(n, _)| *n != "eyedropper") {
+        set_audit_shot(name);
+        settle(name, shot(""));
+    }
+    set_audit_shot("ocr");
+    settle("ocr", st2k_screenshot::ocr_result::run_shot_ocr("", None));
+    let built = settings_dlg::audit_every_page(hinst, dark, |tab, hwnd| {
+        let shot = format!("settings:{tab}");
+        set_audit_shot(&shot);
+        st2k_appkit::win::audit_window(hwnd);
+        settle(&shot, true);
+    });
+    if !built {
+        settle("settings", false);
+    }
+    ok
+}
+
 /// `--convert <listfile>` (the batch-convert dialog), `--shot-gif <out.gif>` (walks every
 /// Settings tab and encodes a regenerable README/site walkthrough GIF, checked before
 /// `--shot` by exact match so the shorter flag never swallows it), and `--shot` itself (see
@@ -266,11 +308,27 @@ pub(super) unsafe fn dispatch_convert_and_shot_modes(
             .is_some_and(|out| settings_dlg::run_shot_gif(hinst, dark, out));
         std::process::exit(i32::from(!ok));
     }
+    if let Some(pos) = args.iter().position(|a| a == "--audit-layout") {
+        if let Some(dpi) = val_after(args, "--dpi").and_then(|s| s.parse::<i32>().ok()) {
+            st2k_appkit::win::set_dpi_override(dpi);
+        }
+        let ok = args
+            .get(pos + 1)
+            .is_some_and(|out| run_audit_layout(hinst, dark, out));
+        std::process::exit(i32::from(!ok));
+    }
     if let Some(pos) = args.iter().position(|a| a == "--shot") {
         let ok = run_shot_mode(hinst, dark, args, pos);
         std::process::exit(i32::from(!ok));
     }
     false
+}
+
+/// The value after flag `name` in `args`.
+fn val_after<'a>(args: &'a [String], name: &str) -> Option<&'a String> {
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|p| args.get(p + 1))
 }
 
 /// The read-only diagnostic and file-verb CLI flags: `--explorer-selection`,

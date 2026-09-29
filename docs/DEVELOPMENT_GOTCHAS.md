@@ -1375,21 +1375,45 @@ checked what a person SEES, which is how issue #48 shipped (above) and how a swe
 found translated buttons cut off in a dozen windows, Olympus portraits shown sideways, and RAW
 files Explorer gets no thumbnail for while `st2k` renders them fine.
 
-- **Layout.** `ST2K_LAYOUT_AUDIT=<file>` makes every `--shot` capture record what
-  `win::audit_layout` finds: a control past its parent's edge, two visible siblings overlapping,
-  or a label/button whose text needs more room than it has (measured in the control's own font).
-  `tests/layout_audit.rs` runs every window in English at 96 dpi, Bulgarian at 192 and Filipino
-  at 144 on every push (~2 min); `scripts/check-layout.ps1` runs all 36 languages at 96/144/192
-  (~40 min) - run it after changing a layout or adding a translation. Fix a finding by sizing
-  the control to its text (`win::fit_button_w`, `text_width`, `wrapped_text_h`); shorten the
-  one translation only when the layout has no room. Settings' rows are placed by
-  `navrail/place.rs` AFTER the build - that is where its widths live, not in `LeftCol`.
+- **Layout.** `SageThumbs2K.exe --audit-layout <out.jsonl> [--dpi N]` builds every dialog and
+  every Settings page in one process and records what `win::audit_layout` finds: a control past
+  its parent's edge, two visible siblings overlapping, or a label/button whose text needs more
+  room than it has (measured in the control's own font). It writes one `audited` line per
+  window and fails on a window that did not build or showed nothing, so an empty run cannot
+  read as clean. `tests/layout_audit.rs` runs it for English at 96 dpi, Bulgarian at 192 and
+  Filipino at 144 on every push; `scripts/check-layout.ps1` runs all 36 languages at
+  96/144/192 (108 processes, 414 s on 2026-09-29) - run it after changing a layout or adding a
+  translation. Fix a finding by sizing the control to its text (`win::fit_button_w`,
+  `text_width`, `wrapped_text_h`); shorten the one translation only when the layout has no
+  room. Settings' rows are placed by `navrail/place.rs` AFTER the build - that is where its
+  widths live, not in `LeftCol`. A single `--shot` still audits its window when
+  `ST2K_LAYOUT_AUDIT=<file>` is set.
+- **Why the sweep used to take an hour, and why one process per window is the wrong shape.**
+  It ran 2,592 `--shot` processes, and eleven of every 24 rebuilt Settings from scratch. On this
+  box creating ONE child window costs ~8 ms and a combobox ~35 ms, even from a bare Python
+  script (a machine-wide cost outside the app, measured 2026-09-29), so Settings' ~150 controls
+  were 6-10 s per capture, most of it waiting. Building Settings once and switching pages, with
+  no PNG, is what brought it to minutes; both shapes report the identical finding for the same
+  planted defect (checked on Rename and a Settings button).
 - **Thumbnails through the shell.** `scripts/check-corpus-corners.ps1` (Windows PowerShell,
   `-STA`) asks `IShellItemImageFactory` - Explorer's own route, served by whichever handler
   Windows really picks - for every corpus sample built from `_base.png`, and checks the red,
   green and blue corner squares are in the right quarters (the badge sits on the fourth). It
   also renders each with `st2k` and, where ours lacks the corners, asks ImageMagick; one
-  contact sheet frames every sample green/red/orange/grey. It tests the INSTALLED build.
+  contact sheet frames every sample green/red/orange/grey. It tests the INSTALLED build, and
+  only the formats that build claims (`st2k formats --json`), so a dropped format's sample
+  (jbig, pes) is not reported as a shell failure.
+- **Some RAW files are thumbnailed by WINDOWS, not by us, and the first request fails.** With
+  Microsoft's Raw Image Extension installed, the thumbnail cache's own photo fast path
+  (`Thumbnails_FastExtract` in a Microsoft-Windows-Shell-Core ETW trace) enumerates the WIC
+  decoders, takes some RAW files' embedded preview from "Microsoft Raw Image Decoder", stores
+  it, and answers that first `GetImage` with `0x80070490` without ever calling our handler;
+  every later request is served from the cache (a 1024 px bitmap: not ours). Which files it
+  takes depends on what that decoder reports for the content, not on the extension, the
+  default app, our property handler, the timestamp or a content hash (each ruled out
+  2026-09-29; a real CR2/CRW and the generated NEF/RW2 go that way, a real ARW does not).
+  `WTS_EXTRACTDONOTCACHE` skips the fast path and reaches our handler. The corner check asks
+  twice and reports these as "drawn by Windows' own codec", not as failures.
 - **The shot harness must use the DPI the controls use.** A `--dpi` capture overrides
   `dpi_scale`/`gui_font_for`, not `GetDpiForWindow`; code that converts client px with
   `GetDpiForWindow` lays out right for users and wrong in a capture, which reads as a bug that

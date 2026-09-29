@@ -133,7 +133,7 @@ use localize::*;
 use menu_rows::*;
 use navrail::*;
 use resize::*;
-pub(crate) use shot::{run_shot, run_shot_gif, run_shot_search};
+pub(crate) use shot::{audit_every_page, run_shot, run_shot_gif, run_shot_search};
 use st2k_appkit::license::{format_unix_date, licence_reason_line};
 use sync::*;
 use tooltips::*;

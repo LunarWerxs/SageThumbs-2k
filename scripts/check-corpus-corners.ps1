@@ -124,7 +124,17 @@ New-Item -ItemType Directory -Force -Path $Out | Out-Null
 $scratch = Join-Path $Out 'copies'
 New-Item -ItemType Directory -Force -Path $scratch | Out-Null
 $rows = New-Object System.Collections.ArrayList
-$samples = Get-ChildItem -Path $Corpus -Filter $Filter -File | Sort-Object Name
+# Only the formats this build claims: a corpus sample of a format SageThumbs dropped (jbig, pes;
+# see `formats::REMOVED_EXTENSIONS`) has no handler for Explorer to call, and flagging it
+# as a shell failure sent a session chasing a bug that was a decision.
+$claimed = @{}
+# Assigned first: Windows PowerShell 5.1's ConvertFrom-Json hands a JSON array down the pipe
+# as ONE object, so a foreach straight over the call would see a single "format".
+$formatList = & $Exe formats --json | ConvertFrom-Json
+foreach ($fmt in $formatList) { $claimed[$fmt.ext] = $true }
+if ($claimed.Count -lt 2) { throw "$Exe formats --json listed no formats; nothing would be checked" }
+$samples = Get-ChildItem -Path $Corpus -Filter $Filter -File | Sort-Object Name |
+    Where-Object { $claimed.ContainsKey($_.Extension.TrimStart('.').ToLowerInvariant()) }
 foreach ($f in $samples) {
     $ext = $f.Extension
     $row = [ordered]@{ ext = $ext.TrimStart('.'); cli = ''; shell = ''; magick = ''; verdict = ''; tile = $null }
@@ -139,7 +149,18 @@ foreach ($f in $samples) {
     Copy-Item $f.FullName $copy
     $err = $null
     $shellBmp = [St2kCorners]::Shell($copy, $Size, [ref]$err)
-    if ($shellBmp) {
+    if (-not $shellBmp -and $err -eq '0x80070490') {
+        # "Element not found" on the FIRST request is Windows' own photo fast path, not us: with
+        # Microsoft's Raw Image Extension installed, the thumbnail cache takes some RAW files'
+        # embedded preview from that codec, stores it, and returns this for that one call without
+        # ever asking our handler. The next request is served from the cache (measured
+        # 2026-09-29 with a Shell-Core trace: FastExtract then SetThumbnail, no Extract).
+        $shellBmp = [St2kCorners]::Shell($copy, $Size, [ref]$err)
+        if ($shellBmp) { $row.shell = 'served by Windows RAW codec' }
+    }
+    if ($shellBmp -and $row.shell) {
+        $shellBmp.Save((Join-Path $Out "shell-$($row.ext).png"), [System.Drawing.Imaging.ImageFormat]::Png)
+    } elseif ($shellBmp) {
         $shellBmp.Save((Join-Path $Out "shell-$($row.ext).png"), [System.Drawing.Imaging.ImageFormat]::Png)
         $t = Test-Corners $shellBmp; $row.shell = if ($t.Ok) { 'ok' } else { $t.Detail }
     } else { $row.shell = "no thumbnail ($err)" }
@@ -164,6 +185,7 @@ foreach ($f in $samples) {
     }
 
     $row.verdict = if ($cliOk -and $row.shell -eq 'ok') { 'pass' }
+    elseif ($row.shell -eq 'served by Windows RAW codec') { 'Windows' }
     elseif ($cliOk) { 'FAIL' }
     elseif ($row.magick -eq 'ok') { 'DECODER' }
     else { 'not a corner sample' }
@@ -171,10 +193,12 @@ foreach ($f in $samples) {
     [void]$rows.Add([pscustomobject]$row)
 }
 Remove-Item $scratch -Recurse -Force -ErrorAction SilentlyContinue
+if (-not $rows.Count) { "corners: no sample matched '$Filter' in $Corpus among the formats this build claims"; exit 2 }
 
 # One contact sheet: every sample's shell thumbnail (its decoder render when the shell gave
 # none), framed green for pass, red for FAIL (the shell), orange for DECODER (ImageMagick sees
-# the corners and we do not), grey for not-a-corner-sample.
+# the corners and we do not), blue for Windows (its own RAW codec drew it), grey for
+# not-a-corner-sample.
 $tile = 112; $cols = 16; $label = 16
 $sheetRows = [Math]::Ceiling($rows.Count / $cols)
 $sheet = New-Object System.Drawing.Bitmap ($cols * $tile), ($sheetRows * ($tile + $label))
@@ -183,7 +207,7 @@ $g.Clear([System.Drawing.Color]::FromArgb(32, 32, 32))
 $font = New-Object System.Drawing.Font 'Segoe UI', 8
 for ($i = 0; $i -lt $rows.Count; $i++) {
     $r = $rows[$i]; $x = ($i % $cols) * $tile; $y = [Math]::Floor($i / $cols) * ($tile + $label)
-    $frame = switch ($r.verdict) { 'pass' { 'LimeGreen' } 'FAIL' { 'Red' } 'DECODER' { 'Orange' } default { 'Gray' } }
+    $frame = switch ($r.verdict) { 'pass' { 'LimeGreen' } 'FAIL' { 'Red' } 'DECODER' { 'Orange' } 'Windows' { 'SteelBlue' } default { 'Gray' } }
     $g.FillRectangle((New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromName($frame))), $x, $y, $tile, $tile + $label)
     if ($r.tile) {
         $s = [Math]::Min(($tile - 8) / $r.tile.Width, ($tile - 8) / $r.tile.Height)
@@ -199,7 +223,8 @@ $g.Dispose(); $sheet.Dispose()
 $rows | Select-Object ext, verdict, cli, shell, magick | Export-Csv (Join-Path $Out 'corners.csv') -NoTypeInformation
 $fail = @($rows | Where-Object { $_.verdict -eq 'FAIL' -or $_.verdict -eq 'DECODER' })
 $skip = @($rows | Where-Object verdict -eq 'not a corner sample')
-"corners: $($rows.Count) samples, $(@($rows | Where-Object verdict -eq 'pass').Count) pass, $($fail.Count) failing, $($skip.Count) not corner samples"
+$windows = @($rows | Where-Object verdict -eq 'Windows')
+"corners: $($rows.Count) samples, $(@($rows | Where-Object verdict -eq 'pass').Count) pass, $($fail.Count) failing, $($windows.Count) drawn by Windows' own codec, $($skip.Count) not corner samples"
 foreach ($r in $fail) { "  {0,-7} {1,-10} ours: {2}  shell: {3}" -f $r.verdict, $r.ext, $r.cli, $r.shell }
 "sheet: $sheetPath"
 if ($fail.Count) { exit 1 }

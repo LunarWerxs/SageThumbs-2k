@@ -208,10 +208,12 @@ pub unsafe fn settle_pump(hwnd: HWND, pump1: usize, pump2: usize, skip_final_rep
 /// `PrintWindow`-capture `hwnd` to a PNG at `out` and destroy it - the tail every headless
 /// `--shot` capture shares, whatever built the window.
 pub unsafe fn capture_and_destroy(hwnd: HWND, out: &str) -> bool {
-    // With `ST2K_LAYOUT_AUDIT` set, every capture also records what is cut off, overlapping
-    // or out of room in the window it shows (see `layoutaudit`).
-    super::layoutaudit::audit_to_env_file(hwnd);
-    let ok = super::window_shot::capture_hwnd_to_png(hwnd, std::path::Path::new(out));
+    // With `ST2K_LAYOUT_AUDIT` set (or under `--audit-layout`), every capture also records
+    // what is cut off, overlapping or out of room in the window it shows (see `layoutaudit`).
+    // An audit-only run needs where the controls are, not the pixels, so it skips the PNG.
+    super::layoutaudit::audit_window(hwnd);
+    let ok = super::layoutaudit::audit_only()
+        || super::window_shot::capture_hwnd_to_png(hwnd, std::path::Path::new(out));
     let _ = DestroyWindow(hwnd);
     ok
 }

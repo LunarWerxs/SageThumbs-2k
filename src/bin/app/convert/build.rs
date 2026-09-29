@@ -387,14 +387,22 @@ pub(super) unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
     );
     fill_combo(scombo, CV_WM_SCALES.iter().map(|pct| format!("{pct}%")));
 
+    // "Opacity:" as wide as its text, and its combo after it: the 90px it had cut the label
+    // off in Norwegian, Polish and Russian (layout audit, 2026-09-29). Its English width is
+    // the floor, and the combo never passes the right edge every other field ends at.
+    let op_x = CV_RESIZE_X + CV_RESIZE_INDENT + 208;
+    let op_w =
+        (st2k_appkit::win::text_width(hwnd, t("cv_watermark_opacity")) + CV_LABEL_TEXT_PAD).max(90);
+    let op_combo_x =
+        (op_x + op_w + 6).clamp(CV_RESIZE_X + CV_RESIZE_INDENT + 304, CV_FIELD_RIGHT - 80);
     ctl(
         hwnd,
         STATIC,
         t("cv_watermark_opacity"),
         lbl,
-        CV_RESIZE_X + CV_RESIZE_INDENT + 208,
+        op_x,
         CV_ROW_WATERMARK_OPTS + 3,
-        90,
+        op_combo_x - 6 - op_x,
         18,
         -1,
         hinst,
@@ -404,7 +412,7 @@ pub(super) unsafe fn build_convert_controls(hwnd: HWND, hinst: HINSTANCE) {
         COMBOBOX,
         "",
         WINDOW_STYLE(CBS_DROPDOWNLIST as u32) | WS_VSCROLL | WS_TABSTOP,
-        CV_RESIZE_X + CV_RESIZE_INDENT + 304,
+        op_combo_x,
         CV_ROW_WATERMARK_OPTS,
         80,
         160,

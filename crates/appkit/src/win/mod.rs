@@ -40,7 +40,10 @@ pub mod window_shot;
 pub use dacl::{create_mutex_user_only, with_user_only_dacl};
 pub use dialogs::{confirm_verbs, confirm_warning, dialog_tail, message_box, run_dialog};
 pub use iconfont::icon_font;
-pub use layoutaudit::{audit_layout, LayoutFinding};
+pub use layoutaudit::{
+    audit_layout, audit_window, record_audit_error, set_audit_shot, set_audit_sink, take_audited,
+    LayoutFinding,
+};
 pub use pickers::{
     desktop_dir, pick_folder, pick_open_file, pick_open_settings, pick_save_png,
     pick_save_settings, set_clipboard_text,

@@ -18,8 +18,9 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   window in all 36 languages at 100, 150 and 200% scaling found translated text clipped in a
   dozen places: the Screenshots and Right-click menu buttons in Settings, a Quick preview
   label, Sort into folders by tag, Files to folder, the Rename button, the Convert report's
-  Open folder, the Send feedback dialog and the About box. Those controls now size
-  themselves to their text, and a long label moves above its field instead of being cut.
+  Open folder, Convert's watermark Opacity label, the Send feedback dialog and the About box.
+  Those controls now size themselves to their text, and a long label moves above its field
+  instead of being cut.
 - **Olympus and Panasonic photos taken in portrait now show upright.** Their `.orf` and
   `.rw2` files mark the rotation the same way every other camera does, under a slightly
   different file header that SageThumbs did not recognise, so the rotation was ignored.

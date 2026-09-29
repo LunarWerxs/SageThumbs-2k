@@ -73,6 +73,30 @@ pub(crate) unsafe fn run_shot(hinst: HINSTANCE, dark: bool, out: &str, tab: usiz
     st2k_appkit::win::capture_and_destroy(hwnd, out)
 }
 
+/// `--audit-layout`'s Settings half: build the window ONCE and hand `each` every page in
+/// turn, laid out and settled, instead of building it again per page the way a `--shot --tab N`
+/// run has to (creating the window's ~150 controls is most of a capture's cost). Pixels do not
+/// matter here, so none of `settle_pane`'s repaints are needed; the first switch goes to the
+/// last page so that the switch to page 0 is a real transition too. Returns false when the
+/// window could not be built.
+pub(crate) unsafe fn audit_every_page(
+    hinst: HINSTANCE,
+    dark: bool,
+    mut each: impl FnMut(usize, HWND),
+) -> bool {
+    let Some(hwnd) = build_settings_shot_window(hinst, dark) else {
+        return false;
+    };
+    switch_category(hwnd, NCAT - 1);
+    for tab in 0..NCAT {
+        switch_category(hwnd, tab);
+        st2k_appkit::win::pump_msgs(2);
+        each(tab, hwnd);
+    }
+    let _ = DestroyWindow(hwnd);
+    true
+}
+
 /// `--shot … --search <needle>[!]` : drive the settings-wide search headlessly and capture
 /// the result — proof the feature works, not just that the box renders. Types `needle`
 /// into the search box (EN_CHANGE fires synchronously, populating the dropdown) and

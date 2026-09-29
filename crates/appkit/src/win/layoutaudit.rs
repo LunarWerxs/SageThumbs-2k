@@ -284,18 +284,97 @@ fn fmt_rect(r: RECT) -> String {
     format!("({},{})-({},{})", r.left, r.top, r.right, r.bottom)
 }
 
-/// Append `hwnd`'s findings to the file `ST2K_LAYOUT_AUDIT` names, one JSON object a line,
-/// each tagged with the window's title. A no-op when the variable is unset.
-pub(super) unsafe fn audit_to_env_file(hwnd: HWND) {
+/// Where a process that audits many windows in a row (`--audit-layout`) sends them, the shot
+/// the next audit is filed under, and how many controls the last one looked at.
+struct Sink {
+    path: std::path::PathBuf,
+    shot: String,
+    audited: Option<usize>,
+}
+
+static SINK: std::sync::Mutex<Option<Sink>> = std::sync::Mutex::new(None);
+
+fn with_sink<R>(f: impl FnOnce(&mut Option<Sink>) -> R) -> R {
+    f(&mut SINK.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// Send every audit in this process to `path`, and have captures skip their PNG: the audit
+/// reads where the controls are, not the pixels, and the encode is most of a capture's cost.
+pub fn set_audit_sink(path: &std::path::Path) {
+    with_sink(|s| {
+        *s = Some(Sink {
+            path: path.to_path_buf(),
+            shot: String::new(),
+            audited: None,
+        })
+    });
+}
+
+/// File the audits that follow under `shot` (`rename`, `settings:3`, ...).
+pub fn set_audit_shot(shot: &str) {
+    with_sink(|s| {
+        if let Some(s) = s {
+            s.shot = shot.to_string();
+            s.audited = None;
+        }
+    });
+}
+
+/// How many visible controls the audit since the last [`set_audit_shot`] looked at; `None`
+/// when no audit ran, which is how a run notices a window that never got built.
+pub fn take_audited() -> Option<usize> {
+    with_sink(|s| s.as_mut().and_then(|s| s.audited.take()))
+}
+
+/// Whether captures should skip their PNG (a sink is set).
+pub(super) fn audit_only() -> bool {
+    with_sink(|s| s.is_some())
+}
+
+/// Record that `shot` could not be audited, as `{"shot", "error"}`.
+pub fn record_audit_error(shot: &str, why: &str) {
+    if let Some(path) = with_sink(|s| s.as_ref().map(|s| s.path.clone())) {
+        let line = serde_json::json!({ "shot": shot, "error": why }).to_string() + "\n";
+        append(&path, &line);
+    }
+}
+
+fn append(path: &std::path::Path, text: &str) {
     use std::io::Write;
-    let Some(path) = std::env::var_os("ST2K_LAYOUT_AUDIT") else {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = file.write_all(text.as_bytes());
+    }
+}
+
+unsafe fn count_visible(parent: HWND) -> usize {
+    visible_children(parent)
+        .iter()
+        .map(|k| 1 + count_visible(k.hwnd))
+        .sum()
+}
+
+/// Audit `hwnd` and append what was found to the audit sink, or else to the file
+/// `ST2K_LAYOUT_AUDIT` names (a no-op when neither is set): one JSON object a line, a finding
+/// per problem (it has a `kind`), then one `{"shot", "window", "audited": N}` line saying how
+/// many visible controls were looked at, so a window that built empty cannot pass for clean.
+pub unsafe fn audit_window(hwnd: HWND) {
+    let dest = with_sink(|s| s.as_ref().map(|s| (s.path.clone(), s.shot.clone())));
+    let Some((path, shot)) =
+        dest.or_else(|| std::env::var_os("ST2K_LAYOUT_AUDIT").map(|p| (p.into(), String::new())))
+    else {
         return;
     };
     let window = text_of(hwnd);
-    let lines: String = audit_layout(hwnd)
+    let audited = count_visible(hwnd);
+    let mut lines: String = audit_layout(hwnd)
         .into_iter()
         .map(|f| {
             serde_json::json!({
+                "shot": shot,
                 "window": window,
                 "kind": f.kind,
                 "class": f.class,
@@ -307,13 +386,15 @@ pub(super) unsafe fn audit_to_env_file(hwnd: HWND) {
                 + "\n"
         })
         .collect();
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = file.write_all(lines.as_bytes());
-    }
+    lines += &(serde_json::json!({ "shot": shot, "window": window, "audited": audited })
+        .to_string()
+        + "\n");
+    append(&path, &lines);
+    with_sink(|s| {
+        if let Some(s) = s {
+            s.audited = Some(audited);
+        }
+    });
 }
 
 #[cfg(test)]
