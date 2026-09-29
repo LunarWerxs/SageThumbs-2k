@@ -15,6 +15,8 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   Codec packs such as K-Lite cannot fill the gap, because they plug into a different part of
   Windows than the one the preview plays through. The title bar now names what is missing, for
   example "No sound: DTS isn't supported by Windows".
+- **At very high display scaling (500%), the welcome window's descriptions no longer lose
+  their last line.**
 
 ## 3.4.1
 
