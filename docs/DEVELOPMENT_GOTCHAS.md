@@ -1347,3 +1347,23 @@ The instruments are banked in `scripts/refactor/`: `lift_layer.py` (moves a laye
 path, fixes include paths), `widen_pub.py` (makes `pub` exactly what the compiler says the layers
 above use), `private_mods.py` (keeps private every module nothing outside names) and
 `repath_layer.py` (the scripts, workflows and docs that spell the old `src/...` paths).
+
+## `run_dialog` sizes the WINDOW, but a dialog lays its controls out in the CLIENT area (issue #48, 2026-09-28)
+
+`run_dialog(class, wndproc, title, w, h, ..)` takes the size of the whole window, title bar
+and borders included, while every `ctl` / `label` / `edit_field` call places a control in
+client coordinates. The frame costs about 16 x 39 px at 96 dpi, and more with a bigger caption
+font or Windows' text-size setting. A dialog designed as "the controls need 404 px, so pass 404"
+loses its bottom row. Four shipped that way: About and Pre-build each got the frame added back by
+hand, Tags to folders anchored its buttons to the real client bottom (2026-07-04), and Rename with
+pattern went out with its Rename/Cancel row showing as a 5 px sliver until a user reported it.
+
+Since 2026-09-28 `run_dialog` (through `create_dialog`) calls `fit_to_controls` after
+`WM_CREATE`, and again after `WM_DPICHANGED` in `dialog_tail`: any control within 4 design px of
+the right or bottom edge, or past it, grows that axis until the far gap matches the near margin.
+A dialog that already fits does not move. The headless `create_shot_window` applies the same fit,
+so a `--shot` shows what the user gets. So: lay a new dialog out in client coordinates, pass
+roughly the window size, and let the fit take up the slack. Do not re-add per-dialog frame math,
+and capture the dialog with `--shot --window <name>` (add a mode if it has none; the three folder
+dialogs had none, which is how this one went unseen). `win::dialogs::tests` builds a dialog with
+Rename's exact old geometry and fails if any control ends up outside the client area.

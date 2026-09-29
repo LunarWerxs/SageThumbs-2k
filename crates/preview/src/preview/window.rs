@@ -337,7 +337,7 @@ pub(super) struct ViewerState {
     /// Whether the 500 ms follow-selection poll thread has been started (daemon mode only).
     pub(super) poll_started: Cell<bool>,
     // ----- Phase 4 viewer polish -----
-    /// Image zoom RELATIVE TO FIT: 1.0 = aspect-fit (the default). Wheel + double-click drive it.
+    /// Image zoom RELATIVE TO FIT: 1.0 = aspect-fit (the default). The wheel, Ctrl+=/- and Ctrl+0 drive it.
     pub(super) zoom: Cell<f64>,
     /// A full-resolution decode has been asked for and has not landed yet.
     ///
@@ -501,7 +501,7 @@ unsafe fn ensure_class(hinst: HINSTANCE) {
             hInstance: hinst,
             lpszClassName: VIEWER_CLASS,
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-            style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS, // CS_DBLCLKS: double-click to fit/100%
+            style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS, // CS_DBLCLKS: double-click for full screen / a word
             ..Default::default()
         };
         RegisterClassW(&wc);
