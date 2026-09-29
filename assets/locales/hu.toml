@@ -762,3 +762,9 @@ up_hist_no_expiry = "Nincs lejárati dátum (2 év megnyitás nélkül törlődi
 
 chk_cloud_thumbs = "Bélyegképek a OneDrive-ben és a felhőmappákban"
 tip_cloud_thumbs = "Egy szinkronizált felhőmappában (OneDrive, Synology Drive, Nextcloud…) a Windows a bélyegképeket csak a felhőalkalmazástól kéri, így e nélkül a SageThumbs ott soha nem kerül sorra. Bekapcsoláskor a letöltött fájlok ugyanazokat a bélyegképeket kapják, mint máshol, és a többi mindent, köztük a csak online fájlokat is, továbbra is a felhőalkalmazás kapja. Sosem tölt le semmit pusztán egy bélyegkép megrajzolására."
+
+preview_note_no_picture = "Állókép: a Windows nem támogatja a(z) {codec} kodeket"
+preview_note_no_picture_store = "Állókép: a(z) {codec} kodekhez a(z) {extension} kell a Microsoft Store-ból"
+preview_note_no_picture_unknown = "Állókép: a Windows nem tudja dekódolni ezt a videót"
+preview_note_no_sound = "Nincs hang: a Windows nem támogatja a(z) {codec} kodeket"
+preview_note_no_sound_unknown = "Nincs hang: a Windows nem tudja dekódolni ezt a hangot"

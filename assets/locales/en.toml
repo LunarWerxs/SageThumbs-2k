@@ -745,6 +745,11 @@ preview_outline_header = "CONTENTS"
 # Quick preview's placeholder while a file is still being decoded (audit F29 follow-up:
 # the guard test below found this one still hardcoded English).
 preview_loading = "Loading…"
+preview_note_no_picture = "Still frame: {codec} isn't supported by Windows"
+preview_note_no_picture_store = "Still frame: {codec} needs the {extension} from the Microsoft Store"
+preview_note_no_picture_unknown = "Still frame: Windows can't decode this video"
+preview_note_no_sound = "No sound: {codec} isn't supported by Windows"
+preview_note_no_sound_unknown = "No sound: Windows can't decode this audio"
 find_no_results = "No results"
 find_indexing = "Read {done}/{total} pages"
 find_no_text = "No text found"

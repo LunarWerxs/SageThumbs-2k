@@ -755,3 +755,9 @@ up_hist_no_expiry = "لا تاريخ انتهاء (يُحذف بعد سنتين 
 
 chk_cloud_thumbs = "المصغرات في OneDrive والمجلدات السحابية"
 tip_cloud_thumbs = "في مجلد سحابي متزامن (OneDrive، Synology Drive، Nextcloud…)، لا يطلب Windows المصغرات إلا من تطبيق السحابة، لذا بدون هذا لن تُتاح لـ SageThumbs فرصة هناك أبدًا. عند التفعيل: تحصل الملفات المنزَّلة على المصغرات ذاتها كما في أي مكان آخر، ويظل كل ما عداه، بما في ذلك الملفات المتاحة على الإنترنت فقط، يُمرَّر إلى تطبيق السحابة. لا يُنزَّل أي شيء أبدًا لمجرد رسم مصغرة."
+
+preview_note_no_picture = "إطار ثابت: {codec} غير مدعوم في Windows"
+preview_note_no_picture_store = "إطار ثابت: {codec} يحتاج إلى {extension} من Microsoft Store"
+preview_note_no_picture_unknown = "إطار ثابت: لا يستطيع Windows فك ترميز هذا الفيديو"
+preview_note_no_sound = "لا صوت: {codec} غير مدعوم في Windows"
+preview_note_no_sound_unknown = "لا صوت: لا يستطيع Windows فك ترميز هذا الصوت"

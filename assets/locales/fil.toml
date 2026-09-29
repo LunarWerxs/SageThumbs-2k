@@ -751,3 +751,9 @@ up_hist_no_expiry = "Walang petsa ng pag-expire (aalisin pagkatapos ng 2 taon na
 
 chk_cloud_thumbs = "Mga thumbnail sa OneDrive at mga cloud folder"
 tip_cloud_thumbs = "Sa isang naka-sync na cloud folder (OneDrive, Synology Drive, Nextcloud…), tanging ang cloud app ang hinihingian ng Windows ng mga thumbnail, kaya kung wala nito, hindi kailanman nagkakaroon ng pagkakataon ang SageThumbs doon. Naka-on: ang mga na-download na file ay nakakakuha ng parehong mga thumbnail tulad ng kahit saan pa man, at ang lahat ng iba pa, kabilang ang mga online-only na file, ay ipinapasa pa rin sa cloud app. Walang dina-download kailanman para lamang gumuhit ng thumbnail."
+
+preview_note_no_picture = "Nakatigil na frame: hindi sinusuportahan ng Windows ang {codec}"
+preview_note_no_picture_store = "Nakatigil na frame: kailangan ng {codec} ang {extension} mula sa Microsoft Store"
+preview_note_no_picture_unknown = "Nakatigil na frame: hindi ma-decode ng Windows ang video na ito"
+preview_note_no_sound = "Walang tunog: hindi sinusuportahan ng Windows ang {codec}"
+preview_note_no_sound_unknown = "Walang tunog: hindi ma-decode ng Windows ang audio na ito"

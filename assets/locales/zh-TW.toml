@@ -758,3 +758,9 @@ up_hist_no_expiry = "無到期日（2 年無人開啟後移除）"
 
 chk_cloud_thumbs = "OneDrive 及雲端資料夾中的縮圖"
 tip_cloud_thumbs = "在同步的雲端資料夾（OneDrive、Synology Drive、Nextcloud…）中，Windows 只會向雲端應用程式索取縮圖，所以未開啟此選項時，SageThumbs 在那裡便不會被使用。開啟狀況：已下載的檔案會取得與其它位置相同的縮圖，其餘檔案（包括僅存於線上）仍會交給雲端應用程式處理。絕對不會為了繪製縮圖而下載任何檔案。"
+
+preview_note_no_picture = "靜態畫面：Windows 不支援 {codec}"
+preview_note_no_picture_store = "靜態畫面：{codec} 需要從 Microsoft Store 取得 {extension}"
+preview_note_no_picture_unknown = "靜態畫面：Windows 無法解碼這段影片"
+preview_note_no_sound = "無聲：Windows 不支援 {codec}"
+preview_note_no_sound_unknown = "無聲：Windows 無法解碼這段音訊"

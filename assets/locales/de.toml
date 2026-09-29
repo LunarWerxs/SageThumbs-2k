@@ -755,3 +755,9 @@ up_hist_no_expiry = "Kein Ablaufdatum (nach 2 Jahren ohne Öffnen entfernt)"
 
 chk_cloud_thumbs = "Miniaturansichten in OneDrive- und Cloud-Ordnern"
 tip_cloud_thumbs = "In einem synchronisierten Cloud-Ordner (OneDrive, Synology Drive, Nextcloud…) fragt Windows nur die Cloud-App nach Miniaturansichten, ohne diese Option kommt SageThumbs dort also nie zum Zug. Eingeschaltet bekommen heruntergeladene Dateien dieselben Miniaturansichten wie überall sonst, und alles andere, auch reine Online-Dateien, geht weiterhin an die Cloud-App. Für eine Miniaturansicht wird nie etwas heruntergeladen."
+
+preview_note_no_picture = "Standbild: {codec} wird von Windows nicht unterstützt"
+preview_note_no_picture_store = "Standbild: {codec} benötigt die {extension} aus dem Microsoft Store"
+preview_note_no_picture_unknown = "Standbild: Windows kann dieses Video nicht decodieren"
+preview_note_no_sound = "Kein Ton: {codec} wird von Windows nicht unterstützt"
+preview_note_no_sound_unknown = "Kein Ton: Windows kann diesen Ton nicht decodieren"

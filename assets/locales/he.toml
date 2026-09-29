@@ -760,3 +760,9 @@ up_hist_no_expiry = "אין תאריך תפוגה (נמחק לאחר שנתיי�
 
 chk_cloud_thumbs = "תמונות ממוזערות ב-OneDrive ובתיקיות ענן"
 tip_cloud_thumbs = "בתיקיית ענן מסונכרנת (OneDrive, Synology Drive, Nextcloud…), Windows פונה לגבי תמונות הממוזערות רק לאפליקציית הענן, וללא אפשרות זו SageThumbs קולט שם אפילו לא מהלך. בפעולה: לקבצים הורדות מתווספות אלה התמונות הממוזערות כמו בכל מקום אחר, וכל השאר — כולל קבצים הזמינים ברשת בלבד — ימשיך להועבר לאפליקציית הענן. לא נורד קבצים רק כדי להציג ממוזערת."
+
+preview_note_no_picture = "תמונה סטטית: {codec} אינו נתמך ב-Windows"
+preview_note_no_picture_store = "תמונה סטטית: {codec} צריך את {extension} מ-Microsoft Store"
+preview_note_no_picture_unknown = "תמונה סטטית: Windows לא יכול לפענח את הווידאו הזה"
+preview_note_no_sound = "אין קול: {codec} אינו נתמך ב-Windows"
+preview_note_no_sound_unknown = "אין קול: Windows לא יכול לפענח את השמע הזה"

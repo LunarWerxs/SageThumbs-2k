@@ -15,6 +15,9 @@
 
 use std::io::{Read, Seek};
 
+mod playable;
+pub use playable::{missing_decoders, MissingDecoder};
+
 use windows::core::GUID;
 use windows::Win32::Media::MediaFoundation::{
     MFMediaType_Video, MFTEnumEx, MFVideoFormat_AV1, MFVideoFormat_H264, MFVideoFormat_HEVC,

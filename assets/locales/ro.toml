@@ -756,3 +756,9 @@ up_hist_no_expiry = "Fără dată de expirare (se elimină după 2 ani fără a 
 
 chk_cloud_thumbs = "Miniaturi în OneDrive și foldere cloud"
 tip_cloud_thumbs = "Pentru folderele cloud sincronizate (OneDrive, Synology Drive, Nextcloud…), Windows cere miniaturile doar aplicației cloud, așa că fără această opțiune SageThumbs nu intervine niciodată acolo. Activat: fișierele descărcate primesc aceleași miniaturi ca oriunde, iar tot restul, inclusiv fișierele disponibile doar online, e tot predat aplicației cloud. Nimic nu se descarcă doar pentru a desena o miniatură."
+
+preview_note_no_picture = "Cadru fix: {codec} nu este suportat de Windows"
+preview_note_no_picture_store = "Cadru fix: {codec} are nevoie de {extension} din Microsoft Store"
+preview_note_no_picture_unknown = "Cadru fix: Windows nu poate decoda acest videoclip"
+preview_note_no_sound = "Fără sunet: {codec} nu este suportat de Windows"
+preview_note_no_sound_unknown = "Fără sunet: Windows nu poate decoda acest audio"

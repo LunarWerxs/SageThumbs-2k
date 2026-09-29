@@ -760,3 +760,9 @@ up_hist_no_expiry = "Bitiş tarihi yok (2 yıl açılmazsa kaldırılır)"
 
 chk_cloud_thumbs = "OneDrive ve bulut klasörlerinde küçük resimler"
 tip_cloud_thumbs = "Senkronize bir bulut klasöründe (OneDrive, Synology Drive, Nextcloud…) Windows küçük resimleri yalnızca bulut uygulamasından ister; bu kapalıyken SageThumbs oraya hiç müdahale edemez. Açıkken: indirilmiş dosyalar her yerdekiyle aynı küçük resimler alır, geri kalanı (yalnızca çevrimiçi dosyalar dahil) yine bulut uygulamasına bırakılır. Küçük resim çizmek için hiçbir dosya asla indirilmez."
+
+preview_note_no_picture = "Sabit kare: {codec} Windows tarafından desteklenmiyor"
+preview_note_no_picture_store = "Sabit kare: {codec}, Microsoft Store’dan {extension} gerektiriyor"
+preview_note_no_picture_unknown = "Sabit kare: Windows bu videoyu çözemiyor"
+preview_note_no_sound = "Ses yok: {codec} Windows tarafından desteklenmiyor"
+preview_note_no_sound_unknown = "Ses yok: Windows bu sesi çözemiyor"

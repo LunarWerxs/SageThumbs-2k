@@ -753,3 +753,9 @@ up_hist_no_expiry = "Bez dátumu vypršania (odstráni sa po 2 rokoch bez otvore
 
 chk_cloud_thumbs = "Miniatúry v OneDrive a cloudových priečinkoch"
 tip_cloud_thumbs = "V synchronizovanom cloudovom priečinku (OneDrive, Synology Drive, Nextcloud…) sa Windows na miniatúry pýta len cloudovej aplikácie, takže bez tejto voľby sa SageThumbs v takomto priečinku vôbec nedostane na rad. Keď je zapnuté: stiahnuté súbory dostanú rovnaké miniatúry ako kdekokoľvek inde a všetko ostatné, vrátane iba online súborov, sa stále odovzdáva cloudovej aplikácii. Nikdy sa nič nestiahne len preto, aby sa nakreslila miniatúra."
+
+preview_note_no_picture = "Statická snímka: {codec} nie je podporovaný systémom Windows"
+preview_note_no_picture_store = "Statická snímka: {codec} vyžaduje {extension} z Microsoft Store"
+preview_note_no_picture_unknown = "Statická snímka: Windows nedokáže dekódovať toto video"
+preview_note_no_sound = "Bez zvuku: {codec} nie je podporovaný systémom Windows"
+preview_note_no_sound_unknown = "Bez zvuku: Windows nedokáže dekódovať tento zvuk"

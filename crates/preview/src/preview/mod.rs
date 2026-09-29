@@ -29,6 +29,7 @@ mod loader;
 mod mailmsg;
 mod markdown;
 mod mdhtml;
+mod medianote;
 mod paint;
 mod pdfview;
 mod print;

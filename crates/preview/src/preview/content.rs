@@ -40,7 +40,7 @@ mod decodepath;
 pub(super) use bench::{
     bench_decode_cached, bench_decode_uncached, bench_make_render, bench_scaled_decode, decode_sync,
 };
-pub(super) use decodejobs::{spawn_decode, spawn_decode_full};
+pub(super) use decodejobs::{post_boxed, spawn_decode, spawn_decode_full};
 use decodepath::*;
 pub(super) use decodepath::{spawn_decode_pdf, spawn_md_img};
 

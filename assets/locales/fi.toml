@@ -751,3 +751,9 @@ up_hist_no_expiry = "Ei vanhenemispäivää (poistetaan, jos sitä ei avata 2 vu
 
 chk_cloud_thumbs = "Pienoiskuvat OneDrivessä ja pilvikansioissa"
 tip_cloud_thumbs = "Synkronoidussa pilvisijassa (OneDrive, Synology Drive, Nextcloud…) Windows pyytää pienoiskuvia vain pilvikäytöltä, joten ilman tätä vaihtoehtoa SageThumbs ei saa siellä vuoroaan. Käytössä: ladatut tiedostot saavat samoja pienoiskuvia kuin muualtakin, ja kaikki muu, mukaan lukien vain verkossa olevat tiedostot, siirretään pilvikäytölle. Mikään ei aina ladata pelkästään piirtääkseen pienoiskuvan."
+
+preview_note_no_picture = "Pysäytyskuva: Windows ei tue koodekkia {codec}"
+preview_note_no_picture_store = "Pysäytyskuva: {codec} vaatii Microsoft Storesta saatavan {extension}"
+preview_note_no_picture_unknown = "Pysäytyskuva: Windows ei pysty purkamaan tätä videota"
+preview_note_no_sound = "Ei ääntä: Windows ei tue koodekkia {codec}"
+preview_note_no_sound_unknown = "Ei ääntä: Windows ei pysty purkamaan tätä ääniraitaa"

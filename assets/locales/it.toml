@@ -761,3 +761,9 @@ up_hist_no_expiry = "Nessuna data di scadenza (rimosso dopo 2 anni senza apertur
 
 chk_cloud_thumbs = "Miniature in OneDrive e cartelle cloud"
 tip_cloud_thumbs = "In una cartella cloud sincronizzata (OneDrive, Synology Drive, Nextcloud…), Windows chiede le miniature solo all'app cloud, quindi, senza questa opzione, SageThumbs non interviene mai lì. Attivata: i file scaricati ricevono le stesse miniature come altrove, e tutto il resto, inclusi i file solo online, viene comunque passato all'app cloud. Niente viene mai scaricato solo per creare una miniatura."
+
+preview_note_no_picture = "Fotogramma: {codec} non è supportato da Windows"
+preview_note_no_picture_store = "Fotogramma: {codec} richiede {extension} dal Microsoft Store"
+preview_note_no_picture_unknown = "Fotogramma: Windows non riesce a decodificare questo video"
+preview_note_no_sound = "Senza audio: {codec} non è supportato da Windows"
+preview_note_no_sound_unknown = "Senza audio: Windows non riesce a decodificare questo audio"

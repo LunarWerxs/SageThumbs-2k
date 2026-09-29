@@ -755,3 +755,9 @@ up_hist_no_expiry = "ไม่มีวันหมดอายุ (ลบหล
 
 chk_cloud_thumbs = "ภาพขนาดย่อใน OneDrive และโฟลเดอร์คลาวด์"
 tip_cloud_thumbs = "ในโฟลเดอร์คลาวด์ที่ซิงค์ (OneDrive, Synology Drive, Nextcloud…) Windows จะขอภาพขนาดย่อจากแอปคลาวด์เท่านั้น จึงไม่มีโอกาสของ SageThumbs ที่นั่น เมื่อเปิด: ไฟล์ที่ดาวน์โหลดแล้วจะได้ภาพขนาดย่อเหมือนในโฟลเดอร์อื่น และทุกอย่างอื่น รวมถึงไฟล์ที่มีเฉพาะออนไลน์อยู่ จะถูกส่งต่อให้แอปคลาวด์ตามเดิม ไม่มีการดาวน์โหลดไฟล์只是为了ทำภาพขนาดย่อเลย"
+
+preview_note_no_picture = "ภาพนิ่ง: Windows ไม่รองรับ {codec}"
+preview_note_no_picture_store = "ภาพนิ่ง: {codec} ต้องใช้ {extension} จาก Microsoft Store"
+preview_note_no_picture_unknown = "ภาพนิ่ง: Windows ถอดรหัสวิดีโอนี้ไม่ได้"
+preview_note_no_sound = "ไม่มีเสียง: Windows ไม่รองรับ {codec}"
+preview_note_no_sound_unknown = "ไม่มีเสียง: Windows ถอดรหัสเสียงนี้ไม่ได้"

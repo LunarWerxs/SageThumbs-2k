@@ -62,6 +62,10 @@ pub(super) unsafe fn load_sync_play_video(
 ) {
     st.kind.set(ContentKind::Video);
     show_offscreen(hwnd, st);
+    // The headless capture pumps only briefly, so it asks synchronously what the live viewer
+    // asks on a worker (`medianote::spawn`).
+    *st.media_note.borrow_mut() =
+        super::super::medianote::note_for(&st2k_codecs::vcodec::missing_decoders(path));
     if let Some(p) = super::super::video::create(
         hwnd,
         hwnd,

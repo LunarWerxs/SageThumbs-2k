@@ -755,3 +755,9 @@ up_hist_no_expiry = "Bez data vypršení (odstraní se po 2 letech bez otevřen�
 
 chk_cloud_thumbs = "Miniatury v OneDrive a cloudových složkách"
 tip_cloud_thumbs = "V synchronizované cloudové složce (OneDrive, Synology Drive, Nextcloud…) se Windows na miniatury ptají jen cloudové aplikace, takže bez tohoto přepínače se SageThumbs tam nikdy nedostane k jednání. Po zapnutí: stažené soubory dostanou stejné miniatury jako jinde a vše ostatní, včetně online-only souborů, se stejně předá cloudové aplikaci. Nic se nikdy nestáhne jen kvůli jedné miniatuře."
+
+preview_note_no_picture = "Nehybný snímek: {codec} není v systému Windows podporován"
+preview_note_no_picture_store = "Nehybný snímek: {codec} vyžaduje {extension} z Microsoft Store"
+preview_note_no_picture_unknown = "Nehybný snímek: toto video nelze v systému Windows dekódovat"
+preview_note_no_sound = "Bez zvuku: {codec} není v systému Windows podporován"
+preview_note_no_sound_unknown = "Bez zvuku: tento zvuk nelze v systému Windows dekódovat"

@@ -761,3 +761,9 @@ up_hist_no_expiry = "Brak daty wygaśnięcia (usuwane po 2 latach bez otwarcia)"
 
 chk_cloud_thumbs = "Miniatury w OneDrive i folderach chmurowych"
 tip_cloud_thumbs = "W zsynchronizowanym folderze chmurowym (OneDrive, Synology Drive, Nextcloud…) Windows pyta o miniatury tylko aplikację chmury, więc bez tej opcji SageThumbs tam nie zadziała. Po włączeniu: pobrane pliki dostają te same miniatury co wszędzie indziej, a wszystko inne, w tym pliki tylko online, jest nadal przekazywane aplikacji chmury. Nic nigdy nie jest pobierane tylko po to, by narysować miniaturę."
+
+preview_note_no_picture = "Klatka statyczna: {codec} nie jest obsługiwany przez Windows"
+preview_note_no_picture_store = "Klatka statyczna: {codec} wymaga {extension} z Microsoft Store"
+preview_note_no_picture_unknown = "Klatka statyczna: Windows nie może zdekodować tego wideo"
+preview_note_no_sound = "Brak dźwięku: {codec} nie jest obsługiwany przez Windows"
+preview_note_no_sound_unknown = "Brak dźwięku: Windows nie może zdekodować tego dźwięku"

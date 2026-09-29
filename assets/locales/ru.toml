@@ -755,3 +755,9 @@ up_hist_no_expiry = "Без срока действия (удаляется че
 
 chk_cloud_thumbs = "Эскизы в OneDrive и облачных папках"
 tip_cloud_thumbs = "В синхронизированной облачной папке (OneDrive, Synology Drive, Nextcloud…) Windows запрашивает эскизы только у облачного приложения, поэтому без этой опции SageThumbs там не подключается. Вкл.: скачанные файлы получают такие же эскизы, как и везде else, а всё остальное — в том числе онлайн-файлы — по-прежнему передаётся облачному приложению. Ничего не скачивается только ради эскиза."
+
+preview_note_no_picture = "Стоп-кадр: Windows не поддерживает {codec}"
+preview_note_no_picture_store = "Стоп-кадр: для {codec} нужен {extension} из Microsoft Store"
+preview_note_no_picture_unknown = "Стоп-кадр: Windows не может декодировать это видео"
+preview_note_no_sound = "Нет звука: Windows не поддерживает {codec}"
+preview_note_no_sound_unknown = "Нет звука: Windows не может декодировать это аудио"

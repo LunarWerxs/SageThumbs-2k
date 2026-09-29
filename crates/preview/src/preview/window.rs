@@ -59,6 +59,9 @@ pub(super) const WM_APP_SWITCH: u32 = WM_APP + 2;
 /// used to run synchronously in `load()` before the window could even show: the extension
 /// sniff, archive listing, DB/mail markdown and the text/markdown read.
 pub(super) const WM_APP_LOAD_RESOLVED: u32 = WM_APP + 14;
+/// Which stream of the video on screen Windows cannot decode (`WM_APP + 15`), from
+/// [`super::medianote::spawn`]; LPARAM = `Box<(gen, String)>`, the caption note.
+pub(super) const WM_APP_MEDIANOTE: u32 = WM_APP + 15;
 /// Timer that shows the window even if the decode hasn't finished (so we never wait hidden).
 pub(super) const SHOW_TIMER_ID: usize = 1;
 /// Ticks ~4x/sec while a video plays to repaint the scrub position.
@@ -287,6 +290,9 @@ pub(super) struct ViewerState {
     /// PDF page navigation: current 0-based page + total page count (0 = not a multi-page PDF).
     pub(super) pdf_page: Cell<u32>,
     pub(super) pdf_pages: Cell<u32>,
+    /// Why the video on screen plays without sound or only as a still frame (issue #49), shown
+    /// in the caption; `None` when every stream decodes. See `preview::medianote`.
+    pub(super) media_note: RefCell<Option<String>>,
     /// The open document behind CONTINUOUS scrolling, when this file is a multi-page PDF whose
     /// session opened. `None` for everything else, and for a PDF whose session failed, which is
     /// what makes the fallback to single-page paging automatic rather than a separate mode
@@ -564,6 +570,7 @@ pub(super) unsafe fn create_viewer(
         cur_frame: Cell::new(0),
         pdf_page: Cell::new(0),
         pdf_pages: Cell::new(0),
+        media_note: RefCell::new(None),
         pdf_doc: RefCell::new(None),
         card: RefCell::new(None),
         text: RefCell::new(None),

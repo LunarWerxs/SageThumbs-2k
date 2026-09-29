@@ -87,11 +87,7 @@ pub(super) unsafe fn on_app_msg(
             LRESULT(0)
         }
         WM_APP_MDIMG => on_app_mdimg(hwnd, lparam),
-        WM_APP_PDFDOC => on_app_pdfdoc(hwnd, lparam),
-        WM_APP_PDFTILE => on_app_pdftile(hwnd, lparam),
-        WM_APP_PDFSTRIP => on_app_pdfstrip(hwnd, lparam),
-        WM_APP_PDFTEXT => on_app_pdftext(hwnd, lparam),
-        WM_APP_PDFINFO => on_app_pdfinfo(hwnd, lparam),
+        WM_APP_MEDIANOTE => super::super::medianote::on_note(hwnd, lparam),
         m if m == super::super::video::WM_APP_VIDEO => {
             on_video_event(hwnd, wparam.0 as u32);
             LRESULT(0)
@@ -101,6 +97,19 @@ pub(super) unsafe fn on_app_msg(
             on_app_load_resolved(hwnd, lparam);
             LRESULT(0)
         }
+        _ => return on_pdf_msg(hwnd, msg, lparam),
+    })
+}
+
+/// The PDF workers' completions (document, tiles, strip thumbnails, page text, page count).
+/// `None` when `msg` isn't one of these.
+unsafe fn on_pdf_msg(hwnd: HWND, msg: u32, lparam: LPARAM) -> Option<LRESULT> {
+    Some(match msg {
+        WM_APP_PDFDOC => on_app_pdfdoc(hwnd, lparam),
+        WM_APP_PDFTILE => on_app_pdftile(hwnd, lparam),
+        WM_APP_PDFSTRIP => on_app_pdfstrip(hwnd, lparam),
+        WM_APP_PDFTEXT => on_app_pdftext(hwnd, lparam),
+        WM_APP_PDFINFO => on_app_pdfinfo(hwnd, lparam),
         _ => return None,
     })
 }

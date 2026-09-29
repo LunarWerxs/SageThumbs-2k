@@ -149,6 +149,7 @@ unsafe fn reset_viewer_state(hwnd: HWND, st: &ViewerState, path: &str) -> u64 {
     *st.text.borrow_mut() = None;
     *st.video.borrow_mut() = None; // stop + tear down any previous video player
     st.video_dims.set(None); // the next clip re-reports its own size at LOADEDMETADATA
+    *st.media_note.borrow_mut() = None; // the next clip is probed afresh
     st.arrow_nav.set(st2k_base::settings::preview_arrow_nav());
     #[cfg(feature = "html-preview")]
     {
@@ -251,6 +252,9 @@ unsafe fn dispatch_video_kind(hwnd: HWND, st: &ViewerState, path: &str, gen: u64
     st.kind.set(ContentKind::Video);
     ensure_shown(hwnd);
     let cr = video_rect(hwnd); // render child leaves room for the scrub strip
+                               // Name any stream Windows cannot decode, whichever way playback goes (issue #49): the
+                               // engine plays a DTS track in silence and says nothing.
+    super::medianote::spawn(hwnd, path.to_string(), gen);
     match super::video::create(hwnd, hwnd, &cr, st.hinst, path, is_audio(path)) {
         Some(p) => {
             *st.video.borrow_mut() = Some(p);

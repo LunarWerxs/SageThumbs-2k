@@ -68,14 +68,24 @@ pub(super) unsafe fn paint_caption_title(
     } else {
         0
     };
+    let title_left = st2k_appkit::win::dpi_scale(hwnd, PAD + 4);
+    let note_w = paint_media_note(
+        hwnd,
+        hdc,
+        st,
+        (title_left, title_right - label_w),
+        caption_rc.bottom,
+        subtle,
+    );
+    SetTextColor(hdc, COLORREF(text));
     let mut title = file_leaf_name(st)
         .unwrap_or_default()
         .encode_utf16()
         .collect::<Vec<u16>>();
     let mut trc = RECT {
-        left: st2k_appkit::win::dpi_scale(hwnd, PAD + 4),
+        left: title_left,
         top: 0,
-        right: title_right - label_w,
+        right: title_right - label_w - note_w,
         bottom: caption_rc.bottom,
     };
     draw_text(
@@ -101,6 +111,49 @@ pub(super) unsafe fn paint_caption_title(
         );
     }
     SelectObject(hdc, oldf);
+}
+
+/// The caption note on why a video plays silently or as a still frame (issue #49), right-aligned
+/// against `right` in the `subtle` colour. It takes up to two thirds of the room between `left`
+/// and `right` (the file name is already in the window's title; this is the news), and every
+/// string leads with the codec so an ellipsis only ever eats the end. Returns the width it took,
+/// gap included; 0 with no note.
+unsafe fn paint_media_note(
+    hwnd: HWND,
+    hdc: HDC,
+    st: &ViewerState,
+    (left, right): (i32, i32),
+    bottom: i32,
+    subtle: u32,
+) -> i32 {
+    use windows::Win32::Foundation::SIZE;
+    use windows::Win32::Graphics::Gdi::GetTextExtentPoint32W;
+    let Some(mut note) = st
+        .media_note
+        .borrow()
+        .as_ref()
+        .map(|n| n.encode_utf16().collect::<Vec<u16>>())
+    else {
+        return 0;
+    };
+    let mut size = SIZE::default();
+    let _ = GetTextExtentPoint32W(hdc, &note, &mut size);
+    let gap = st2k_appkit::win::dpi_scale(hwnd, 12);
+    let w = size.cx.min((right - left) * 2 / 3).max(0);
+    SetTextColor(hdc, COLORREF(subtle));
+    let mut nr = RECT {
+        left: right - w,
+        top: 0,
+        right,
+        bottom,
+    };
+    draw_text(
+        hdc,
+        &mut note,
+        &mut nr,
+        DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS,
+    );
+    w + gap
 }
 
 /// Toolbar glyphs. `buttons` is laid out right-to-left, but `st.hot` is a BTNS index (what

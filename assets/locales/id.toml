@@ -761,3 +761,9 @@ up_hist_no_expiry = "Tanpa tanggal kedaluwarsa (dihapus setelah 2 tahun tidak di
 
 chk_cloud_thumbs = "Thumbnail di OneDrive & folder cloud"
 tip_cloud_thumbs = "Di folder cloud yang tersinkron (OneDrive, Synology Drive, Nextcloud…), Windows hanya meminta thumbnail ke aplikasi cloud, jadi tanpa ini SageThumbs tidak pernah mendapat giliran di sana. Aktif: file yang diunduh mendapat thumbnail yang sama seperti di tempat lain, dan sisanya, termasuk file yang hanya online, tetap dilewatkan ke aplikasi cloud. Tidak ada yang diunduh hanya untuk menampilkan thumbnail."
+
+preview_note_no_picture = "Bingkai diam: {codec} tidak didukung oleh Windows"
+preview_note_no_picture_store = "Bingkai diam: {codec} memerlukan {extension} dari Microsoft Store"
+preview_note_no_picture_unknown = "Bingkai diam: Windows tidak dapat mendekode video ini"
+preview_note_no_sound = "Tanpa suara: {codec} tidak didukung oleh Windows"
+preview_note_no_sound_unknown = "Tanpa suara: Windows tidak dapat mendekode audio ini"

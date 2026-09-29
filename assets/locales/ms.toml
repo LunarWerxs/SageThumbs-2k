@@ -759,3 +759,9 @@ up_hist_no_expiry = "Tiada tarikh luput (dibuang selepas 2 tahun tidak dibuka)"
 
 chk_cloud_thumbs = "Thumbnail dalam OneDrive & folder awan"
 tip_cloud_thumbs = "Dalam folder awan tersinkron (OneDrive, Synology Drive, Nextcloud…), Windows minta thumbnail daripada aplikasi awan sahaja — jadi tanpa ini SageThumbs tidak pernah dapat giliran di sana. On: fail yang dimuat turun dapat thumbnail yang sama seperti mana-mana tempat lain, dan semua yang lain, termasuk fail dalam talian sahaja, masih diserahkan kepada aplikasi awan. Tiada apa-apa dimuat turun hanya untuk lukis thumbnail."
+
+preview_note_no_picture = "Bingkai pegun: {codec} tidak disokong oleh Windows"
+preview_note_no_picture_store = "Bingkai pegun: {codec} memerlukan {extension} daripada Microsoft Store"
+preview_note_no_picture_unknown = "Bingkai pegun: Windows tidak dapat menyahkod video ini"
+preview_note_no_sound = "Tiada bunyi: {codec} tidak disokong oleh Windows"
+preview_note_no_sound_unknown = "Tiada bunyi: Windows tidak dapat menyahkod audio ini"

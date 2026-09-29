@@ -7,6 +7,15 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## Unreleased
+
+- **The Quick preview now says why a video has no sound or no picture** (#49). Windows has no
+  decoder for DTS sound at all, and HEVC, AV1 and VP9 video need extensions from the Microsoft
+  Store, so such a video used to play in silence or show a still frame with no explanation.
+  Codec packs such as K-Lite cannot fill the gap, because they plug into a different part of
+  Windows than the one the preview plays through. The title bar now names what is missing, for
+  example "No sound: DTS isn't supported by Windows".
+
 ## 3.4.1
 
 **TL;DR**

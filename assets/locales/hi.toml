@@ -760,3 +760,9 @@ up_hist_no_expiry = "कोई समाप्ति तिथि नहीं (
 
 chk_cloud_thumbs = "OneDrive और क्लाउड फ़ोल्डरों में थंबनेल"
 tip_cloud_thumbs = "सिंकड क्लाउड फ़ोल्डर (OneDrive, Synology Drive, Nextcloud…) में Windows थंबनेल के लिए सिर्फ़ क्लाउड ऐप से ही पूछता है, इसलिए यह विकल्प बंद रहने पर SageThumbs का वहाँ बारी कभी नहीं आती। चालू करने पर: डाउनलोड हो चुकी फ़ाइलों को यहीं जैसा वही थंबनेल मिलता है, और बाकी सब (सिर्फ़-ऑनलाइन फ़ाइलें समेत) अभी भी क्लाउड ऐप को ही दिया जाता है। सिर्फ़ थंबनेल दिखाने के लिए कुछ भी डाउनलोड नहीं होता।"
+
+preview_note_no_picture = "स्थिर फ़्रेम: Windows {codec} का समर्थन नहीं करता"
+preview_note_no_picture_store = "स्थिर फ़्रेम: {codec} के लिए Microsoft Store से {extension} चाहिए"
+preview_note_no_picture_unknown = "स्थिर फ़्रेम: Windows इस वीडियो को डिकोड नहीं कर सकता"
+preview_note_no_sound = "आवाज़ नहीं: Windows {codec} का समर्थन नहीं करता"
+preview_note_no_sound_unknown = "आवाज़ नहीं: Windows इस ऑडियो को डिकोड नहीं कर सकता"

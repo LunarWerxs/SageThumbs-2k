@@ -755,3 +755,9 @@ up_hist_no_expiry = "Inget utgångsdatum (tas bort efter 2 år utan att öppnas)
 
 chk_cloud_thumbs = "Miniatyrer i OneDrive & molnmappar"
 tip_cloud_thumbs = "I synkroniserade molnmappar (OneDrive, Synology Drive, Nextcloud…) ber Windows bara molnappen om miniatyrer, så utan det här får SageThumbs aldrig chansen där. På: nedladdade filer får samma miniatyrer som annars, och allt annat, inklusive filer som bara finns online, skickas fortfarande till molnappen. Ingenting laddas ned bara för att rita en miniatyr."
+
+preview_note_no_picture = "Stillbild: {codec} stöds inte av Windows"
+preview_note_no_picture_store = "Stillbild: {codec} kräver {extension} från Microsoft Store"
+preview_note_no_picture_unknown = "Stillbild: Windows kan inte avkoda den här videon"
+preview_note_no_sound = "Inget ljud: {codec} stöds inte av Windows"
+preview_note_no_sound_unknown = "Inget ljud: Windows kan inte avkoda det här ljudet"

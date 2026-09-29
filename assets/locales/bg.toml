@@ -753,3 +753,9 @@ up_hist_no_expiry = "Без срок на изтичане (премахва с�
 
 chk_cloud_thumbs = "Миниатюри в OneDrive и облачни папки"
 tip_cloud_thumbs = "В синхронизирана облачна папка (OneDrive, Synology Drive, Nextcloud…) Windows пита за миниатюри само облачното приложение, така че без тази настройка SageThumbs не получава ход там. Включено: изтеглените файлове получават същите миниатюри като навсякъде другаде, а всички останали, включително само онлайн, пак се предават на облачното приложение. Нищо не се изтегля просто заради миниатюра."
+
+preview_note_no_picture = "Неподвижен кадър: {codec} не се поддържа от Windows"
+preview_note_no_picture_store = "Неподвижен кадър: {codec} се нуждае от {extension} от Microsoft Store"
+preview_note_no_picture_unknown = "Неподвижен кадър: Windows не може да декодира това видео"
+preview_note_no_sound = "Без звук: {codec} не се поддържа от Windows"
+preview_note_no_sound_unknown = "Без звук: Windows не може да декодира това аудио"

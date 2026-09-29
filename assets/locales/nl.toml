@@ -761,3 +761,9 @@ up_hist_no_expiry = "Geen vervaldatum (verwijderd als het 2 jaar niet geopend wo
 
 chk_cloud_thumbs = "Miniaturen in OneDrive- en cloudmappen"
 tip_cloud_thumbs = "In een gesyncede cloudmap (OneDrive, Synology Drive, Nextcloud…) vraagt Windows miniaturen alleen aan de cloudapp; zonder deze opdracht krijgt SageThumbs daar nooit zijn beurt. Aan: gedownloade bestanden krijgen overal dezelfde miniaturen, en alles anders — ook alleen online bestanden — wordt nog steeds overgenomen door de cloudapp. Er wordt nooit wat gedownload alleen om een miniature te tekenen."
+
+preview_note_no_picture = "Stilstaand beeld: {codec} wordt niet ondersteund door Windows"
+preview_note_no_picture_store = "Stilstaand beeld: {codec} vereist de {extension} uit de Microsoft Store"
+preview_note_no_picture_unknown = "Stilstaand beeld: Windows kan deze video niet decoderen"
+preview_note_no_sound = "Geen geluid: {codec} wordt niet ondersteund door Windows"
+preview_note_no_sound_unknown = "Geen geluid: Windows kan deze audio niet decoderen"
