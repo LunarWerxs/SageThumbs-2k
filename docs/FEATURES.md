@@ -460,7 +460,7 @@ plus these viewer-only extras:
 - **Multi-page PDF navigation**: PageUp/PageDown or the arrow keys (or on-screen ◀ ▶ buttons) page
   through the document, with a "current / total" indicator in the title bar.
 - **Zoom + pan** on images (wheel to zoom at the cursor, or Ctrl+=/Ctrl+- to zoom in one step at a
-  time, centred the same way; drag to pan, double-click to toggle fit/100 %). Keyboard zoom can
+  time, centred the same way; drag to pan, **Ctrl+0** to toggle fit/100 %). Keyboard zoom can
   reach true 100% even in a small window showing a very large image. Long text/code and rendered
   Markdown have wheel/touchpad scrolling plus a visible
   scrollbar: drag its thumb to scrub through the document, or click the track to move one page.
@@ -474,8 +474,9 @@ plus these viewer-only extras:
   toolbar's copy button copies the file's path instead. Plain **Home/End** jump to the
   top/bottom of a text or Markdown document.
 - **Folder browsing + full-screen**: **←/→** (or PgUp/PgDn) flip through the current folder's
-  previewable files without closing the popup, QuickLook-style; **F11** toggles borderless
-  full-screen (Esc restores).
+  previewable files without closing the popup, QuickLook-style. **Double-click** a picture, PDF
+  page or video (or press **F11** once the preview has focus) for borderless full-screen; double-click
+  again, press Esc or F11, or double-click the title bar to go back.
 - **It remembers the size and the place you drag it to.** Out of the box each file opens sized to
   its own content (a photo at its real pixels, a document at reading width), centred. Resize the
   window once and that becomes the size, for the next file and for every preview after it,

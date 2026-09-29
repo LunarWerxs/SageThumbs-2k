@@ -122,6 +122,8 @@ pub unsafe fn create_shot_window(
         None,
     )
     .ok()?;
+    // The same fit `run_dialog` applies, so a capture shows what the user gets.
+    super::dialogs::fit_to_controls(hwnd);
     // Fully transparent (alpha 0) → composited by DWM but invisible on screen.
     let _ = SetLayeredWindowAttributes(hwnd, windows::Win32::Foundation::COLORREF(0), 0, LWA_ALPHA);
     if dark {

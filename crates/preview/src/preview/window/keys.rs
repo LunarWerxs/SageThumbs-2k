@@ -125,8 +125,8 @@ unsafe fn keydown_image_zoom_keys(
     // Bare "W": toggle fit-width vs aspect-fit — the mode a portrait page (a
     // scanned document, a tall screenshot) needs in a landscape-shaped preview
     // window, where aspect-fit leaves empty margins on both sides instead of using
-    // the width that's actually there. Sits alongside the double-click
-    // aspect-fit/100% toggle above; unmodified because it only ever reaches here
+    // the width that's actually there. Sits alongside the Ctrl+0
+    // aspect-fit/100% toggle below; unmodified because it only ever reaches here
     // when no child control (e.g. the find bar's edit box) has keyboard focus.
     if !ctrl && !shift && vk == 'W' as u16 && st.kind.get() == ContentKind::Image {
         toggle_fit_width(hwnd);
@@ -136,7 +136,7 @@ unsafe fn keydown_image_zoom_keys(
     // pane's centre (there is no cursor position to anchor on from the keyboard). Not gated
     // on `!shift`: the `=`/`+` key is the same VK regardless of the Shift needed to type `+`
     // on most layouts, and Ctrl+Shift+= is the same browser-zoom-in convention users already
-    // know. Ctrl+0 resets to fit/100%, same as double-click.
+    // know. Ctrl+0 toggles fit/100% (a double-click is full screen).
     if ctrl && st.kind.get() == ContentKind::Image {
         if vk == VK_OEM_PLUS.0 {
             zoom_step_at_center(hwnd, 1);

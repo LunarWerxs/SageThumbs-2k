@@ -38,7 +38,7 @@ pub(in crate::preview) fn true_100_zoom(fit: f64) -> f64 {
 /// The zoom ceiling a wheel notch / keyboard step may reach: `full.max(8.0)`, NOT a bare 8.0.
 ///
 /// A hard 8x ceiling here understated true 1:1 scale for any image more than 8x the pane's fit
-/// scale (a large photo opened in a small/default window) — double-click's [`toggle_fit_100`]
+/// scale (a large photo opened in a small/default window) — Ctrl+0's [`toggle_fit_100`]
 /// reached true 100% fine, but the wheel silently stopped 2.5x short of it. Split out so
 /// the fix is testable without a window.
 fn zoom_ceiling(full: f64) -> f64 {

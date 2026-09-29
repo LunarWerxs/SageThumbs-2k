@@ -7,9 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Controls::PBS_MARQUEE;
-use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use st2k_appkit::dark::dark_ctlcolor;
@@ -45,14 +44,17 @@ pub(crate) unsafe fn run_tags_to_folders_dialog(_hinst: HINSTANCE, listfile: &st
     }
     let _ = TTF_FILES.set(files);
 
-    run_dialog(
-        w!("SageThumbs2KTagsToFolders"),
-        Some(ttf_wndproc),
-        t("ttf_title"),
-        452,
-        270,
-        None,
-    );
+    run_dialog(CLASS, Some(ttf_wndproc), t("ttf_title"), DLG_W, DLG_H, None);
+}
+
+const CLASS: PCWSTR = w!("SageThumbs2KTagsToFolders");
+const DLG_W: i32 = 452;
+const DLG_H: i32 = 270;
+
+/// `--shot --window tags-to-folders`: this dialog over `files_to_folder::shot_files`.
+pub(crate) unsafe fn run_shot_tags_to_folders(out: &str) -> bool {
+    let _ = TTF_FILES.set(crate::files_to_folder::shot_files());
+    crate::files_to_folder::shot_dialog(out, CLASS, Some(ttf_wndproc), t("ttf_title"), DLG_W, DLG_H)
 }
 
 extern "system" fn ttf_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -98,15 +100,8 @@ fn ttf_field_or(field: &str, fallback: &str) -> String {
     }
 }
 
-/// The y (96-DPI design px) of the dialog's button row: the physical client bottom
-/// scaled back to design px, less the 12px bottom margin and the 30px the row is tall.
-/// The caller floors the DPI at 96, so this never divides below 1:1.
-fn button_row_y(client_bottom_px: i32, dpi: i32) -> i32 {
-    client_bottom_px * 96 / dpi - 12 - 30
-}
-
 /// `WM_CREATE`: lay out the destination/template/missing-token edits, the move/copy radio
-/// pair, and the sort/cancel button row anchored to the real client bottom.
+/// pair, and the sort/cancel button row.
 unsafe fn on_create(hwnd: HWND) -> LRESULT {
     let hinst = crate::files_to_folder::module_instance();
     // Default destination = the first file's folder.
@@ -195,15 +190,8 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
     );
     let _ = ShowWindow(prog, SW_HIDE);
 
-    // Anchor the button row to the REAL client bottom — `run_dialog`'s h is
-    // the TOTAL window height, so a hardcoded y put the row's bottom below
-    // the client edge (clipped). GetClientRect is physical px → back to
-    // 96-DPI design px, because `ctl` re-scales design px to DPI.
-    let mut rc = RECT::default();
-    let _ = GetClientRect(hwnd, &mut rc);
-    let dpi = GetDpiForWindow(hwnd).max(96) as i32;
-    let by = button_row_y(rc.bottom, dpi);
-    crate::files_to_folder::ok_cancel_buttons(hwnd, hinst, "ttf_sort", 244, by, 92, 342);
+    // Under the progress bar; `run_dialog` grows the window if the frame leaves too little room.
+    crate::files_to_folder::ok_cancel_buttons(hwnd, hinst, "ttf_sort", 244, 189, 92, 342);
     LRESULT(0)
 }
 
@@ -370,11 +358,5 @@ mod tests {
     #[test]
     fn parent_folder_has_none_for_a_drive_root() {
         assert_eq!(parent_folder("C:\\"), None);
-    }
-
-    #[test]
-    fn button_row_y_scales_the_client_bottom_back_to_design_px() {
-        assert_eq!(button_row_y(300, 96), 258);
-        assert_eq!(button_row_y(300, 192), 108);
     }
 }

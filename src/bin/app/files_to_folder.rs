@@ -43,14 +43,53 @@ pub(crate) unsafe fn run_files_to_folder_dialog(_hinst: HINSTANCE, listfile: &st
     }
     let _ = F2F_FILES.set(files);
 
-    run_dialog(
-        w!("SageThumbs2KFilesToFolder"),
-        Some(f2f_wndproc),
-        t("f2f_title"),
-        392,
-        168,
-        None,
-    );
+    run_dialog(CLASS, Some(f2f_wndproc), t("f2f_title"), DLG_W, DLG_H, None);
+}
+
+const CLASS: PCWSTR = w!("SageThumbs2KFilesToFolder");
+const DLG_W: i32 = 392;
+const DLG_H: i32 = 168;
+
+/// `--shot --window files-to-folder`: this dialog over [`shot_files`].
+pub(crate) unsafe fn run_shot_files_to_folder(out: &str) -> bool {
+    let _ = F2F_FILES.set(shot_files());
+    shot_dialog(out, CLASS, Some(f2f_wndproc), t("f2f_title"), DLG_W, DLG_H)
+}
+
+/// Five canned file names for the `--shot` captures of this file's dialog, Rename with pattern
+/// and Tags to folders. Nothing reads them: only the dialogs' own OK buttons touch the files.
+pub(crate) fn shot_files() -> Vec<String> {
+    (1..=5)
+        .map(|i| format!("C:\\Photos\\holiday-{i}.jpg"))
+        .collect()
+}
+
+/// A headless `--shot` capture of one of the three dialogs built on this file's shape, over the
+/// selection its caller has already stored. They had no capture at all until issue #48, which is
+/// how Rename with pattern shipped with its button row off the bottom of the window.
+pub(crate) unsafe fn shot_dialog(
+    out: &str,
+    class: PCWSTR,
+    wndproc: WNDPROC,
+    title: &str,
+    w: i32,
+    h: i32,
+) -> bool {
+    st2k_appkit::win::capture_shot_window(
+        out,
+        st2k_appkit::dark::is_dark(),
+        st2k_appkit::win::ShotWindowSpec {
+            class,
+            wndproc,
+            title,
+            design_w: w,
+            design_h: h,
+        },
+        |_, _| {},
+        20,
+        8,
+        false,
+    )
 }
 
 extern "system" fn f2f_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {

@@ -146,6 +146,51 @@ pub(super) unsafe fn run_shot_settings_window(
     }
 }
 
+/// The `--shot --window <name>` captures that need nothing but the output path. The rest
+/// (`ocr`, `preview`, and the Settings default) read more of argv and stay in
+/// [`run_shot_mode`]'s `match`.
+/// A capture that needs only its output path; true when the PNG was written.
+type ShotFn = unsafe fn(&str) -> bool;
+
+const WINDOW_SHOTS: &[(&str, ShotFn)] = &[
+    ("convert", crate::convert::run_shot_convert),
+    // The Convert dialog's failure report, over canned failures: it only appears when a
+    // batch actually fails, which a shot cannot arrange.
+    (
+        "convert-report",
+        crate::convert_report::run_shot_convert_report,
+    ),
+    (
+        "eyedropper",
+        st2k_screenshot::eyedropper::run_shot_eyedropper,
+    ),
+    ("feedback", crate::feedback::run_shot_feedback),
+    ("about", crate::about::run_shot_about),
+    ("doctor", crate::doctor_report::run_shot_doctor),
+    // The three right-click folder dialogs, over five canned file names.
+    ("rename", crate::rename_dlg::run_shot_rename),
+    (
+        "files-to-folder",
+        crate::files_to_folder::run_shot_files_to_folder,
+    ),
+    (
+        "tags-to-folders",
+        crate::tags_to_folders::run_shot_tags_to_folders,
+    ),
+    // The upload result and the Recent uploads list, over canned uploads (one of each
+    // expiry kind) so the layout does not depend on what this machine uploaded.
+    (
+        "upload",
+        st2k_screenshot::upload_result::run_shot_upload_result,
+    ),
+    (
+        "uploads",
+        st2k_screenshot::upload_history_dlg::run_shot_history,
+    ),
+    ("firstrun", crate::first_run::run_shot_first_run),
+    ("firstrun2", crate::first_run::run_shot_first_run2),
+];
+
 /// The body of `--shot <out.png> [--tab N] [--window settings|convert|eyedropper|...]`:
 /// picks the window named by `--window` (default `settings`) and renders it INVISIBLY
 /// (off-screen) to `out`. `pos` is the index of the `--shot` flag itself.
@@ -179,21 +224,10 @@ pub(super) unsafe fn run_shot_mode(
     let Some(out) = args.get(pos + 1) else {
         return false;
     };
+    if let Some(&(_, shot)) = WINDOW_SHOTS.iter().find(|(name, _)| *name == window) {
+        return shot(out);
+    }
     match window {
-        "convert" => crate::convert::run_shot_convert(out),
-        // The Convert dialog's failure report, over canned failures: it only appears when a
-        // batch actually fails, which a shot cannot arrange.
-        "convert-report" => crate::convert_report::run_shot_convert_report(out),
-        "eyedropper" => st2k_screenshot::eyedropper::run_shot_eyedropper(out),
-        "feedback" => crate::feedback::run_shot_feedback(out),
-        "about" => crate::about::run_shot_about(out),
-        "doctor" => crate::doctor_report::run_shot_doctor(out),
-        // The upload result and the Recent uploads list, over canned uploads (one of each
-        // expiry kind) so the layout does not depend on what this machine uploaded.
-        "upload" => st2k_screenshot::upload_result::run_shot_upload_result(out),
-        "uploads" => st2k_screenshot::upload_history_dlg::run_shot_history(out),
-        "firstrun" => crate::first_run::run_shot_first_run(out),
-        "firstrun2" => crate::first_run::run_shot_first_run2(out),
         // The OCR result window, over canned text (no recognizer run) — or the
         // real text of `--file <img>` when you want to see an actual scan.
         "ocr" => {

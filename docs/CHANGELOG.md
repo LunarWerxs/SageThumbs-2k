@@ -9,6 +9,15 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+- **Rename with pattern shows its Rename and Cancel buttons again** (fixes #48). The dialog was
+  laid out for more room than its window left once the title bar was taken out, so the button
+  row sat below the bottom edge with only a sliver showing. Every SageThumbs dialog now grows to
+  fit its own buttons and fields, so none of them can cut a control off, at any display scaling
+  or text size.
+- **Double-click the Quick preview to go full screen.** Double-click a picture, a PDF page or a
+  video to fill the screen, and double-click again (or press Esc) to go back. F11 still works
+  once the preview has focus. Fit/100% zoom, which used to share the double-click, is on
+  **Ctrl+0**.
 - **A damaged JPEG XL file can no longer crash the thumbnail host.** The ways a broken `.jxl`
   could stop the JPEG XL decoder dead (a colour setting with no profile equivalent, an LF frame
   at the deepest level, smoothing asked for on subsampled colour) are now ordinary decode

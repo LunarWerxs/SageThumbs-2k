@@ -45,12 +45,16 @@ pub(super) unsafe fn on_geometry_msg(
             LRESULT(0)
         }
         WM_NCLBUTTONDBLCLK => {
-            // Double-click the caption = forget the dragged size and position and fit this file
-            // again.
+            // Double-click the caption = leave full screen, the way it restores a maximized
+            // window; otherwise forget the dragged size and position and fit this file again.
             // DefWindowProc would send SC_MAXIMIZE, which this WS_POPUP window can't honour
             // anyway, so nothing is being taken away.
             if wparam.0 as u32 == HTCAPTION {
-                forget_size(hwnd);
+                if (*state(hwnd)).fullscreen.get().is_some() {
+                    toggle_fullscreen(hwnd);
+                } else {
+                    forget_size(hwnd);
+                }
                 return Some(LRESULT(0));
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)

@@ -394,16 +394,54 @@ unsafe fn setcursor_client(hwnd: HWND, st: &ViewerState) -> Option<PCWSTR> {
     None
 }
 
-/// `WM_LBUTTONDBLCLK`: double-click content = toggle fit/100%; double-click text = select word.
+/// What a double-click does. See [`dblclick_action`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DblClick {
+    /// Enter or leave full screen.
+    FullScreen,
+    /// Select the word under the cursor.
+    SelectWord,
+    Nothing,
+}
+
+/// A double-click over a picture, a PDF page or a video toggles full screen, the way image
+/// viewers and media players do (a user asked for it by email, 2026-09-28: the preview opens
+/// without keyboard focus, so F11 went to Explorer until they clicked it first). In text it selects
+/// a word. On a control with its own click meaning (a toolbar button, a scrollbar, the video
+/// transport strip, the PDF page strip) it does nothing, so a quick double-click on the seek bar
+/// never throws the window into full screen. Fit/100% moved to Ctrl+0 alone; it used to share
+/// the double-click.
+pub(super) fn dblclick_action(kind: ContentKind, on_control: bool) -> DblClick {
+    if on_control {
+        return DblClick::Nothing;
+    }
+    match kind {
+        ContentKind::Image | ContentKind::Video => DblClick::FullScreen,
+        k if selection::selectable(k) => DblClick::SelectWord,
+        _ => DblClick::Nothing,
+    }
+}
+
+/// Whether the client point is on a control that owns its own clicks: the caption strip and its
+/// buttons, the text scrollbar, the PDF page strip, or a video's transport strip.
+unsafe fn on_click_control(hwnd: HWND, st: &ViewerState, x: i32, y: i32, cap: i32) -> bool {
+    let inside = |r: RECT| x >= r.left && x < r.right && y >= r.top && y < r.bottom;
+    y < cap
+        || hit_button(hwnd, x, y).is_some()
+        || hit_text_scrollbar(hwnd, x, y).is_some()
+        || inside(strip_rect(hwnd))
+        || (st.kind.get() == ContentKind::Video && inside(scrub_rect(hwnd)))
+}
+
+/// `WM_LBUTTONDBLCLK`: full screen over a picture or video, a word in text ([`dblclick_action`]).
 pub(super) unsafe fn on_lbuttondblclk(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     let (x, y) = lparam_xy(lparam);
     let st = &*state(hwnd);
     let cap = st2k_appkit::win::dpi_scale(hwnd, CAPTION_H);
-    if hit_text_scrollbar(hwnd, x, y).is_some() {
-        // A double-click on the scrollbar must not select the document text beneath it.
-    } else if y >= cap && st.kind.get() == ContentKind::Image && hit_button(hwnd, x, y).is_none() {
-        toggle_fit_100(hwnd); // double-click content → toggle fit / 100%
-    } else if sel_drag_target(hwnd, st, x, y, cap) {
+    let action = dblclick_action(st.kind.get(), on_click_control(hwnd, st, x, y, cap));
+    if action == DblClick::FullScreen {
+        toggle_fullscreen(hwnd);
+    } else if action == DblClick::SelectWord && sel_drag_target(hwnd, st, x, y, cap) {
         // Double-click in a text/Markdown pane → select the word under the cursor.
         // Claiming the drag (capture + flag) keeps the button-up that follows from
         // being read as a click — which would open a double-clicked link.

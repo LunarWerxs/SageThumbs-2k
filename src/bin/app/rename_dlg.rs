@@ -36,8 +36,12 @@ const CID_RN_ERROR: i32 = 5205;
 const CID_RN_PROGRESS: i32 = 5206;
 const CID_RN_HINT: i32 = 5207;
 
+/// The WINDOW size in design px. The controls below need a 460 x 406 CLIENT area, which is more
+/// than this leaves once the title bar and borders are taken out, so `run_dialog` grows the
+/// window to fit them (issue #48: until then the Rename/Cancel row showed as a 5 px sliver).
 const DLG_W: i32 = 460;
 const DLG_H: i32 = 404;
+const CLASS: PCWSTR = w!("SageThumbs2KRenamePattern");
 
 /// Posted by the worker thread when the rename pass finishes.
 const WM_RN_DONE: u32 = 0x8000 + 42; // WM_APP + 42
@@ -86,14 +90,15 @@ pub(crate) unsafe fn run_rename_with_pattern_dialog(_hinst: HINSTANCE, listfile:
     let _ = RN_FILES.set(files);
 
     let title = t("rn_title").replace("{n}", &n.to_string());
-    run_dialog(
-        w!("SageThumbs2KRenamePattern"),
-        Some(rn_wndproc),
-        &title,
-        DLG_W,
-        DLG_H,
-        None,
-    );
+    run_dialog(CLASS, Some(rn_wndproc), &title, DLG_W, DLG_H, None);
+}
+
+/// `--shot --window rename`: this dialog over `files_to_folder::shot_files`.
+pub(crate) unsafe fn run_shot_rename(out: &str) -> bool {
+    let files = crate::files_to_folder::shot_files();
+    let title = t("rn_title").replace("{n}", &files.len().to_string());
+    let _ = RN_FILES.set(files);
+    crate::files_to_folder::shot_dialog(out, CLASS, Some(rn_wndproc), &title, DLG_W, DLG_H)
 }
 
 extern "system" fn rn_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {

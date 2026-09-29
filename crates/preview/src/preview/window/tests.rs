@@ -153,3 +153,39 @@ fn sibling_navigation_uses_explorer_logical_order() {
         .collect();
     assert_eq!(names, ["image1.png", "image2.png", "image10.png"]);
 }
+
+/// A double-click is full screen over a picture, PDF page or video (a user asked for it by email:
+/// the preview opens without keyboard focus, so F11 alone went to Explorer), selects a word in
+/// text, and does nothing on a control that owns its own clicks, so a double-click on the video
+/// seek bar or a scrollbar never throws the window into full screen.
+#[test]
+fn a_double_click_is_full_screen_over_media_a_word_in_text_and_nothing_on_a_control() {
+    use super::mouse::{dblclick_action, DblClick};
+    assert_eq!(
+        dblclick_action(ContentKind::Image, false),
+        DblClick::FullScreen
+    );
+    assert_eq!(
+        dblclick_action(ContentKind::Video, false),
+        DblClick::FullScreen
+    );
+    assert_eq!(
+        dblclick_action(ContentKind::Text, false),
+        DblClick::SelectWord
+    );
+    assert_eq!(
+        dblclick_action(ContentKind::Markdown, false),
+        DblClick::SelectWord
+    );
+    for (name, kind) in [
+        ("image", ContentKind::Image),
+        ("video", ContentKind::Video),
+        ("text", ContentKind::Text),
+    ] {
+        assert_eq!(
+            dblclick_action(kind, true),
+            DblClick::Nothing,
+            "{name} on a control"
+        );
+    }
+}
