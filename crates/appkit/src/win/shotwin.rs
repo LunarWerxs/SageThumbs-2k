@@ -68,6 +68,55 @@ pub unsafe fn force_repaint(hwnd: HWND) {
     );
 }
 
+thread_local! {
+    /// Each shot window class's own window procedure, which [`shot_wndproc`] forwards to.
+    static SHOT_PROCS: std::cell::RefCell<Vec<(Vec<u16>, WNDPROC)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+unsafe fn remember_shot_proc(class: PCWSTR, wndproc: WNDPROC) {
+    let name = class.as_wide().to_vec();
+    SHOT_PROCS.with(|m| {
+        let mut m = m.borrow_mut();
+        m.retain(|(n, _)| *n != name);
+        m.push((name, wndproc));
+    });
+}
+
+/// The class procedure of every shot window: the dialog's own, except that `WM_GETMINMAXINFO`
+/// lets the window reach its full design size at the shot's DPI. Windows caps a top-level
+/// window at the screen's size, so on a small screen (CI's runners) a 200% capture was
+/// squeezed, and the layout audit measured a window no user whose screen fits it ever sees
+/// (Settings at 200% came out ~390 px tall and its General page ran into the footer).
+unsafe extern "system" fn shot_wndproc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CallWindowProcW, DefWindowProcW, GetClassNameW, MINMAXINFO, WM_GETMINMAXINFO,
+    };
+    let mut buf = [0u16; 256];
+    let len = usize::try_from(GetClassNameW(hwnd, &mut buf)).unwrap_or(0);
+    let real = SHOT_PROCS.with(|m| {
+        m.borrow()
+            .iter()
+            .find(|(n, _)| n.as_slice() == &buf[..len])
+            .and_then(|(_, p)| *p)
+    });
+    let result = match real {
+        Some(proc_) => CallWindowProcW(Some(proc_), hwnd, msg, wparam, lparam),
+        None => DefWindowProcW(hwnd, msg, wparam, lparam),
+    };
+    if msg == WM_GETMINMAXINFO && lparam.0 != 0 {
+        let mmi = &mut *(lparam.0 as *mut MINMAXINFO);
+        mmi.ptMaxTrackSize.x = mmi.ptMaxTrackSize.x.max(i32::from(i16::MAX));
+        mmi.ptMaxTrackSize.y = mmi.ptMaxTrackSize.y.max(i32::from(i16::MAX));
+    }
+    result
+}
+
 /// Create a top-level dialog window ON-SCREEN but fully transparent (WS_EX_LAYERED alpha 0)
 /// and non-activated — a real window that is invisible and steals no focus — for headless
 /// `PrintWindow` capture. Same class
@@ -84,7 +133,9 @@ pub unsafe fn create_shot_window(
     design_w: i32,
     design_h: i32,
 ) -> Option<HWND> {
-    register_app_class(class, wndproc, hinst); // same tone as the real window classes
+    // Same tone as the real window classes, through `shot_wndproc` (the size cap it lifts).
+    remember_shot_proc(class, wndproc);
+    register_app_class(class, Some(shot_wndproc), hinst);
 
     // Position it ON-SCREEN (centered on the cursor monitor), NOT off the virtual desktop: an
     // off-screen window's DWM redirection surface can be stale/blank when PrintWindow grabs it
