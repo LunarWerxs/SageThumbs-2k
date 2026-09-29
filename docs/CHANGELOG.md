@@ -9,6 +9,9 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+- **The wrong installer now says which one to get.** Running the regular (x64) installer on a
+  Windows on ARM PC, or the ARM64 one on a regular PC, already stopped before installing, but only
+  named a processor type. It now tells you to download the other installer and where to find it.
 - **AVIF thumbnails can no longer freeze Explorer.** Asking for several AVIF thumbnails at once
   (opening a folder of them, or scrolling quickly) could hang Windows' thumbnail host for good,
   and with it every thumbnail and taskbar icon until you signed out. SageThumbs now reads AVIF

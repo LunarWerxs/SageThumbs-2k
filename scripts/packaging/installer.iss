@@ -141,6 +141,16 @@ MinVersion=10.0
 ; -NoImageMagick`) so CI jobs that do not care about the engine can skip staging the payload.
 ; It is not a shipped product tier and must never regain a user-facing selection.
 
+; The wrong-architecture refusal names the right download (owner, 2026-09-29): Inno's stock text
+; only listed a processor type, which tells nobody what to do next. It is shown before [Code]
+; runs, so one static line per build has to fit every PC it refuses (32-bit Windows included).
+[Messages]
+#if (Architecture == "x64")
+OnlyOnTheseArchitectures=This installer is for regular (x64) Windows PCs.%n%nOn a Windows on ARM PC (for example a Snapdragon laptop), download SageThumbs2K-Setup-{#AppVer}-arm64.exe instead. It is the same app, built for ARM:%nhttps://github.com/LunarWerxs/SageThumbs-2k/releases/latest
+#else
+OnlyOnTheseArchitectures=This installer is for Windows on ARM PCs (for example Snapdragon laptops).%n%nOn a regular Windows PC, download SageThumbs2K-Setup-{#AppVer}.exe, the one without "-arm64" in its name:%nhttps://github.com/LunarWerxs/SageThumbs-2k/releases/latest
+#endif
+
 [InstallDelete]
 ; ImageMagick is a curated, flattened payload. Inno upgrades in place and does
 ; not remove old files merely because a newer [Files] list omits them, so clear
