@@ -128,6 +128,8 @@ jobs:
       # release-LTO link error ("unresolved external symbol core::panicking::assert_failed").
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
 
       # Integration tests (tests/) drive the built shell-extension DLL in-process the
       # way Explorer does: the COM thumbnail handshake (com_roundtrip) and the
@@ -279,6 +281,8 @@ jobs:
       # Pinned by the sha of a release tag, as in build-test (see the note there).
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
 
       # Build the exact two production feature sets in the same order as
       # build-release.ps1: full EXEs first, then the menu-translation-subset DLL.
@@ -359,6 +363,8 @@ jobs:
           & $windres --version
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
       # The installer is compiled by Inno Setup 7 (scripts/release-manifest-lib.ps1 finds no
       # other). The runner image ships Inno Setup 6 and Chocolatey lags, so install the pinned
       # upstream release per-user, refusing a download whose SHA-256 is not the pinned one.
@@ -492,6 +498,8 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
 
       # No --release and no ImageMagick staging: this is the engine-less runtime
       # path. The explicit target keeps artifacts separate from x64 and makes
@@ -798,6 +806,8 @@ jobs:
         run: rustup show
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
       - name: DWA library tests
         run: 'cargo test --manifest-path crates/vendor/exr/Cargo.toml --no-default-features --no-fail-fast --lib compression::dwa::'
       - name: DWAA and DWAB roundtrips

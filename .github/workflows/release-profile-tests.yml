@@ -77,6 +77,8 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
 
       # The SHIPPED shapes, same three commands and same order as build-release.ps1. The
       # feature lists are the entire point: a default-feature release DLL would be a binary
