@@ -192,9 +192,9 @@ jobs:
           RT_TEST_TIMES: ${{ runner.temp }}\test-times.log
         run: ./scripts/slowest-tests.ps1
       - name: ImageMagick subprocess decode (ignored by default; needs the staged magick.exe)
-        # The same target selection as the step above, so it reuses those binaries rather
-        # than compiling a second set (a `--lib` selection rebuilt the workspace, ~60 s).
-        run: cargo test --locked --tests --no-fail-fast magick_subprocess_decodes -- --ignored
+        # Reuses the lib test binary the step above built; it recompiled the workspace here
+        # (61-109 s) only while base's build script watched a path that does not exist.
+        run: cargo test --locked --lib --no-fail-fast magick_subprocess_decodes -- --ignored
 
       # Generic shell thumbnail API (personalisation pickers, file dialogs, most first-party
       # UI that asks for a thumbnail through IShellItemImageFactory instead of Explorer's own
