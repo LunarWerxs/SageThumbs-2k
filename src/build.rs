@@ -40,7 +40,9 @@ fn main() {
     }
     // (RAR/CBR is now the pure-Rust `rars` crate — no C, no UnRAR, so the old
     // advapi32 link the `rar` feature needed is gone.)
-    println!("cargo:rerun-if-changed=build.rs");
+    // Relative to the package root, not to this file: a path that does not exist (`build.rs`)
+    // reran this script, and recompiled this crate, on every cargo call.
+    println!("cargo:rerun-if-changed=src/build.rs");
     println!("cargo:rerun-if-changed=assets/app.ico");
 }
 
