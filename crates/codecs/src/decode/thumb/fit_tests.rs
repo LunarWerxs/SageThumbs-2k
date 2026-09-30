@@ -246,34 +246,39 @@ fn sixteen_bit_buffers_are_reduced_in_sixteen_bit() {
 /// it, so there is no cheap-filter surface left to drift.
 #[test]
 fn the_gates_reduce_a_thumbnail_the_way_the_shell_extension_does() {
-    for (w, h, cx) in [
-        (4000u32, 3000u32, 256u32), // a 12 MP camera photo at Explorer's largest tile
-        (4000, 3000, 96),           // ...and at Medium icons, a 41x reduction
-        (1600, 1200, 256),          // a phone photo
-        (800, 600, 256),            // just past the 768 threshold, so it reduces by 2x
-        (512, 384, 256),            // the corpus's own size — all the parity gate ever sees
-        (513, 385, 256),            // odd edges, where the two filters' rounding differed
-    ] {
-        let img = photographic(w, h);
-        let shell = fit_to_box(img.clone(), cx);
-        let cli = reduce_to_fit(img, cx, cx).to_rgba8();
+    // The six cases are independent; each runs on its own thread.
+    std::thread::scope(|scope| {
+        for (w, h, cx) in [
+            (4000u32, 3000u32, 256u32), // a 12 MP camera photo at Explorer's largest tile
+            (4000, 3000, 96),           // ...and at Medium icons, a 41x reduction
+            (1600, 1200, 256),          // a phone photo
+            (800, 600, 256),            // just past the 768 threshold, so it reduces by 2x
+            (512, 384, 256),            // the corpus's own size — all the parity gate ever sees
+            (513, 385, 256),            // odd edges, where the two filters' rounding differed
+        ] {
+            scope.spawn(move || {
+                let img = photographic(w, h);
+                let shell = fit_to_box(img.clone(), cx);
+                let cli = reduce_to_fit(img, cx, cx).to_rgba8();
 
-        assert_eq!(
-            (shell.width, shell.height),
-            cli.dimensions(),
-            "{w}x{h} into a {cx} box: the two paths disagree on the output SIZE"
-        );
-        // EQUALITY, not a tolerance. Both paths now run `reduce_to_fit`, so any difference
-        // at all means one of them has grown a step the other does not have — which is the
-        // exact state this test was written to end. A tolerance here would let that drift
-        // back in one level at a time.
-        assert!(
-            shell.rgba == *cli.as_raw(),
-            "{w}x{h} into a {cx} box: the CLI's picture and the shell extension's are no \
-             longer identical, so the visual gates have stopped standing in for the \
-             picture Explorer actually draws"
-        );
-    }
+                assert_eq!(
+                    (shell.width, shell.height),
+                    cli.dimensions(),
+                    "{w}x{h} into a {cx} box: the two paths disagree on the output SIZE"
+                );
+                // EQUALITY, not a tolerance. Both paths now run `reduce_to_fit`, so any
+                // difference at all means one of them has grown a step the other does not
+                // have — which is the exact state this test was written to end. A tolerance
+                // here would let that drift back in one level at a time.
+                assert!(
+                    shell.rgba == *cli.as_raw(),
+                    "{w}x{h} into a {cx} box: the CLI's picture and the shell extension's are no \
+                 longer identical, so the visual gates have stopped standing in for the \
+                 picture Explorer actually draws"
+                );
+            });
+        }
+    });
 }
 
 /// The other half of the contract, and the reason the two paths could not simply be the
