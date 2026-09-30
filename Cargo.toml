@@ -451,6 +451,10 @@ opt-level = 3
 [profile.dev.package.djvu-rs]
 opt-level = 3
 
+# The `image` crate's resize and codecs: unoptimised, a Lanczos3 reduce of a 12 MP test photo takes seconds.
+[profile.dev.package.image]
+opt-level = 3
+
 # rust-ci-speed: test-binaries not applied: everything that could merge already did (tests/integration.rs
 # is one executable); the 24 that remain each need a process of their own (a loaded DLL, settings or
 # locale globals, a latency budget, or a test naming its own pid or binary), which the merge scan
