@@ -1,10 +1,10 @@
-//! Locale-table generation for the app's build script (`src/build.rs`).
+//! Locale-table generation for the base crate's build script (`crates/base/build.rs`).
 //!
-//! These functions were moved here **verbatim** out of `src/build.rs` so they can carry
+//! These functions were moved here **verbatim** out of the build script so they can carry
 //! unit tests: cargo never compiles a build script with `cfg(test)`, so a build script
 //! cannot be tested. `generate_locales` — the orchestration that owns every `cargo:`
 //! directive, plus the reads of `OUT_DIR` / `CARGO_FEATURE_DLL_I18N_SUBSET` — stays in
-//! `src/build.rs` and calls into this module.
+//! `crates/base/build.rs` and calls into this module.
 //!
 //! A few functions below still emit `cargo:` directives themselves (`read_locales` prints a
 //! `rerun-if-changed` per locale file; `append_locale_gap_report` and `write_coverage_file`
@@ -41,10 +41,10 @@ pub fn read_locales(dir: &Path) -> BTreeMap<String, BTreeMap<String, String>> {
         let map: BTreeMap<String, String> = toml::from_str(&text)
             .unwrap_or_else(|e| panic!("locale {}: invalid TOML: {e}", path.display()));
         langs.insert(code, map);
-        println!(
-            "cargo:rerun-if-changed=assets/locales/{}",
-            e.file_name().to_string_lossy()
-        );
+        // The path as read, relative to the calling package: a path that does not exist
+        // (`assets/locales/..` from crates/base) reran the build script on every cargo call,
+        // and with it the base crate and everything built on it (CI, 2026-09-30).
+        println!("cargo:rerun-if-changed={}", path.display());
     }
     langs
 }
