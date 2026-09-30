@@ -447,6 +447,10 @@ opt-level = 3
 [profile.dev.package.rav1d]
 opt-level = 3
 
+# The DjVu codec: its photo-page round-trip tests spend ~30 s of the lib suite in it unoptimised.
+[profile.dev.package.djvu-rs]
+opt-level = 3
+
 # rust-ci-speed: test-binaries not applied: everything that could merge already did (tests/integration.rs
 # is one executable); the 24 that remain each need a process of their own (a loaded DLL, settings or
 # locale globals, a latency budget, or a test naming its own pid or binary), which the merge scan

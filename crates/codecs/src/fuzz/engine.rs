@@ -347,22 +347,29 @@ pub(super) fn run_all(
     trunc_exhaustive: usize,
 ) -> Vec<String> {
     let targets = all_targets();
-    let mut failures = Vec::new();
-    with_quiet_panics(|| {
-        for (si, (label, seed)) in seeds.iter().enumerate() {
-            for (ti, &target) in targets.iter().enumerate() {
-                // Distinct stream per (seed,target) so a fix to one doesn't shift others.
-                let mut rng = Rng::new(
-                    base_seed ^ ((si as u64) << 32) ^ (ti as u64).wrapping_mul(0x9E37_79B9),
-                );
-                if let Some(f) = truncation_sweep(target, label, seed, trunc_exhaustive) {
-                    failures.push(f);
-                }
-                if let Some(f) = hammer(target, label, seed, iters_per, &mut rng) {
-                    failures.push(f);
-                }
+    // Every (seed, target) pair owns its own RNG stream, so the pairs are independent and
+    // run across cores; results come back in pair order, so the report reads the same.
+    let pairs: Vec<(usize, usize)> = (0..seeds.len())
+        .flat_map(|si| (0..targets.len()).map(move |ti| (si, ti)))
+        .collect();
+    st2k_base::parallel::map(&pairs, |_, &(si, ti)| {
+        let (label, seed) = &seeds[si];
+        let target = targets[ti];
+        with_quiet_panics(|| {
+            // Distinct stream per (seed,target) so a fix to one doesn't shift others.
+            let mut rng =
+                Rng::new(base_seed ^ ((si as u64) << 32) ^ (ti as u64).wrapping_mul(0x9E37_79B9));
+            let mut found = Vec::new();
+            if let Some(f) = truncation_sweep(target, label, seed, trunc_exhaustive) {
+                found.push(f);
             }
-        }
-    });
-    failures
+            if let Some(f) = hammer(target, label, seed, iters_per, &mut rng) {
+                found.push(f);
+            }
+            found
+        })
+    })
+    .into_iter()
+    .flatten()
+    .collect()
 }
