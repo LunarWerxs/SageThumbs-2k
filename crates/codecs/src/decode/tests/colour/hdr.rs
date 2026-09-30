@@ -18,8 +18,9 @@ const RAMP_MEAN_SLACK: f64 = 0.05;
 /// float tone map, so it renders like its SDR twin (see [`assert_hdr_twin_matches_its_sdr_twin`]).
 #[test]
 fn hdr_pq_jxl_renders_as_bright_as_its_sdr_twin() {
-    let jxl =
-        |bytes: &[u8]| crate::decode::tiers::decode_jxl(bytes, None).expect("decode the jxl twin");
+    let jxl = |bytes: &[u8]| {
+        crate::decode::tiers::decode_jxl(bytes, None, false).expect("decode the jxl twin")
+    };
     assert_hdr_twin_matches_its_sdr_twin("jxl tier", &jxl(JXL_PQ2020), &jxl(JXL_SDR709));
 }
 

@@ -1,6 +1,116 @@
+diff -ruN pristine/jxl-render/src/blend.rs patched/jxl-render/src/blend.rs
+--- pristine/jxl-render/src/blend.rs	2026-09-30 17:17:35.003062800 -0500
++++ patched/jxl-render/src/blend.rs	2026-09-30 18:06:41.444875300 -0500
+@@ -10,7 +10,7 @@
+ use jxl_modular::Sample;
+ use jxl_threadpool::JxlThreadPool;
+ 
+-use crate::{ImageWithRegion, Reference, Region, Result, image::ImageBuffer};
++use crate::{Error, ImageWithRegion, Reference, Region, Result, image::ImageBuffer};
+ 
+ #[derive(Debug)]
+ enum BlendMode<'a> {
+@@ -547,6 +547,97 @@
+     Ok(())
+ }
+ 
++/// [`patch`] onto the 1:8 LF image of a frame (SageThumbs 2K patch, LF-only rendering).
++///
++/// Each LF pixel is the mean of an 8x8 block of the frame, and an additive patch adds its
++/// values to the frame pixel by pixel, so adding each patch pixel divided by 64 to the LF pixel
++/// its target lands in gives the LF image of the patched frame exactly. That is the mode
++/// libjxl gives text glyphs (it subtracts them from the picture before coding it). Any other
++/// mode does not average, so it is refused and the caller renders the frame at 1:1 instead.
++/// Only colour channels are stamped; the LF render has no extra channels to stamp onto.
++pub fn patch_lf(
++    image_header: &ImageHeader,
++    lf_grid: &mut ImageWithRegion,
++    patch_ref_grid: &ImageWithRegion,
++    patch_ref: &PatchRef,
++) -> Result<()> {
++    use jxl_frame::data::PatchBlendMode;
++
++    let color_channels = lf_grid.color_channels();
++    if patch_ref_grid.color_channels() != color_channels {
++        return Err(Error::NotSupported(
++            "patch reference channel count differs at 1:8",
++        ));
++    }
++    let bit_depth = image_header.metadata.bit_depth;
++    for target in &patch_ref.patch_targets {
++        match target.blending.first().map(|b| &b.mode) {
++            None | Some(PatchBlendMode::None) => continue,
++            Some(PatchBlendMode::Add) => {}
++            Some(_) => return Err(Error::NotSupported("non-additive patch at 1:8")),
++        }
++        for idx in 0..color_channels {
++            let lf_region = lf_grid.regions_and_shifts()[idx].0;
++            let ref_region = patch_ref_grid.regions_and_shifts()[idx].0;
++            let Some(src) = patch_ref_grid.buffer()[idx].as_float() else {
++                return Err(Error::NotSupported("integer patch reference at 1:8"));
++            };
++            let dst = lf_grid.buffer_mut()[idx].convert_to_float_modular(bit_depth)?;
++            let lf_w = (lf_region.width as usize).min(dst.width()) as i64;
++            let lf_h = (lf_region.height as usize).min(dst.height()) as i64;
++            let ref_w = (ref_region.width as usize).min(src.width()) as i64;
++            let ref_h = (ref_region.height as usize).min(src.height()) as i64;
++            // The patch offsets whose source pixel exists AND whose target lands in the LF
++            // image, computed up front so a patch hanging far off the frame costs nothing.
++            let span = |len: u32,
++                        src0: u32,
++                        src_lo: i32,
++                        src_len: i64,
++                        tgt: i32,
++                        lf_lo: i32,
++                        lf_len: i64| {
++                let src_start = src_lo as i64 - src0 as i64;
++                let tgt_start = 8 * lf_lo as i64 - tgt as i64;
++                let lo = 0.max(src_start).max(tgt_start);
++                let hi = (len as i64)
++                    .min(src_start + src_len)
++                    .min(tgt_start + 8 * lf_len);
++                lo..hi.max(lo)
++            };
++            let ys = span(
++                patch_ref.height,
++                patch_ref.y0,
++                ref_region.top,
++                ref_h,
++                target.y,
++                lf_region.top,
++                lf_h,
++            );
++            let xs = span(
++                patch_ref.width,
++                patch_ref.x0,
++                ref_region.left,
++                ref_w,
++                target.x,
++                lf_region.left,
++                lf_w,
++            );
++            for py in ys {
++                let ry = (patch_ref.y0 as i64 + py - ref_region.top as i64) as usize;
++                let ly = ((target.y as i64 + py).div_euclid(8) - lf_region.top as i64) as usize;
++                for px in xs.clone() {
++                    let rx = (patch_ref.x0 as i64 + px - ref_region.left as i64) as usize;
++                    let lx =
++                        ((target.x as i64 + px).div_euclid(8) - lf_region.left as i64) as usize;
++                    let v = *src.get_ref(rx, ry);
++                    *dst.get_mut(lx, ly) += v / 64.0;
++                }
++            }
++        }
++    }
++    Ok(())
++}
++
+ fn blend_single(
+     mut base: MutableSubgrid<f32>,
+     new_grid: SharedSubgrid<f32>,
 diff -ruN pristine/jxl-render/src/image.rs patched/jxl-render/src/image.rs
---- pristine/jxl-render/src/image.rs	2026-09-27 16:13:24.987268200 -0500
-+++ patched/jxl-render/src/image.rs	2026-09-27 16:13:25.107200800 -0500
+--- pristine/jxl-render/src/image.rs	2026-09-30 17:17:35.038870100 -0500
++++ patched/jxl-render/src/image.rs	2026-09-30 18:06:41.487140300 -0500
 @@ -592,6 +592,36 @@
          self.color_channels = count;
      }
@@ -39,8 +149,8 @@ diff -ruN pristine/jxl-render/src/image.rs patched/jxl-render/src/image.rs
          for (ec_idx, ec_info) in ec_info.iter().enumerate() {
              if !matches!(ec_info.ty, jxl_image::ExtraChannelType::Alpha { .. }) {
 diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
---- pristine/jxl-render/src/lib.rs	2026-09-27 16:13:25.017218200 -0500
-+++ patched/jxl-render/src/lib.rs	2026-09-27 16:13:25.086234200 -0500
+--- pristine/jxl-render/src/lib.rs	2026-09-30 17:17:35.040669900 -0500
++++ patched/jxl-render/src/lib.rs	2026-09-30 18:06:41.489141800 -0500
 @@ -6,7 +6,10 @@
      ColorEncodingWithProfile, ColorManagementSystem, ColorTransform, ColourEncoding, ColourSpace,
      EnumColourEncoding, RenderingIntent, TransferFunction,
@@ -53,7 +163,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
  use jxl_grid::AllocTracker;
  use jxl_image::{ImageHeader, ImageMetadata};
  use jxl_modular::Sample;
-@@ -31,6 +34,18 @@
+@@ -31,6 +34,25 @@
  pub use region::Region;
  use state::*;
  
@@ -61,8 +171,15 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
 +///
 +/// Frames that do not cover the canvas exactly are refused. The reduction applies to the frame,
 +/// while callers size buffers from the image, so the two must describe the same rectangle.
++///
++/// Frames with splines are refused too: they are drawn onto the frame after the VarDCT
++/// decode, at 1:1, so the LF image never contains them. Patches are drawn at that point as
++/// well, but the LF render stamps additive ones itself (`blend::patch_lf`), because libjxl
++/// stores repeated text glyphs that way and refusing them would put every lettered page on
++/// the full decode. Noise is left out; it is synthetic grain.
 +pub fn lf_only_applies(image_header: &ImageHeader, frame_header: &FrameHeader) -> bool {
 +    frame_header.encoding == Encoding::VarDct
++        && !frame_header.flags.splines()
 +        && frame_header.x0 == 0
 +        && frame_header.y0 == 0
 +        && frame_header.width == image_header.size.width
@@ -72,7 +189,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
  /// Render context that tracks loaded and rendered frames.
  pub struct RenderContext {
      image_header: Arc<ImageHeader>,
-@@ -55,6 +70,7 @@
+@@ -55,6 +77,7 @@
      cms: Box<dyn ColorManagementSystem + Send + Sync>,
      cached_transform: Mutex<Option<ColorTransform>>,
      force_wide_buffers: bool,
@@ -80,7 +197,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
  }
  
  impl std::fmt::Debug for RenderContext {
-@@ -179,6 +195,7 @@
+@@ -179,6 +202,7 @@
              loading_render_cache_narrow: None,
              loading_region: None,
              requested_image_region: full_image_region,
@@ -88,7 +205,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
              embedded_icc: self.embedded_icc,
              requested_color_encoding,
              cms: Box::new(jxl_color::NullCms),
-@@ -238,6 +255,22 @@
+@@ -238,6 +262,22 @@
      pub fn image_region(&self) -> Region {
          self.requested_image_region
      }
@@ -111,7 +228,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
  }
  
  impl RenderContext {
-@@ -431,7 +464,14 @@
+@@ -431,7 +471,14 @@
  
          let header = frame.header();
          // Check if LF frame exists
@@ -127,7 +244,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
              return Err(Error::UninitializedLfFrame(header.lf_level));
          }
  
-@@ -492,6 +532,7 @@
+@@ -492,6 +539,7 @@
          image_region: Region,
          prev_frame_visibility: (usize, usize),
          pool: &JxlThreadPool,
@@ -135,7 +252,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
      ) -> FrameRender<S> {
          if let Some(lf) = &reference_frames.lf {
              tracing::trace!(idx = lf.frame.idx, "Spawn LF frame renderer");
-@@ -526,6 +567,7 @@
+@@ -526,6 +574,7 @@
              image_region,
              pool.clone(),
              prev_frame_visibility,
@@ -143,7 +260,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
          );
          match result {
              Ok(grid) => FrameRender::Done(grid),
-@@ -548,6 +590,7 @@
+@@ -548,6 +597,7 @@
          let prev_frame_visibility = self.get_previous_frames_visibility(&frame);
  
          let pool = self.pool.clone();
@@ -151,7 +268,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
          Arc::new(move |state, image_region| {
              Self::do_render(
                  &frame,
-@@ -556,6 +599,7 @@
+@@ -556,6 +606,7 @@
                  image_region,
                  prev_frame_visibility,
                  &pool,
@@ -159,7 +276,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
              )
          })
      }
-@@ -741,7 +785,14 @@
+@@ -741,7 +792,14 @@
              return Err(Error::IncompleteFrame);
          }
  
@@ -175,7 +292,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
          if header.flags.use_lf_frame() {
              self.spawn_renderer(lf_frame_idx);
          }
-@@ -782,6 +833,7 @@
+@@ -782,6 +840,7 @@
                  image_region,
                  prev_frame_visibility,
                  &self.pool,
@@ -183,7 +300,7 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
              );
  
              match state {
-@@ -844,6 +896,7 @@
+@@ -844,6 +903,7 @@
                  image_region,
                  prev_frame_visibility,
                  &self.pool,
@@ -192,8 +309,8 @@ diff -ruN pristine/jxl-render/src/lib.rs patched/jxl-render/src/lib.rs
  
              match state {
 diff -ruN pristine/jxl-render/src/render.rs patched/jxl-render/src/render.rs
---- pristine/jxl-render/src/render.rs	2026-09-27 16:13:25.054037800 -0500
-+++ patched/jxl-render/src/render.rs	2026-09-27 16:13:25.142154700 -0500
+--- pristine/jxl-render/src/render.rs	2026-09-30 17:17:35.044684900 -0500
++++ patched/jxl-render/src/render.rs	2026-09-30 18:06:41.495017300 -0500
 @@ -18,6 +18,7 @@
      image_region: Region,
      pool: JxlThreadPool,
@@ -221,7 +338,7 @@ diff -ruN pristine/jxl-render/src/render.rs patched/jxl-render/src/render.rs
              );
              match (result, reference_frames.lf) {
                  (Ok(grid), _) => grid,
-@@ -67,6 +73,24 @@
+@@ -67,6 +73,51 @@
          }
      };
  
@@ -232,9 +349,36 @@ diff -ruN pristine/jxl-render/src/render.rs patched/jxl-render/src/render.rs
 +        // transcode carries Cb and Cr at half the LF luma's width and height, and the YCbCr
 +        // conversion needs three planes of one size. Upsample them to the luma exactly as
 +        // the 1:1 path does below, against the LF image's own region rather than the frame's.
-+        if frame_header.do_ycbcr {
-+            if let Some(&(lf_region, _)) = fb.regions_and_shifts().first() {
-+                fb.upsample_jpeg(lf_region, image_header.metadata.bit_depth)?;
++        if frame_header.do_ycbcr
++            && let Some(&(lf_region, _)) = fb.regions_and_shifts().first()
++        {
++            fb.upsample_jpeg(lf_region, image_header.metadata.bit_depth)?;
++        }
++        // Patches are stamped onto the frame after the VarDCT decode, so the LF image lacks
++        // them. libjxl subtracts each repeated text glyph from the picture and adds it back
++        // as a patch, so without this a lettered page thumbnails with its text missing.
++        if frame_header.flags.patches() {
++            if frame_header.do_ycbcr {
++                return Err(Error::NotSupported("patches on a YCbCr frame at 1:8"));
++            }
++            if let Some(patches) = cache.lf_global.as_ref().and_then(|g| g.patches.as_ref()) {
++                for patch in &patches.patches {
++                    let Some(ref_grid) = &reference_frames.refs[patch.ref_idx as usize] else {
++                        return Err(Error::InvalidReference(patch.ref_idx));
++                    };
++                    let ref_header = ref_grid.frame.f.header();
++                    // A reference rendered at 1:8 itself has no 1:1 pixels to stamp.
++                    if crate::lf_only_applies(image_header, ref_header) {
++                        return Err(Error::NotSupported("patch reference rendered at 1:8"));
++                    }
++                    let oriented_image_region =
++                        Region::with_size(ref_header.width, ref_header.height)
++                            .translate(ref_header.x0, ref_header.y0);
++                    let ref_grid_image = std::sync::Arc::clone(&ref_grid.image).run_with_image()?;
++                    let ref_grid_image =
++                        ref_grid_image.blend(Some(oriented_image_region), &pool)?;
++                    blend::patch_lf(image_header, &mut fb, &ref_grid_image, patch)?;
++                }
 +            }
 +        }
 +        // It carries colour channels only, so give it the extra channels the caller's pixel
@@ -247,8 +391,8 @@ diff -ruN pristine/jxl-render/src/render.rs patched/jxl-render/src/render.rs
          fb.upsample_jpeg(color_padded_region, image_header.metadata.bit_depth)?;
      }
 diff -ruN pristine/jxl-render/src/vardct/mod.rs patched/jxl-render/src/vardct/mod.rs
---- pristine/jxl-render/src/vardct/mod.rs	2026-09-27 16:13:25.036477500 -0500
-+++ patched/jxl-render/src/vardct/mod.rs	2026-09-27 16:13:25.102492200 -0500
+--- pristine/jxl-render/src/vardct/mod.rs	2026-09-30 17:17:35.060357300 -0500
++++ patched/jxl-render/src/vardct/mod.rs	2026-09-30 18:06:41.513661300 -0500
 @@ -51,6 +51,7 @@
      cache: &mut RenderCache<S>,
      region: Region,

@@ -9,6 +9,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+- **JPEG XL thumbnails keep their text.** The reference encoder saves repeated letters in a
+  screenshot or a lettered comic page once and stamps them into place, and the thumbnail
+  skipped that step, so pages came out with most of their text missing and speech bubbles
+  empty. It now draws them.
+- **CMYK JPEG XL images get thumbnails.** They failed to open at all before.
+- **Very tall JPEG XL images, such as webtoon strips, usually thumbnail about three times
+  faster.**
 - **The Quick preview now says why a video has no sound or no picture** (#49). Windows has no
   decoder for DTS sound at all, and HEVC, AV1 and VP9 video need extensions from the Microsoft
   Store, so such a video used to play in silence or show a still frame with no explanation.

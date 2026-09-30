@@ -173,6 +173,18 @@ const JXL_ICC_XYB_COLOUR_SPACE: &[u8] =
     include_bytes!("../../../../tests/fixtures/jxl/icc-xyb-colour-space.jxl");
 const JXL_LF_SMOOTHING_SUBSAMPLED_CHROMA: &[u8] =
     include_bytes!("../../../../tests/fixtures/jxl/lf-smoothing-subsampled-chroma.jxl");
+/// A 512x384 screenshot of text (26 lines of Consolas 12 pt, light on #1e1e1e), which cjxl
+/// stores as PATCHES: each repeated glyph once, then stamped onto the frame after the VarDCT
+/// decode. Comic lettering can take the same route. Regenerate with
+/// `magick -size 512x384 xc:#1e1e1e -font Consolas -pointsize 12 -fill #e8e8e8 -annotate +6+14 @text.txt text.png`
+/// then `cjxl text.png text-patches.jxl -d 1 -e 7`.
+const JXL_TEXT_PATCHES: &[u8] = include_bytes!("../../../../tests/fixtures/jxl/text-patches.jxl");
+/// A webtoon strip: 64x17000, taller than `MAX_DIM`, a red-to-blue vertical gradient, lossy
+/// (VarDCT, so it has a 1:8 image). Regenerate with
+/// `magick -size 64x17000 gradient:#d02020-#2020d0 s.png` then
+/// `cjxl s.png strip-17000-vardct.jxl -d 1`.
+const JXL_STRIP_VARDCT: &[u8] =
+    include_bytes!("../../../../tests/fixtures/jxl/strip-17000-vardct.jxl");
 /// The same twin scene as AVIF, 10-bit 4:4:4 lossless: one tagged PQ / BT.2020 (`nclx` 9, 16,
 /// 9, full range), one sRGB / BT.709. The first is the "HDR base" AVIF of issue #39 and the
 /// second its SDR control. Regenerate both with

@@ -211,7 +211,7 @@ pub(super) fn decode_any_with_wic_target(
     // Per-tier breadcrumb: each tier's underlying error Display is logged before
     // we fall through, so a failed decode is diagnosable (`-Debug` on) instead of
     // every tier collapsing to a bare E_FAIL. Logging is gated by `log_debug`.
-    if let Some(img) = try_jxl_tier(bytes, wic_thumbnail_cx) {
+    if let Some(img) = try_jxl_tier(bytes, wic_thumbnail_cx, external) {
         return Ok(img);
     }
     // AVIF: our own decoder, and the only one. One that fails goes on to ImageMagick and the
@@ -309,15 +309,19 @@ fn decode_avif_tiers(
 }
 
 /// JPEG XL: our own pure-Rust tier, FIRST and signature-gated. The `image` crate and
-/// WIC don't decode jxl, and build-release.ps1 strips the jxl coder out of the bundled
-/// magick - so without this an ADVERTISED format silently fails to thumbnail on a
-/// clean install. On failure the caller falls through to the tiers below (a machine
-/// with a full ImageMagick could yet decode it).
-pub(super) fn try_jxl_tier(bytes: &[u8], wic_thumbnail_cx: Option<u32>) -> Option<DynamicImage> {
+/// WIC don't decode jxl, so this is the tier that answers for it everywhere: the bundled
+/// ImageMagick does carry a JXL coder, but only the isolated hosts may call it, and a
+/// subprocess per thumbnail is far slower. On failure the caller falls through to the
+/// tiers below.
+pub(super) fn try_jxl_tier(
+    bytes: &[u8],
+    wic_thumbnail_cx: Option<u32>,
+    external: bool,
+) -> Option<DynamicImage> {
     if !is_jxl(bytes) {
         return None;
     }
-    match decode_jxl(bytes, wic_thumbnail_cx) {
+    match decode_jxl(bytes, wic_thumbnail_cx, external) {
         Ok(img) => Some(img),
         Err(e) => {
             st2k_base::safety::log_debugf!("decode tier `jxl` failed: {e}");

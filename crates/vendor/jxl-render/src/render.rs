@@ -80,9 +80,36 @@ pub(crate) fn render_frame<S: Sample>(
         // transcode carries Cb and Cr at half the LF luma's width and height, and the YCbCr
         // conversion needs three planes of one size. Upsample them to the luma exactly as
         // the 1:1 path does below, against the LF image's own region rather than the frame's.
-        if frame_header.do_ycbcr {
-            if let Some(&(lf_region, _)) = fb.regions_and_shifts().first() {
-                fb.upsample_jpeg(lf_region, image_header.metadata.bit_depth)?;
+        if frame_header.do_ycbcr
+            && let Some(&(lf_region, _)) = fb.regions_and_shifts().first()
+        {
+            fb.upsample_jpeg(lf_region, image_header.metadata.bit_depth)?;
+        }
+        // Patches are stamped onto the frame after the VarDCT decode, so the LF image lacks
+        // them. libjxl subtracts each repeated text glyph from the picture and adds it back
+        // as a patch, so without this a lettered page thumbnails with its text missing.
+        if frame_header.flags.patches() {
+            if frame_header.do_ycbcr {
+                return Err(Error::NotSupported("patches on a YCbCr frame at 1:8"));
+            }
+            if let Some(patches) = cache.lf_global.as_ref().and_then(|g| g.patches.as_ref()) {
+                for patch in &patches.patches {
+                    let Some(ref_grid) = &reference_frames.refs[patch.ref_idx as usize] else {
+                        return Err(Error::InvalidReference(patch.ref_idx));
+                    };
+                    let ref_header = ref_grid.frame.f.header();
+                    // A reference rendered at 1:8 itself has no 1:1 pixels to stamp.
+                    if crate::lf_only_applies(image_header, ref_header) {
+                        return Err(Error::NotSupported("patch reference rendered at 1:8"));
+                    }
+                    let oriented_image_region =
+                        Region::with_size(ref_header.width, ref_header.height)
+                            .translate(ref_header.x0, ref_header.y0);
+                    let ref_grid_image = std::sync::Arc::clone(&ref_grid.image).run_with_image()?;
+                    let ref_grid_image =
+                        ref_grid_image.blend(Some(oriented_image_region), &pool)?;
+                    blend::patch_lf(image_header, &mut fb, &ref_grid_image, patch)?;
+                }
             }
         }
         // It carries colour channels only, so give it the extra channels the caller's pixel

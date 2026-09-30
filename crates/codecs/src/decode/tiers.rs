@@ -16,16 +16,35 @@ pub(super) fn is_jxl(bytes: &[u8]) -> bool {
 }
 
 /// Decode JPEG XL via the pure-Rust `jxl-oxide` crate (its `image`-crate
-/// `ImageDecoder` integration). jxl has no other tier here — the `image` crate and
-/// WIC both lack it and the shipped magick drops the coder. Bomb-guarded exactly like
+/// `ImageDecoder` integration). The `image` crate and WIC both lack jxl; the bundled
+/// magick has a coder, but only the isolated hosts may call it. Bomb-guarded exactly like
 /// the other tiers (per-edge [`MAX_DIM`], total [`MAX_PIXELS`], [`MAX_ALLOC`] per
 /// allocation). HDR jxl decodes to 32-bit float and is tone-mapped to 8-bit sRGB the
 /// same way the EXR/Radiance path is. `rayon` is compiled out, so no global thread
 /// pool lands inside explorer.exe.
-pub(super) fn decode_jxl(bytes: &[u8], target: Option<u32>) -> Result<DynamicImage> {
+///
+/// `external` says the caller is an isolated host (the thumbnail surrogate, the EXEs), which
+/// is what lets a thumbnail request use the widened source ceiling a scaled WIC decode gets
+/// ([`MAX_SCALED_SOURCE_PIXELS`], through the same [`wic::wic_source_within_limits`] rule),
+/// so a webtoon strip (800x30000, say) thumbnails from its small 1:8 image. Only a render
+/// that really IS the 1:8 image gets past the per-edge guard: a lossless strip has none, and
+/// its full decode here measured 2.4 s against 0.8 s through the bundled magick (libjxl,
+/// multi-threaded), so it is left to that tier as before. The in-process menu tile passes
+/// `false` and keeps the strict guard throughout.
+pub(super) fn decode_jxl(
+    bytes: &[u8],
+    target: Option<u32>,
+    external: bool,
+) -> Result<DynamicImage> {
     let mut decoder = open_jxl(bytes)?;
+    let scaled = target.filter(|_| external);
+    let (sw, sh) = image::ImageDecoder::dimensions(&decoder);
+    if !super::wic::wic_source_within_limits(sw, sh, scaled) {
+        return Err(Error::from(E_FAIL));
+    }
     let reduced = target.is_some_and(|t| request_reduced(&mut decoder, t));
-    match render_jxl(decoder) {
+    let any_edge = scaled.is_some() && image::ImageDecoder::dimensions(&decoder) != (sw, sh);
+    match render_jxl(decoder, any_edge) {
         // THE SHORTCUT NEVER COSTS A THUMBNAIL. This is a fallback for an Err, NOT crash
         // protection: a panic inside the decoder aborts the process (panic = "abort"), so it
         // never reaches this match, and issue #43 was fixed where it happened - the chroma
@@ -37,7 +56,7 @@ pub(super) fn decode_jxl(bytes: &[u8], target: Option<u32>) -> Result<DynamicIma
         // subsampled size and failed there, where the 1:1 path had always worked. So a
         // failure on the reduced path buys one full decode before the file is given up on; a
         // file the 1:1 path refuses too fails here exactly as it always did.
-        Err(_) if reduced => render_jxl(open_jxl(bytes)?),
+        Err(_) if reduced => render_jxl(open_jxl(bytes)?, false),
         result => result,
     }
 }
@@ -97,18 +116,27 @@ fn request_reduced(decoder: &mut JxlReader<'_>, t: u32) -> bool {
 }
 
 /// Everything after the size decision: the bomb guard, the limits, colour management and
-/// the render itself.
-fn render_jxl(mut decoder: JxlReader<'_>) -> Result<DynamicImage> {
+/// the render itself. `any_edge` lifts the per-edge half of the guard (see [`decode_jxl`]);
+/// the total never exceeds [`MAX_PIXELS`] either way.
+fn render_jxl(mut decoder: JxlReader<'_>, any_edge: bool) -> Result<DynamicImage> {
     use image::ImageDecoder;
     // Reject an oversized canvas before allocating the framebuffer (matches the WIC
-    // tier's guard: per-edge MAX_DIM and total MAX_PIXELS).
+    // tier's guard: per-edge MAX_DIM and total MAX_PIXELS). These are the dimensions the
+    // render will PRODUCE, which under the 1:8 request is the reduced image.
     let (w, h) = decoder.dimensions();
-    if w == 0 || h == 0 || w > MAX_DIM || h > MAX_DIM || (w as u64) * (h as u64) > MAX_PIXELS {
+    let edges_fit = any_edge || (w <= MAX_DIM && h <= MAX_DIM);
+    if w == 0 || h == 0 || !edges_fit || (w as u64) * (h as u64) > MAX_PIXELS {
         return Err(Error::from(E_FAIL));
     }
     let mut limits = image::Limits::default();
-    limits.max_image_width = Some(MAX_DIM);
-    limits.max_image_height = Some(MAX_DIM);
+    // jxl-oxide checks these against the FULL image even when it will render the 1:8 one, so
+    // setting them refused every strip taller than MAX_DIM before its tiny reduced render
+    // could start. The guard above already bounds what gets rendered; the source was bounded
+    // in `decode_jxl`.
+    if !any_edge {
+        limits.max_image_width = Some(MAX_DIM);
+        limits.max_image_height = Some(MAX_DIM);
+    }
     limits.max_alloc = Some(MAX_ALLOC);
     decoder
         .set_limits(limits)
@@ -546,14 +574,15 @@ pub(super) fn looks_like_tga(b: &[u8]) -> bool {
 pub(crate) mod fuzzapi {
     use super::*;
 
-    /// The thumbnail path: request the 1:8 image, fall back to a full decode on failure.
+    /// The thumbnail path: request the 1:8 image, fall back to a full decode on failure. As the
+    /// isolated host asks for it, whose wider ceiling lets the most shapes into the decoder.
     pub(crate) fn reduced(b: &[u8]) {
-        let _ = decode_jxl(b, Some(256));
+        let _ = decode_jxl(b, Some(256), true);
     }
 
     /// The 1:1 path, which the reduced one falls back to and every non-thumbnail caller takes.
     pub(crate) fn full(b: &[u8]) {
-        let _ = decode_jxl(b, None);
+        let _ = decode_jxl(b, None, false);
     }
 }
 

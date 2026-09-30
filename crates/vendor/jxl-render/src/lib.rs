@@ -38,8 +38,15 @@ use state::*;
 ///
 /// Frames that do not cover the canvas exactly are refused. The reduction applies to the frame,
 /// while callers size buffers from the image, so the two must describe the same rectangle.
+///
+/// Frames with splines are refused too: they are drawn onto the frame after the VarDCT
+/// decode, at 1:1, so the LF image never contains them. Patches are drawn at that point as
+/// well, but the LF render stamps additive ones itself (`blend::patch_lf`), because libjxl
+/// stores repeated text glyphs that way and refusing them would put every lettered page on
+/// the full decode. Noise is left out; it is synthetic grain.
 pub fn lf_only_applies(image_header: &ImageHeader, frame_header: &FrameHeader) -> bool {
     frame_header.encoding == Encoding::VarDct
+        && !frame_header.flags.splines()
         && frame_header.x0 == 0
         && frame_header.y0 == 0
         && frame_header.width == image_header.size.width

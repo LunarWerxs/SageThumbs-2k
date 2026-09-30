@@ -57,6 +57,18 @@ out of 255, and visually indistinguishable.
   public dimension describes the IMAGE, so the two only agree when the frame is the whole
   canvas. Added 2026-08-20 from upstream review; no conformance file and no corpus sample
   triggers it, which is precisely why it had to be caught by reading rather than by a red test.
+- **Patches are stamped onto the LF image; splines refuse the mode** (2026-09-30). Both are
+  drawn onto the frame after the VarDCT decode, so the LF image never held them: the
+  conformance `patches` file and any cjxl encode of text thumbnailed with nearly all its text
+  missing. libjxl codes text glyphs as ADDITIVE patches (subtracted from the picture first),
+  and each LF pixel is the mean of an 8x8 block, so `blend::patch_lf` adds every patch pixel
+  divided by 64 to the LF pixel it lands in: exactly the LF image of the patched frame. Any
+  other blend mode, a YCbCr frame, or a reference that was itself rendered at 1:8 returns
+  `NotSupported`, and `decode_jxl` retries those with a full decode. Refusing patches outright
+  was tried first and measured: every photo with text in it lost the 1:8 path (conformance
+  `bike` 109 ms -> 1215 ms, `progressive` 146 ms -> 2939 ms). Splines are never written by
+  cjxl, so they simply refuse. Noise is still skipped; it is grain.
+  `tests/fixtures/jxl/text-patches.jxl` pins both the text and the 1:8 size.
 
 **Modular (lossless) frames have no LF image and are unaffected.** They ignore the request and
 render at 1:1, which is why `decode_jxl` reads the size back rather than assuming.

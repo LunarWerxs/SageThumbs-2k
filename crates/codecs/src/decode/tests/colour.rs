@@ -295,8 +295,8 @@ fn jxl_applies_its_embedded_color_profile() {
     // Issue #9: the jxl tier decoded correctly but never colour-managed, unlike the `image`
     // and WIC tiers. A wide-gamut jxl therefore reached Explorer with its raw AdobeRGB
     // numbers treated as sRGB, which is a visible shift on every saturated colour.
-    let img =
-        crate::decode::tiers::decode_jxl(JXL_ADOBERGB, None).expect("decode the AdobeRGB jxl");
+    let img = crate::decode::tiers::decode_jxl(JXL_ADOBERGB, None, false)
+        .expect("decode the AdobeRGB jxl");
     let rgb = img.to_rgb8();
     let px = rgb.get_pixel(16, 16).0;
 

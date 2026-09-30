@@ -23,8 +23,9 @@ fn fuzz_found_malformed_jxls_are_refused_not_a_panic() {
         ),
     ] {
         for (path, target) in [("1:1", None), ("1:8", Some(256))] {
-            let decoded =
-                std::panic::catch_unwind(|| crate::decode::tiers::decode_jxl(bytes, target));
+            let decoded = std::panic::catch_unwind(|| {
+                crate::decode::tiers::decode_jxl(bytes, target, target.is_some())
+            });
             assert!(decoded.is_ok(), "the {path} path panicked on {name}");
         }
     }
@@ -40,14 +41,14 @@ fn fuzz_found_malformed_jxls_are_refused_not_a_panic() {
 fn jpeg_transcoded_jxl_thumbnails_through_the_reduced_path() {
     for (name, bytes) in [("4:2:0", JXL_JPEG420), ("4:2:2", JXL_JPEG422)] {
         // 256x192 reduces to 32x24, and 32 * 4 >= 32 * 3, so the reduced path takes it.
-        let reduced = crate::decode::tiers::decode_jxl(bytes, Some(32))
+        let reduced = crate::decode::tiers::decode_jxl(bytes, Some(32), true)
             .unwrap_or_else(|e| panic!("{name}: reduced decode failed: {e:?}"));
         assert_eq!(
             (reduced.width(), reduced.height()),
             (32, 24),
             "{name}: not the 1:8 image"
         );
-        let full = crate::decode::tiers::decode_jxl(bytes, None)
+        let full = crate::decode::tiers::decode_jxl(bytes, None, false)
             .unwrap_or_else(|e| panic!("{name}: full decode failed: {e:?}"));
         assert_eq!(
             (full.width(), full.height()),
@@ -86,6 +87,59 @@ fn jpeg_transcoded_jxl_thumbnails_through_the_reduced_path() {
             "{name}: the reduced render strays from the full decode: mean {mean:.2}, worst {worst}"
         );
     }
+}
+
+/// Patches are stamped onto a frame after its VarDCT decode, so the 1:8 image never held them,
+/// and a JPEG XL of text thumbnailed with nearly all of its text gone: blank speech bubbles on
+/// a comic page. The thumbnail must stay the 1:8 image (refusing it for every file with a
+/// patch cost a photo with text in it 10-20x) and must look like the full decode, scaled.
+#[test]
+fn a_jxl_with_patches_keeps_them_in_its_thumbnail() {
+    let (w, h) = (64, 48);
+    let thumb = crate::decode::tiers::decode_jxl(JXL_TEXT_PATCHES, Some(w), true)
+        .expect("thumbnail decode failed")
+        .to_rgb8();
+    assert_eq!(thumb.dimensions(), (w, h), "not the 1:8 image");
+    let full = crate::decode::tiers::decode_jxl(JXL_TEXT_PATCHES, None, false)
+        .expect("full decode failed");
+    assert_eq!((full.width(), full.height()), (512, 384));
+    let want = full
+        .resize_exact(w, h, image::imageops::FilterType::Triangle)
+        .to_rgb8();
+    let sum: i64 = thumb
+        .pixels()
+        .zip(want.pixels())
+        .flat_map(|(a, b)| (0..3).map(move |c| (i64::from(a.0[c]) - i64::from(b.0[c])).abs()))
+        .sum();
+    // The text-less 1:8 render was measured at a mean of ~14.5 against this.
+    let mean = sum as f64 / f64::from(w * h * 3);
+    assert!(
+        mean < 4.0,
+        "the thumbnail lost the text: mean difference {mean:.2}"
+    );
+}
+
+/// A webtoon strip is taller than `MAX_DIM` and its 1:8 image is only 8x2125. jxl-oxide
+/// measured its height limit against the full image, so the strip was refused before that
+/// tiny render could start, and thumbnailed only when the ImageMagick subprocess rescued it
+/// (0.9 s against 0.26 s here). The in-process menu tile keeps the strict per-edge guard.
+#[test]
+fn a_jxl_strip_taller_than_max_dim_thumbnails_in_an_isolated_host() {
+    let img = crate::decode::tiers::decode_jxl(JXL_STRIP_VARDCT, Some(256), true)
+        .expect("the isolated thumbnail was refused");
+    assert_eq!((img.width(), img.height()), (8, 2125), "not the 1:8 image");
+    let px = img.to_rgb8();
+    let top = px.get_pixel(0, 1).0;
+    let bottom = px.get_pixel(0, px.height() - 2).0;
+    assert!(top[0] > top[2] + 100, "the top should be red, got {top:?}");
+    assert!(
+        bottom[2] > bottom[0] + 100,
+        "the bottom should be blue, got {bottom:?}"
+    );
+    assert!(
+        crate::decode::tiers::decode_jxl(JXL_STRIP_VARDCT, Some(256), false).is_err(),
+        "the in-process path must keep the per-edge guard"
+    );
 }
 
 #[test]

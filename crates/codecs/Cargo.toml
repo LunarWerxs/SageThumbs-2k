@@ -47,15 +47,17 @@ image = { workspace = true }
 img-parts = "0.4"
 # JPEG XL (.jxl) decode — the pure-Rust `jxl-oxide` crate (MIT OR Apache-2.0, C-free).
 # jxl is an ADVERTISED format (formats.rs) but neither the `image` crate nor WIC decode
-# it, and build-release.ps1 strips the jxl coder out of the bundled magick — so without
-# this tier jxl silently fails to thumbnail on a clean install. The `image` feature
+# it, and the in-process menu tile may not call the bundled magick's JXL coder, so this
+# tier answers for jxl everywhere. The `image` feature
 # yields a DynamicImage via the ImageDecoder trait (gray/RGB/alpha, 8/16-bit, float).
 # `default-features = false` DROPS the `rayon` feature on purpose: rayon would land a
 # global thread pool inside explorer.exe (the same reason parallel.rs hand-rolls its
-# pool). The optional `lcms2` (a C ICC binding) stays off — thumbnails don't need CMS.
+# pool). The optional `lcms2` (a C ICC binding) stays off. `moxcms` is the pure-Rust CMS
+# already in the build (see the root Cargo.toml); jxl-oxide needs one for exactly one job,
+# turning a CMYK (kBlack) image into RGB, which without it failed to decode at all.
 # NOTE: jxl-oxide is Rust edition 2024 and needs Rust 1.85; the workspace's effective
 # MSRV is higher because of sevenz-rust2 (see `rust-version` above).
-jxl-oxide = { version = "0.12", default-features = false, features = ["image"] }
+jxl-oxide = { version = "0.12", default-features = false, features = ["image", "moxcms"] }
 # AV1 (the picture inside every AVIF) - `rav1d`, the memory-safety project's Rust port of
 # dav1d (BSD-2-Clause). It replaced Windows' AV1 codec (a Store extension reached through WIC
 # and Media Foundation) on 2026-09-29: eight AVIF thumbnails asked for at once deadlocked the

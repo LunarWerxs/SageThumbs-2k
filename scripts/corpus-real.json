@@ -289,6 +289,20 @@
    "source": "apache/tika@3d4262da  tika-parsers/tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testJXL_ISOBMFF.jxl"
   },
   {
+   "file": "real-cmyk.jxl",
+   "url": "https://raw.githubusercontent.com/libjxl/conformance/b1d0f990b03e57bf6d137c365cd5dc8b470b9191/testcases/cmyk_layers/input.jxl",
+   "sha256": "D732C8836BF1ABEADF310D2E07387A32813ED4690D32650C1C25E541B80EED4A",
+   "bytes": 387140,
+   "source": "libjxl/conformance@b1d0f990  testcases/cmyk_layers/input.jxl"
+  },
+  {
+   "file": "real-patches.jxl",
+   "url": "https://raw.githubusercontent.com/libjxl/conformance/b1d0f990b03e57bf6d137c365cd5dc8b470b9191/testcases/patches/input.jxl",
+   "sha256": "3D8D3847BA40844B1D829366065261F34CC4B4ACC3D9006342C64127C1052A3E",
+   "bytes": 66562,
+   "source": "libjxl/conformance@b1d0f990  testcases/patches/input.jxl"
+  },
+  {
    "file": "real.jxr",
    "url": "https://raw.githubusercontent.com/drewnoakes/metadata-extractor-images/651ad0e67aa8d43d358ad05f9bc07b52d8b9ac6e/jxr/sunrise-hdr.jxr",
    "sha256": "68FB1C1BB560B681B3D5E53E4584890F8CBD64FD60EA6E9DBBAF2E41F1990979",
@@ -2446,7 +2460,9 @@
    "real.jpx"
   ],
   "jxl": [
-   "real.jxl"
+   "real.jxl",
+   "real-cmyk.jxl",
+   "real-patches.jxl"
   ],
   "jxr": [
    "real.jxr"

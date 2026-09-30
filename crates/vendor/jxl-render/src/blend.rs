@@ -10,7 +10,7 @@ use jxl_image::ImageHeader;
 use jxl_modular::Sample;
 use jxl_threadpool::JxlThreadPool;
 
-use crate::{ImageWithRegion, Reference, Region, Result, image::ImageBuffer};
+use crate::{Error, ImageWithRegion, Reference, Region, Result, image::ImageBuffer};
 
 #[derive(Debug)]
 enum BlendMode<'a> {
@@ -544,6 +544,97 @@ pub fn patch(
         }
     }
 
+    Ok(())
+}
+
+/// [`patch`] onto the 1:8 LF image of a frame (SageThumbs 2K patch, LF-only rendering).
+///
+/// Each LF pixel is the mean of an 8x8 block of the frame, and an additive patch adds its
+/// values to the frame pixel by pixel, so adding each patch pixel divided by 64 to the LF pixel
+/// its target lands in gives the LF image of the patched frame exactly. That is the mode
+/// libjxl gives text glyphs (it subtracts them from the picture before coding it). Any other
+/// mode does not average, so it is refused and the caller renders the frame at 1:1 instead.
+/// Only colour channels are stamped; the LF render has no extra channels to stamp onto.
+pub fn patch_lf(
+    image_header: &ImageHeader,
+    lf_grid: &mut ImageWithRegion,
+    patch_ref_grid: &ImageWithRegion,
+    patch_ref: &PatchRef,
+) -> Result<()> {
+    use jxl_frame::data::PatchBlendMode;
+
+    let color_channels = lf_grid.color_channels();
+    if patch_ref_grid.color_channels() != color_channels {
+        return Err(Error::NotSupported(
+            "patch reference channel count differs at 1:8",
+        ));
+    }
+    let bit_depth = image_header.metadata.bit_depth;
+    for target in &patch_ref.patch_targets {
+        match target.blending.first().map(|b| &b.mode) {
+            None | Some(PatchBlendMode::None) => continue,
+            Some(PatchBlendMode::Add) => {}
+            Some(_) => return Err(Error::NotSupported("non-additive patch at 1:8")),
+        }
+        for idx in 0..color_channels {
+            let lf_region = lf_grid.regions_and_shifts()[idx].0;
+            let ref_region = patch_ref_grid.regions_and_shifts()[idx].0;
+            let Some(src) = patch_ref_grid.buffer()[idx].as_float() else {
+                return Err(Error::NotSupported("integer patch reference at 1:8"));
+            };
+            let dst = lf_grid.buffer_mut()[idx].convert_to_float_modular(bit_depth)?;
+            let lf_w = (lf_region.width as usize).min(dst.width()) as i64;
+            let lf_h = (lf_region.height as usize).min(dst.height()) as i64;
+            let ref_w = (ref_region.width as usize).min(src.width()) as i64;
+            let ref_h = (ref_region.height as usize).min(src.height()) as i64;
+            // The patch offsets whose source pixel exists AND whose target lands in the LF
+            // image, computed up front so a patch hanging far off the frame costs nothing.
+            let span = |len: u32,
+                        src0: u32,
+                        src_lo: i32,
+                        src_len: i64,
+                        tgt: i32,
+                        lf_lo: i32,
+                        lf_len: i64| {
+                let src_start = src_lo as i64 - src0 as i64;
+                let tgt_start = 8 * lf_lo as i64 - tgt as i64;
+                let lo = 0.max(src_start).max(tgt_start);
+                let hi = (len as i64)
+                    .min(src_start + src_len)
+                    .min(tgt_start + 8 * lf_len);
+                lo..hi.max(lo)
+            };
+            let ys = span(
+                patch_ref.height,
+                patch_ref.y0,
+                ref_region.top,
+                ref_h,
+                target.y,
+                lf_region.top,
+                lf_h,
+            );
+            let xs = span(
+                patch_ref.width,
+                patch_ref.x0,
+                ref_region.left,
+                ref_w,
+                target.x,
+                lf_region.left,
+                lf_w,
+            );
+            for py in ys {
+                let ry = (patch_ref.y0 as i64 + py - ref_region.top as i64) as usize;
+                let ly = ((target.y as i64 + py).div_euclid(8) - lf_region.top as i64) as usize;
+                for px in xs.clone() {
+                    let rx = (patch_ref.x0 as i64 + px - ref_region.left as i64) as usize;
+                    let lx =
+                        ((target.x as i64 + px).div_euclid(8) - lf_region.left as i64) as usize;
+                    let v = *src.get_ref(rx, ry);
+                    *dst.get_mut(lx, ly) += v / 64.0;
+                }
+            }
+        }
+    }
     Ok(())
 }
 
