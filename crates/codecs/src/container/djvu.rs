@@ -213,17 +213,23 @@ mod tests {
     /// trimmed to this.
     #[test]
     fn photo_profile_pages_are_pictures_not_grey_rectangles() {
-        for (w, h) in [(1000u32, 1650u32), (1000, 3300), (1000, 4400), (1000, 6600)] {
-            let bytes = encode(w, h, EncodeQuality::Photo);
-            let img = extract(&bytes)
-                .unwrap_or_else(|| panic!("{w}x{h} DjVuPhoto page produced no cover at all"));
-            let sd = luma_sd(&img);
-            assert!(
-                sd > 20.0,
-                "{w}x{h} DjVuPhoto page rendered flat (luma sd {sd:.2}) - the background layer \
-                 was dropped, so this is a rectangle of fill colour, not a picture"
-            );
-        }
+        // The four page sizes are independent; each runs on its own thread.
+        std::thread::scope(|scope| {
+            for (w, h) in [(1000u32, 1650u32), (1000, 3300), (1000, 4400), (1000, 6600)] {
+                scope.spawn(move || {
+                    let bytes = encode(w, h, EncodeQuality::Photo);
+                    let img = extract(&bytes).unwrap_or_else(|| {
+                        panic!("{w}x{h} DjVuPhoto page produced no cover at all")
+                    });
+                    let sd = luma_sd(&img);
+                    assert!(
+                        sd > 20.0,
+                        "{w}x{h} DjVuPhoto page rendered flat (luma sd {sd:.2}) - the background \
+                         layer was dropped, so this is a rectangle of fill colour, not a picture"
+                    );
+                });
+            }
+        });
     }
 
     /// The same defect wearing the other costume. A layered page keeps its ink, so it never
