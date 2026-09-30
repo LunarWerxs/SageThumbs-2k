@@ -225,8 +225,14 @@ jobs:
       # Formatting is the cheapest gate we have (no build, seconds) and it keeps
       # review diffs about the change rather than about whitespace. `cargo fmt --all`
       # fixes anything this reports; `scripts\verify.ps1 -Lint` runs it locally first.
+      # cargo fmt never expands a macro, so it never reaches the test files tests/integration.rs declares
+      # inside its `suite!` macro; rustfmt checks them by name (Rust CI standard S20).
       - name: Rustfmt
-        run: cargo fmt --all --check
+        shell: pwsh
+        run: |
+          cargo fmt --all --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustfmt --check --edition 2021 @(Get-ChildItem tests -Filter *.rs | ForEach-Object FullName)
 
   # The shipped payload, built with the exact production features and held to its size budget. Its own
   # job beside build-test, not inside it (rust-ci-speed, move 1): the two release builds were 7.3 of

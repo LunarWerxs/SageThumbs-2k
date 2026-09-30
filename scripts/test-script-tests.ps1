@@ -11,7 +11,9 @@ $scripts = $PSScriptRoot
 $failed = 0
 $ran = 0
 
-$pyTests = @(Get-ChildItem -LiteralPath $scripts -Filter 'test_*.py' -File | Sort-Object Name)
+# -Recurse: scripts/refactor/ keeps its own tests (test_gate.py, test_extract_items.py), which ran nowhere
+# until 2026-09-30.
+$pyTests = @(Get-ChildItem -LiteralPath $scripts -Filter 'test_*.py' -File -Recurse | Sort-Object FullName)
 if ($pyTests.Count -gt 0) {
     $py = Get-Command python -ErrorAction SilentlyContinue
     if (-not $py) {

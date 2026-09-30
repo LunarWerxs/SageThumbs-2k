@@ -35,7 +35,13 @@ function Step([string]$name, [scriptblock]$block) {
 # (cost to run) ASCENDING, not by the order of the CI job being mirrored. CI runs its jobs in
 # PARALLEL across runners, so its ordering carries no signal about what should block first on
 # one machine. Anything that needs no build artifacts belongs above this line.
-Step 'rustfmt (--check)' { cargo fmt --all --check }
+# cargo fmt never expands a macro, so the test files tests/integration.rs declares inside `suite!` are
+# checked by name as well, exactly as CI's Rustfmt step does.
+Step 'rustfmt (--check)' {
+    cargo fmt --all --check
+    if ($LASTEXITCODE -ne 0) { return }
+    rustfmt --check --edition 2021 @(Get-ChildItem (Join-Path $PSScriptRoot '..\tests') -Filter *.rs | ForEach-Object FullName)
+}
 # The complexity gate, which until 2026-09-20 ran ONLY in CI - so a function over the line, or
 # a warn band that had grown, was discovered after the push, by a red runner, which is the
 # exact round trip this gate exists to prevent. It costs about two seconds (stdlib-only Python
