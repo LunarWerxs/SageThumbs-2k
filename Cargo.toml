@@ -415,6 +415,12 @@ features = [
 
 # Toolchain is pinned to stable-x86_64-pc-windows-msvc (rust-toolchain.toml).
 
+# Line tables only in dev and test (test inherits dev): a panic backtrace still names
+# file:line, and every debug and test binary links about twice as fast with far smaller PDBs.
+# Set the env vars CARGO_PROFILE_DEV_DEBUG=2 and CARGO_PROFILE_TEST_DEBUG=2 for a debugger session.
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.release]
 panic = "abort"
 opt-level = "z"
@@ -441,6 +447,10 @@ opt-level = 3
 [profile.dev.package.rav1d]
 opt-level = 3
 
+# rust-ci-speed: test-binaries not applied: everything that could merge already did (tests/integration.rs
+# is one executable); the 24 that remain each need a process of their own (a loaded DLL, settings or
+# locale globals, a latency budget, or a test naming its own pid or binary), which the merge scan
+# marks pid_named. crates/vendor/djvu-rs's 45 test binaries are vendored third-party code, never edited.
 [[test]]
 name = "integration"
 path = "tests/integration.rs"

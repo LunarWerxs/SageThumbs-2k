@@ -11,6 +11,14 @@ on:
   # is an API call, not a webhook, so it still works when that path is degraded.
   workflow_dispatch:
 
+# rust-ci-speed: windows-per-change not applied: SageThumbs 2K is a Windows shell extension,
+# Windows is its only platform, so build-test (x64 build, clippy, tests) stays per change.
+# The ARM64, self-update and MSRV legs stay per change: they run beside build-test and add no wall time.
+# rust-ci-speed: docs-skip not applied: the consistency job reads README.md and docs/FEATURES.md
+# (format count and badge drift against formats.rs), and release.ps1 needs a CI run on every
+# commit that is not validation-only, so a paths-ignore on **/*.md would let a docs edit
+# break the gate unseen or leave a release with no run to wait on.
+
 # CI only reads the checkout and public dependency metadata.
 permissions:
   contents: read
@@ -23,7 +31,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Has this workflow already SUCCEEDED on this exact commit (a workflow_dispatch on a ci/
+  # branch before landing)? Then the landing push's run gates nothing again: the four per-change
+  # jobs skip and the run reads success, which is what release.ps1 waits for. A
+  # dispatch always runs in full, and an API failure fails open (the gate runs).
+  already:
+    name: already green on this commit?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      verified: ${{ steps.check.outputs.verified }}
+    steps:
+      - name: Has this workflow already passed on this exact commit?
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          verified=0
+          case "$GITHUB_EVENT_NAME" in
+            push | pull_request)
+              wf="${GITHUB_WORKFLOW_REF%%@*}"; wf="${wf##*/}"
+              n="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/runs?head_sha=$GITHUB_SHA&status=success&per_page=10" \
+                --jq "[.workflow_runs[] | select(.id != $GITHUB_RUN_ID)] | length")" || n=0
+              if [ "${n:-0}" -gt 0 ]; then
+                echo "::notice::$GITHUB_SHA already passed this workflow; the gate is skipped."
+                verified=1
+              fi
+              ;;
+          esac
+          echo "verified=$verified" >> "$GITHUB_OUTPUT"
+
   build-test:
+    needs: already
+    if: needs.already.outputs.verified != '1'
     timeout-minutes: 60
     name: build · clippy · test (windows-msvc)
     runs-on: windows-latest
@@ -87,25 +129,6 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      # Build the exact two production feature sets in the same order as
-      # build-release.ps1: full EXEs first, then the menu-translation-subset DLL.
-      # This makes the raw payload budget a real PR gate rather than a synthetic
-      # unit test of the checker.
-      - name: Build production EXEs
-        run: cargo build --release --locked -p sagethumbs2k --features webp-lossy,html-preview,hdr-capture
-      - name: Build production slim DLL
-        run: cargo build --release --locked -p sagethumbs2k-dll --features webp-lossy,dll-i18n-subset
-      # The third shipped binary. It is COUNTED by the payload step below, so leaving it
-      # unbuilt fails that step with a missing FILE rather than a size verdict — which is
-      # how it failed the first time. No --features: this crate declares none.
-      - name: Build dialog hook DLL
-        run: cargo build --release --locked -p sagethumbs2k-dlghook
-      - name: Production Rust payload size
-        shell: pwsh
-        run: |
-          $target = Join-Path (& ./scripts/_targetdir.ps1) 'release'
-          ./scripts/check-release-rust-payload.ps1 -ArtifactDirectory $target
-
       # Integration tests (tests/) drive the built shell-extension DLL in-process the
       # way Explorer does: the COM thumbnail handshake (com_roundtrip) and the
       # IExplorerCommand verb flyout + invoke (explorer_command). They LoadLibrary the
@@ -153,10 +176,21 @@ jobs:
           $dest | Out-File -LiteralPath $env:GITHUB_PATH -Append -Encoding utf8
           & (Join-Path $dest 'magick.exe') -version
 
+      # The runner wraps ONLY the test binaries (scripts/test-timed.ps1) to record libtest's
+      # per-test times; the step below prints the 30 slowest every run.
       - name: Unit and integration tests
-        run: cargo test --locked --tests
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER: 'pwsh -NoProfile -File ${{ github.workspace }}\scripts\test-timed.ps1'
+          RT_TEST_TIMES: ${{ runner.temp }}\test-times.log
+        run: cargo test --locked --tests --no-fail-fast
+      - name: 30 slowest tests
+        if: always()
+        shell: pwsh
+        env:
+          RT_TEST_TIMES: ${{ runner.temp }}\test-times.log
+        run: ./scripts/slowest-tests.ps1
       - name: ImageMagick subprocess decode (ignored by default; needs the staged magick.exe)
-        run: cargo test --locked --lib magick_subprocess_decodes -- --ignored
+        run: cargo test --locked --lib magick_subprocess_decodes --no-fail-fast -- --ignored
 
       # Generic shell thumbnail API (personalisation pickers, file dialogs, most first-party
       # UI that asks for a thumbnail through IShellItemImageFactory instead of Explorer's own
@@ -192,6 +226,80 @@ jobs:
       - name: Rustfmt
         run: cargo fmt --all --check
 
+  # The shipped payload, built with the exact production features and held to its size budget. Its own
+  # job beside build-test, not inside it (rust-ci-speed, move 1): the two release builds were 7.3 of
+  # build-test's 20.2 minutes (run 36647684248) and nothing in build-test reads target/release, so side
+  # by side the wall is the slower job, not the sum. Same runner, toolchain and resource compiler.
+  payload:
+    needs: already
+    if: needs.already.outputs.verified != '1'
+    timeout-minutes: 60
+    name: production payload (release builds · size budget)
+    runs-on: windows-latest
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # rust-toolchain.toml pins stable-x86_64-pc-windows-msvc + clippy/rustfmt,
+      # which rustup installs on first cargo invocation. No setup action needed.
+      - name: Toolchain
+        run: rustup show
+
+      # build.rs embeds the exact product/version metadata that the payload gate
+      # validates. GitHub's Windows image includes GNU binutils, but its exact
+      # MinGW/MSYS2 location is runner-image-specific.
+      - name: Release resource compiler
+        shell: pwsh
+        run: |
+          $windresCommand = Get-Command windres.exe -CommandType Application `
+            -ErrorAction SilentlyContinue | Select-Object -First 1
+          $windres = if ($windresCommand) { $windresCommand.Source } else { $null }
+          if (-not $windres) {
+            $windres = @(
+              'C:\mingw64\bin\windres.exe'
+              'C:\msys64\mingw64\bin\windres.exe'
+              'C:\msys64\ucrt64\bin\windres.exe'
+              'C:\msys64\clang64\bin\windres.exe'
+            ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+              Select-Object -First 1
+          }
+          if (-not $windres -and (Test-Path -LiteralPath 'C:\msys64')) {
+            $windres = Get-ChildItem -LiteralPath 'C:\msys64' -Filter windres.exe `
+              -File -Recurse -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $windres) {
+            throw 'GitHub Windows runner did not provide windres; refusing metadata-free release binaries.'
+          }
+          Split-Path -Parent $windres |
+            Out-File -LiteralPath $env:GITHUB_PATH -Append -Encoding utf8
+          & $windres --version
+
+      # Pinned by the sha of a release tag, as in build-test (see the note there).
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # Build the exact two production feature sets in the same order as
+      # build-release.ps1: full EXEs first, then the menu-translation-subset DLL.
+      # This makes the raw payload budget a real PR gate rather than a synthetic
+      # unit test of the checker.
+      - name: Build production EXEs
+        run: cargo build --release --locked -p sagethumbs2k --features webp-lossy,html-preview,hdr-capture
+      - name: Build production slim DLL
+        run: cargo build --release --locked -p sagethumbs2k-dll --features webp-lossy,dll-i18n-subset
+      # The third shipped binary. It is COUNTED by the payload step below, so leaving it
+      # unbuilt fails that step with a missing FILE rather than a size verdict — which is
+      # how it failed the first time. No --features: this crate declares none.
+      - name: Build dialog hook DLL
+        run: cargo build --release --locked -p sagethumbs2k-dlghook
+      - name: Production Rust payload size
+        shell: pwsh
+        run: |
+          $target = Join-Path (& ./scripts/_targetdir.ps1) 'release'
+          ./scripts/check-release-rust-payload.ps1 -ArtifactDirectory $target
+
+
   # The one-click self-updater shipped broken for twenty releases (1.3.3..=1.10.0): its own
   # write-mode file lock made Windows refuse to launch every downloaded installer with
   # SE_ERR_SHARE, and nothing noticed because no test ever drove the real pipeline against
@@ -201,7 +309,12 @@ jobs:
   # the About-card updater runs — and fails unless the upgrade genuinely lands on disk.
   # Hosted runners are administrators, so the `runas` elevation proceeds without a prompt,
   # and the runner is disposable, so installing machine-wide is fine.
+  #
+  # Daily and on dispatch only (7.5 min a push): release.ps1 stage 4d runs this same harness
+  # on the real installer before anything is published.
   self-update-smoke:
+    needs: already
+    if: needs.already.outputs.verified != '1'
     timeout-minutes: 60
     name: self-update smoke (install · in-place upgrade)
     runs-on: windows-latest
@@ -345,7 +458,12 @@ jobs:
   # that an x64 cross-build cannot. It deliberately skips the engine payload:
   # it builds only the Rust/OS-codec app (no staged ImageMagick payload and no
   # installer publishing) and runs the normal debug-profile test suite natively.
+  #
+  # Daily and on dispatch only (10.9 min a push): the release ritual has its own ARM64 gate
+  # (arm64-portable-verify.yml, dispatched by release.ps1).
   arm64-native:
+    needs: already
+    if: needs.already.outputs.verified != '1'
     timeout-minutes: 60
     name: ARM64 native (debug build · test, no engine payload)
     runs-on: windows-11-arm
@@ -383,7 +501,16 @@ jobs:
       - name: Build ARM64 debug DLL with shipping features
         run: cargo +stable-aarch64-pc-windows-msvc build --locked --target aarch64-pc-windows-msvc -p sagethumbs2k-dll --features webp-lossy,dll-i18n-subset
       - name: Run native ARM64 unit and integration tests
-        run: cargo +stable-aarch64-pc-windows-msvc test --locked --tests --target aarch64-pc-windows-msvc
+        env:
+          CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_RUNNER: 'pwsh -NoProfile -File ${{ github.workspace }}\scripts\test-timed.ps1'
+          RT_TEST_TIMES: ${{ runner.temp }}\test-times.log
+        run: cargo +stable-aarch64-pc-windows-msvc test --locked --tests --target aarch64-pc-windows-msvc --no-fail-fast
+      - name: 30 slowest tests
+        if: always()
+        shell: pwsh
+        env:
+          RT_TEST_TIMES: ${{ runner.temp }}\test-times.log
+        run: ./scripts/slowest-tests.ps1
       - name: Verify ARM64 PE artifacts and engine-less payload
         shell: pwsh
         run: |
@@ -497,8 +624,11 @@ jobs:
 
   # Cargo.toml publishes 1.95 as the minimum supported Rust version. The main job
   # intentionally follows current stable, so exercise the lower bound separately
-  # instead of letting source/API drift make the declared MSRV fictional.
+  # instead of letting source/API drift make the declared MSRV fictional. Daily and on
+  # dispatch only (3.9 min a push): a floor drifts with dependency bumps, not per commit.
   msrv:
+    needs: already
+    if: needs.already.outputs.verified != '1'
     timeout-minutes: 60
     name: MSRV (Rust 1.95)
     runs-on: windows-latest
@@ -524,6 +654,8 @@ jobs:
   # Catches the "referenced-but-not-committed" + version/count drift classes that have
   # broken releases — fails fast, before anything ships. See scripts/check-consistency.ps1.
   consistency:
+    needs: already
+    if: needs.already.outputs.verified != '1'
     timeout-minutes: 60
     name: consistency (assets · counts · version)
     runs-on: windows-latest
@@ -650,9 +782,16 @@ jobs:
   # Upstream's standalone library intentionally excludes Cargo.lock; application
   # resolution and the root DWA integration test remain locked in build-test.
   vendored-exr:
+    needs: already
+    if: needs.already.outputs.verified != '1'
     timeout-minutes: 60
     name: vendored exr (DWA patch)
     runs-on: windows-latest
+    # The vendored crate is outside the workspace, so the root Cargo.toml's dev profile
+    # does not reach it.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Toolchain
@@ -660,15 +799,17 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: DWA library tests
-        run: 'cargo test --manifest-path crates/vendor/exr/Cargo.toml --no-default-features --lib compression::dwa::'
+        run: 'cargo test --manifest-path crates/vendor/exr/Cargo.toml --no-default-features --no-fail-fast --lib compression::dwa::'
       - name: DWAA and DWAB roundtrips
-        run: cargo test --manifest-path crates/vendor/exr/Cargo.toml --no-default-features --test roundtrip roundtrip_dwa
+        run: cargo test --manifest-path crates/vendor/exr/Cargo.toml --no-default-features --no-fail-fast --test roundtrip roundtrip_dwa
 
   # License + advisory + source/ban audit. The whole dependency graph is now
   # 100% permissive (RAR/CBR via the pure-Rust `rars` crate — no proprietary
   # UnRAR anywhere), so this proves the build is license-clean. Config +
   # allowlist live in deny.toml.
   deny:
+    needs: already
+    if: needs.already.outputs.verified != '1'
     timeout-minutes: 60
     name: cargo-deny (licenses · advisories — default features)
     runs-on: ubuntu-latest
