@@ -1472,3 +1472,25 @@ The same 500% run found a second, real bug: measured text went to design px with
 round-to-nearest (`MulDiv`), so 162 px at 500% came back as 32 design px and was given 160,
 clipping the last line. A size a control must CONTAIN goes through `dpi_unscale_up`;
 `text_width` and `wrapped_text_h` use it.
+
+## The JPEG XL 1:8 path hides its bugs from large probes, and ImageMagick hides the rest (2026-09-30)
+
+Three JPEG XL thumbnail bugs had shipped with every gate green. Patched text vanished from the
+thumbnail, strips taller than 16384 px failed in our own decoder, and CMYK files never decoded.
+They were found by rendering every JXL in reach, including libjxl's conformance files, with the
+old build and the new one and diffing the pixels. Three things made them invisible before:
+
+- **The 1:8 thumbnail path only engages at small sizes.** `request_reduced` takes it when the
+  LF image covers 3/4 of the target, so a 512 or 1024 px probe runs the full decode and misses
+  every 1:8 bug. Test JXL at 96 and 256 px.
+- **The bundled ImageMagick carries a JXL coder and rescues native failures in the isolated
+  hosts.** A strip our tier refused still thumbnailed in Explorer, only slower. Test our own tier
+  with `ST2K_NO_MAGICK=1`.
+- **Diff old against new, and time it.** The first patches fix (refusing the 1:8 path for any
+  patched frame) passed every test and made photos with text in them 10-20x slower; only the
+  timed old/new sweep showed it. `blend::patch_lf` is the fix that kept the speed.
+
+Two mechanics for the vendored patch, both paid for this session. `vendor-jxl.ps1` (regenerate
+mode) writes LF, while the patched files are committed CRLF, so restore each file's line endings
+before committing or git sees whole-file rewrites; `-Check` passes either way. And `cycle.py`
+clippies the vendored crate when you touch it, which the repo's own gate never does.
