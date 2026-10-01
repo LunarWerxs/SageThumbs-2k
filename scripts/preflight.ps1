@@ -35,6 +35,19 @@ function Step([string]$name, [scriptblock]$block) {
 # (cost to run) ASCENDING, not by the order of the CI job being mirrored. CI runs its jobs in
 # PARALLEL across runners, so its ordering carries no signal about what should block first on
 # one machine. Anything that needs no build artifacts belongs above this line.
+# CI floats on the newest `stable` (rust-toolchain.toml); this machine floats only when someone
+# runs `rustup update`. On 2026-10-01 GitHub moved to 1.99.0 while this desk sat on 1.98.1, the
+# new compiler deprecated a call three files used, and CI went red on every push that day while
+# every local gate was green. One `rustup check` says whether the two still agree; offline, it
+# says nothing and the step passes.
+Step 'this machine builds with the Rust stable CI builds with' {
+    $check = & rustup check 2>&1 | Out-String
+    $global:LASTEXITCODE = 0
+    if ($check -match '(?m)^stable-x86_64-pc-windows-msvc - update available: (\S+).*-> (\S+)') {
+        Write-Host "  CI builds with Rust $($Matches[2]); this machine has $($Matches[1]). Run: rustup update stable" -ForegroundColor Red
+        $global:LASTEXITCODE = 1
+    }
+}
 # cargo fmt never expands a macro, so the test files tests/integration.rs declares inside `suite!` are
 # checked by name as well, exactly as CI's Rustfmt step does.
 Step 'rustfmt (--check)' {

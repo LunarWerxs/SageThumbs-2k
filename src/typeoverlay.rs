@@ -244,18 +244,10 @@ fn clear_every_mark(classes: &windows_registry::Key) {
         .open(TYPE_LEVEL)
         .and_then(|k| k.keys().map(Iterator::collect))
         .unwrap_or_default();
+    // The `SystemFileAssociations` key itself stays even when this leaves it empty: nothing
+    // marks it as ours, and an empty key costs nothing where removing someone else's would not.
     for name in type_level {
         remove_progid(classes, &format!(r"{TYPE_LEVEL}\{name}"));
-    }
-    // Our writes may have been what created the per-user `SystemFileAssociations`; an empty
-    // one goes with them.
-    if let Ok(k) = classes.open(TYPE_LEVEL) {
-        let empty = k.values().map(|v| v.count() == 0).unwrap_or(false)
-            && k.keys().map(|s| s.count() == 0).unwrap_or(false);
-        drop(k);
-        if empty {
-            let _ = classes.remove_tree(TYPE_LEVEL);
-        }
     }
 }
 

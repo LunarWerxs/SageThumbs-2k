@@ -114,8 +114,10 @@ fn the_extension_wide_suppression_is_written_and_swept() {
 
     clear_every_mark(&classes);
     assert!(
-        classes.open("SystemFileAssociations").is_err(),
-        "the sweep takes the value, and the keys that only held it, back out"
+        classes
+            .open(r"SystemFileAssociations\.st2ktestext")
+            .is_err(),
+        "the sweep takes the value, and the key that only held it, back out"
     );
 }
 

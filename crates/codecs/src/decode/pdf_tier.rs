@@ -202,7 +202,8 @@ pub(crate) fn try_video_tier(
 /// One representative frame from the whole capped buffer, trying every decoder tier in
 /// order: the container's own keyframe mini-clip through Media Foundation (`mf`), then the
 /// FLV remux, the out-of-process Flash decoder, MF over the raw buffer, and last the
-/// out-of-process VP9 and MPEG-1/2 decoders. `at` is the user's `VideoOffset` mark.
+/// out-of-process VP9, MPEG-1/2 and H.264 High 10 decoders. `at` is the user's `VideoOffset`
+/// mark.
 /// `flv_clip` is the FLV remux the caller already built and profile-checked into `mf`.
 fn frame_by_bytes(
     bytes: &[u8],
