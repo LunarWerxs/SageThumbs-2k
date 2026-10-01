@@ -185,6 +185,52 @@ pub enum CoverOut {
 /// Max bytes we'll read for one cover entry (DarkThumbs' CBXMEM cap, 32 MiB).
 pub(crate) const MAX_COVER: u64 = 32 * 1024 * 1024;
 
+/// What the EXTRA pictures of a contact sheet (the second to fourth) may cost together.
+const CONTACT_SHEET_EXTRAS: u64 = 8 * 1024 * 1024;
+
+/// The decode allowance of one cover pull, shared by every archive reader (zip, 7z, rar), so
+/// the formats cannot drift apart on what they agree to read.
+///
+/// Two pools, spent in order. The FIRST picture may be as large as any single cover
+/// ([`MAX_COVER`]); only the extra pictures of a contact sheet share the small
+/// [`CONTACT_SHEET_EXTRAS`] pool. Issue #53: one pool of 8 MiB for every pick refused a `.7z`
+/// (and a `.rar`) whose only picture was a 13 MiB PNG, which zip and tar thumbnailed fine. A
+/// pick that fails still spends what its decoder emitted, so a run of corrupt first picks cannot
+/// each claim a fresh [`MAX_COVER`]: the worst pull is `MAX_COVER + CONTACT_SHEET_EXTRAS`.
+pub(crate) struct CoverBudget {
+    first: u64,
+    extras: u64,
+}
+
+impl CoverBudget {
+    pub(crate) fn new() -> Self {
+        Self {
+            first: MAX_COVER,
+            extras: CONTACT_SHEET_EXTRAS,
+        }
+    }
+
+    /// Bytes the next pick may read: the first pool until a picture has been captured, then
+    /// the extras pool.
+    pub(crate) fn room(&self, captured_any: bool) -> u64 {
+        if captured_any {
+            self.extras
+        } else {
+            self.first
+        }
+    }
+
+    /// Charge `spent` decoded bytes to the pool [`Self::room`] named.
+    pub(crate) fn charge(&mut self, captured_any: bool, spent: u64) {
+        let pool = if captured_any {
+            &mut self.extras
+        } else {
+            &mut self.first
+        };
+        *pool = pool.saturating_sub(spent);
+    }
+}
+
 /// Upper bound on the entries any archive listing or cover pick may return (shared by
 /// [`list_archive`] and every `pick_covers` listing: zip/7z/rar). It is passed INTO each
 /// format reader, so the reader itself stops collecting at the cap: a crafted directory that

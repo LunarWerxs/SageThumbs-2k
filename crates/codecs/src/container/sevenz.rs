@@ -29,20 +29,11 @@ const SOURCE_BUFFER_BYTES: usize = 256 * 1024;
 /// (thousands of small files — none over `MAX_COVER`, so `solid_bomb` never trips)
 /// buries its first image tens of MB in; the old 512 MiB budget let a single
 /// thumbnail decompress most of a multi-hundred-MB archive, pegging Explorer's
-/// host with a CPU + I/O spike. We only peek this far: covers within it thumbnail,
-/// anything deeper degrades to the stock icon. The reach cost of the first cover is
-/// predicted from the entry sizes up front, so a too-deep cover costs NO decode.
+/// host with a CPU + I/O spike. We only skip this far: a cover that starts within it
+/// thumbnails, anything deeper degrades to the stock icon. The reach cost of the first cover
+/// is predicted from the entry sizes up front, so a too-deep cover costs NO decode. The
+/// covers themselves are not charged here but to [`super::CoverBudget`].
 const SOLID_SCAN_BUDGET: u64 = 8 * 1024 * 1024;
-
-/// Non-solid contact sheets share the same small aggregate decode ceiling as a
-/// solid scan. Previously four 32 MiB picks could consume 128 MiB synchronously
-/// for one shell thumbnail.
-const NON_SOLID_COVERS_BUDGET: u64 = SOLID_SCAN_BUDGET;
-
-#[inline]
-fn complete_item_fits(prefix: u64, item: u64, budget: u64) -> bool {
-    prefix.saturating_add(item) <= budget
-}
 
 /// Cap on how many compression blocks a solid cover scan will engage with. A solid
 /// archive packs its files into a HANDFUL of large blocks — that is what "solid"
@@ -395,14 +386,14 @@ fn non_solid_covers<R: Read + Seek>(
     picks: &[usize],
     entries: &[Entry],
 ) -> Vec<Vec<u8>> {
-    let mut remaining = NON_SOLID_COVERS_BUDGET;
+    let mut budget = super::CoverBudget::new();
     let mut found = Vec::with_capacity(picks.len());
 
     for &i in picks {
-        if let Some((spent, data)) =
-            non_solid_pick(source, archive, password, i, entries, remaining)
-        {
-            remaining = remaining.saturating_sub(spent);
+        let captured_any = !found.is_empty();
+        let room = budget.room(captured_any);
+        if let Some((spent, data)) = non_solid_pick(source, archive, password, i, entries, room) {
+            budget.charge(captured_any, spent);
             if let Some(data) = data {
                 found.push(data);
             }
@@ -458,7 +449,7 @@ fn non_solid_pick<R: Read + Seek>(
         let ok = rd.take(remaining).read_to_end(&mut data).is_ok();
         // Charge every byte the codec emitted, even if CRC/length validation
         // later rejects the entry. Otherwise four corrupt picks could each
-        // consume the full 8 MiB allowance while none reduced `remaining`.
+        // claim the full allowance while none reduced the budget.
         spent = data.len() as u64;
         if ok && !data.is_empty() && data.len() as u64 == actual.size() {
             captured = Some(data);
@@ -509,8 +500,9 @@ fn solid_targets(entries: &[Entry], want: usize, prefs: &CoverPrefs) -> Vec<usiz
 /// non-solid, when the caller's `CoverPrefs::prefer_cover` is on) still leads
 /// the pick even when a plainer page sits physically ahead of it: reaching it may
 /// cost more to decode, but showing a random early page instead of the comic's own
-/// declared cover is the wrong trade for a thumbnail. The scan never decodes past
-/// [`SOLID_SCAN_BUDGET`] decompressed bytes either way.
+/// declared cover is the wrong trade for a thumbnail. The scan never skips past
+/// [`SOLID_SCAN_BUDGET`] decompressed bytes either way, and never keeps more than
+/// [`super::CoverBudget`] allows.
 ///
 /// The reach cost of the chosen first target (the decompressed bytes stored ahead
 /// of it, cover-named or not) is predicted from the entry sizes BEFORE any decode:
@@ -567,30 +559,24 @@ fn solid_covers<R: Read + Seek>(
     let reach = entries[..first]
         .iter()
         .fold(0u64, |acc, e| acc.saturating_add(e.size));
-    // Include the complete first target itself. The old check bounded only the
-    // bytes BEFORE it, then allowed a 32 MiB cover read after almost exhausting
-    // the 8 MiB budget. If the first useful result cannot fit in full, decline
-    // without decoding anything.
-    if !complete_item_fits(reach, entries[first].size, SOLID_SCAN_BUDGET) {
+    // The bytes skipped to get there are the scan budget's; the target itself is the
+    // cover budget's, read in full or not at all. If either cannot hold, decline without
+    // decoding anything.
+    if reach > SOLID_SCAN_BUDGET || entries[first].size > super::CoverBudget::new().room(false) {
         return Vec::new();
     }
 
-    let mut found: Vec<(usize, Vec<u8>)> = Vec::with_capacity(want);
-    let mut captured: HashSet<String> = HashSet::new();
-    let mut drained: u64 = 0;
-    let mut each = |entry: &sevenz_rust2::ArchiveEntry,
-                    rd: &mut dyn Read|
-     -> Result<bool, sevenz_rust2::Error> {
-        solid_step(
-            entry,
-            rd,
-            &mut found,
-            &mut captured,
-            &mut drained,
-            want,
-            &target_ranks,
-        )
+    let mut walk = SolidWalk {
+        found: Vec::with_capacity(want),
+        captured: HashSet::new(),
+        drained: 0,
+        budget: super::CoverBudget::new(),
+        want,
     };
+    let mut each =
+        |entry: &sevenz_rust2::ArchiveEntry,
+         rd: &mut dyn Read|
+         -> Result<bool, sevenz_rust2::Error> { walk.step(entry, rd, &target_ranks) };
 
     // Drive blocks ourselves so Ok(false) really stops the outer loop. The pinned
     // ArchiveReader::for_each_entries ignores that Boolean between blocks, causing
@@ -605,66 +591,95 @@ fn solid_covers<R: Read + Seek>(
     // The walk captured in PHYSICAL order; return the images in `targets` order so a
     // cover-named entry leads the result exactly as `solid_targets` (and the doc above)
     // promises. Rank is unique per name, so this sort is a stable reordering.
+    let mut found = walk.found;
     found.sort_by_key(|&(rank, _)| rank);
     found.into_iter().map(|(_, buf)| buf).collect()
 }
 
-/// One step of the solid-cover walk: capture the entry `rd` is streaming when it
-/// is an unclaimed target that fits the remaining budget, otherwise drain it to
-/// advance the solid stream. `Ok(false)` stops the block walk (done or spent).
-fn solid_step(
-    entry: &sevenz_rust2::ArchiveEntry,
-    rd: &mut dyn Read,
-    found: &mut Vec<(usize, Vec<u8>)>,
-    captured: &mut std::collections::HashSet<String>,
-    drained: &mut u64,
+/// The state of one solid-cover walk. Two separate allowances: `drained` counts the bytes
+/// decoded only to get PAST entries we do not want (capped at [`SOLID_SCAN_BUDGET`]), and
+/// `budget` the bytes of the pictures we keep ([`super::CoverBudget`]).
+struct SolidWalk {
+    found: Vec<(usize, Vec<u8>)>,
+    captured: std::collections::HashSet<String>,
+    drained: u64,
+    budget: super::CoverBudget,
     want: usize,
-    target_ranks: &std::collections::HashMap<&str, usize>,
-) -> Result<bool, sevenz_rust2::Error> {
-    // Done — enough images, or the peek budget is spent. Bail at the TOP,
-    // BEFORE reading `rd`.
-    if found.len() >= want || *drained >= SOLID_SCAN_BUDGET {
-        return Ok(false);
+}
+
+impl SolidWalk {
+    /// Whether the walk should keep going: not enough pictures yet, and skip budget left.
+    fn wants_more(&self) -> bool {
+        self.found.len() < self.want && self.drained < SOLID_SCAN_BUDGET
     }
-    let name = entry.name();
-    // An unclaimed target: the rank is its position in `solid_targets` order, not the
-    // physical order this walk reaches it in.
-    let unclaimed_rank = target_ranks
-        .get(name)
-        .copied()
-        .filter(|_| !captured.contains(name));
-    if let Some(rank) = unclaimed_rank {
-        let room = SOLID_SCAN_BUDGET.saturating_sub(*drained);
+
+    /// One step of the solid-cover walk: capture the entry `rd` is streaming when it
+    /// is an unclaimed target that fits the cover budget, otherwise drain it to
+    /// advance the solid stream. `Ok(false)` stops the block walk (done or spent).
+    fn step(
+        &mut self,
+        entry: &sevenz_rust2::ArchiveEntry,
+        rd: &mut dyn Read,
+        target_ranks: &std::collections::HashMap<&str, usize>,
+    ) -> Result<bool, sevenz_rust2::Error> {
+        // Done — enough images, or the peek budget is spent. Bail at the TOP,
+        // BEFORE reading `rd`.
+        if !self.wants_more() {
+            return Ok(false);
+        }
+        let name = entry.name();
+        // An unclaimed target: the rank is its position in `solid_targets` order, not the
+        // physical order this walk reaches it in.
+        let unclaimed_rank = target_ranks
+            .get(name)
+            .copied()
+            .filter(|_| !self.captured.contains(name));
+        match unclaimed_rank {
+            Some(rank) => self.capture(entry, rd, rank),
+            None => {
+                // A non-target neighbor must be decoded to advance the solid stream to
+                // the next entry — drain it to nowhere, capped at the remaining budget
+                // so one large neighbor can't overshoot (a partial drain only ever
+                // precedes the top-of-callback bail, so it never desyncs a later read).
+                let room = SOLID_SCAN_BUDGET.saturating_sub(self.drained);
+                let drained =
+                    std::io::copy(&mut rd.take(room), &mut std::io::sink()).unwrap_or(u64::MAX);
+                self.drained = self.drained.saturating_add(drained);
+                Ok(self.wants_more())
+            }
+        }
+    }
+
+    /// Read one wanted entry in full, charged to the cover budget.
+    fn capture(
+        &mut self,
+        entry: &sevenz_rust2::ArchiveEntry,
+        rd: &mut dyn Read,
+        rank: usize,
+    ) -> Result<bool, sevenz_rust2::Error> {
+        let captured_any = !self.found.is_empty();
+        let room = self.budget.room(captured_any);
         if entry.size() > room {
-            // A partial image is useless and would violate the advertised hard
-            // total budget. Stop before asking the decoder for any of it.
+            // A partial image is useless and would break the advertised budget. Stop
+            // before asking the decoder for any of it.
             return Ok(false);
         }
         // Capture on first sighting of the name (7z legally allows two entries
         // with the same name — take one, drain any later twin).
         let mut buf = Vec::with_capacity(entry.size() as usize);
         let ok = rd.take(room).read_to_end(&mut buf).is_ok();
-        *drained = drained.saturating_add(buf.len() as u64);
+        self.budget.charge(captured_any, buf.len() as u64);
         if !ok || buf.len() as u64 != entry.size() {
             // A failed mid-entry read leaves the SHARED solid stream desynced —
             // the crate aborts the walk on any error, so stop with what we have.
             return Ok(false);
         }
         if !buf.is_empty() {
-            captured.insert(name.to_string());
-            found.push((rank, buf));
+            self.captured.insert(entry.name().to_string());
+            self.found.push((rank, buf));
         }
-    } else {
-        // A non-target neighbor must be decoded to advance the solid stream to
-        // the next entry — drain it to nowhere, capped at the remaining budget
-        // so one large neighbor can't overshoot (a partial drain only ever
-        // precedes the top-of-callback bail, so it never desyncs a later read).
-        let room = SOLID_SCAN_BUDGET.saturating_sub(*drained);
-        *drained = drained.saturating_add(
-            std::io::copy(&mut rd.take(room), &mut std::io::sink()).unwrap_or(u64::MAX),
-        );
+        Ok(self.wants_more())
     }
-    Ok(found.len() < want && *drained < SOLID_SCAN_BUDGET)
 }
 
 /// List up to `max` of a 7-Zip archive's entries from metadata only (no block decode, no bomb risk).
@@ -861,35 +876,60 @@ mod tests {
         );
     }
 
-    /// Prefix + cover bytes share one hard 8 MiB budget. A cover that starts
-    /// inside the budget but ends outside it must be rejected up front; the old
-    /// code checked only `reach` and could decode roughly 40 MiB.
+    /// A stored (COPY) 7z of `files`, all in ONE solid block when `solid`, else one block each.
+    fn stored_7z(files: &[(&str, Vec<u8>)], solid: bool) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut writer = ArchiveWriter::new(Cursor::new(&mut bytes)).expect("writer");
+            writer.set_encrypt_header(false);
+            writer.set_content_methods(vec![EncoderConfiguration::new(EncoderMethod::COPY)]);
+            if solid {
+                let entries = files
+                    .iter()
+                    .map(|(n, _)| ArchiveEntry::new_file(n))
+                    .collect();
+                let readers = files
+                    .iter()
+                    .map(|(_, d)| sevenz_rust2::SourceReader::new(d.as_slice()))
+                    .collect();
+                writer
+                    .push_archive_entries(entries, readers)
+                    .expect("solid block");
+            } else {
+                for (name, data) in files {
+                    writer
+                        .push_archive_entry(ArchiveEntry::new_file(name), Some(data.as_slice()))
+                        .expect("entry");
+                }
+            }
+            writer.finish().expect("finish");
+        }
+        bytes
+    }
+
+    /// Issue #53: a 7z whose only picture is bigger than the 8 MiB contact-sheet pool (the
+    /// reporter's were a 13 MiB PNG and an 11 MiB JPEG) still gives up that picture, solid or
+    /// not, as zip and tar always did. Over `MAX_COVER` it is still refused.
     #[test]
-    fn solid_budget_includes_the_complete_first_cover() {
-        let entries = [
-            Entry {
-                name: "prefix.bin".into(),
-                is_dir: false,
-                size: SOLID_SCAN_BUDGET - 1024,
-            },
-            Entry {
-                name: "cover.png".into(),
-                is_dir: false,
-                size: 2048,
-            },
-        ];
-        let first = 1;
-        let reach = entries[..first]
-            .iter()
-            .fold(0u64, |acc, e| acc.saturating_add(e.size));
-        assert!(
-            reach < SOLID_SCAN_BUDGET,
-            "fixture must expose the old check's hole"
-        );
-        assert!(
-            !complete_item_fits(reach, entries[first].size, SOLID_SCAN_BUDGET),
-            "production budget helper must reject the incomplete fit"
-        );
+    fn a_single_picture_over_eight_mib_is_still_the_cover() {
+        let big = vec![0x5Au8; 12 * 1024 * 1024];
+        for solid in [false, true] {
+            // A one-file block is never solid, so the solid case carries a small note ahead.
+            let mut files = vec![("page01.png", big.clone())];
+            if solid {
+                files.insert(0, ("notes.txt", b"scanned 2026".to_vec()));
+            }
+            let archive = stored_7z(&files, solid);
+            let parsed = Archive::read(&mut Cursor::new(&archive), &Password::empty()).expect("7z");
+            assert_eq!(parsed.is_solid, solid, "fixture shape");
+            let covers = extract_seek_n(Cursor::new(archive), 1, &default_prefs())
+                .unwrap_or_else(|| panic!("no cover from a 12 MiB picture (solid: {solid})"));
+            assert_eq!(covers.len(), 1);
+            assert_eq!(covers[0].len(), big.len(), "solid: {solid}");
+        }
+        let huge = vec![0x5Au8; super::super::MAX_COVER as usize + 1];
+        let archive = stored_7z(&[("page01.png", huge)], false);
+        assert!(extract_seek_n(Cursor::new(archive), 1, &default_prefs()).is_none());
     }
 
     /// A solid comic with an explicit `cover.jpg` must not show a random
@@ -962,23 +1002,23 @@ mod tests {
         assert!(!is_cover_named("page01.png"));
     }
 
-    /// A four-cell contact sheet used to admit four MAX_COVER entries (128 MiB
-    /// total). No one such item fits the new aggregate budget, and successful
-    /// items decrement the same remaining-byte counter before the next decode.
+    /// A four-cell contact sheet used to admit four MAX_COVER entries (128 MiB total). The
+    /// first picture may be large, but the extra cells share one small pool: after a 12 MiB
+    /// first page, a 5 MiB page fits and a second one no longer does.
     #[test]
-    fn non_solid_contact_sheet_has_an_aggregate_budget() {
-        assert!(!complete_item_fits(
-            0,
-            super::super::MAX_COVER,
-            NON_SOLID_COVERS_BUDGET
-        ));
-        let mut remaining = NON_SOLID_COVERS_BUDGET;
-        for size in [3 * 1024 * 1024, 5 * 1024 * 1024] {
-            assert!(size <= remaining);
-            remaining -= size;
-        }
-        assert_eq!(remaining, 0);
-        assert!(1 > remaining, "the next successful byte must be refused");
+    fn non_solid_contact_sheet_extras_share_one_small_budget() {
+        let five = vec![0x22u8; 5 * 1024 * 1024];
+        let archive = stored_7z(
+            &[
+                ("page01.png", vec![0x11u8; 12 * 1024 * 1024]),
+                ("page02.png", five.clone()),
+                ("page03.png", five),
+            ],
+            false,
+        );
+        let covers = extract_seek_n(Cursor::new(archive), 4, &default_prefs()).expect("covers");
+        let sizes: Vec<usize> = covers.iter().map(Vec::len).collect();
+        assert_eq!(sizes, vec![12 * 1024 * 1024, 5 * 1024 * 1024]);
     }
 
     /// `ArchiveReader::read_file(name)` is last-wins for duplicate names. Build a
@@ -995,7 +1035,7 @@ mod tests {
             writer
                 .push_archive_entry(ArchiveEntry::new_file("cover.png"), Some(b"FIRST" as &[u8]))
                 .expect("first entry");
-            let later = vec![0xCC; NON_SOLID_COVERS_BUDGET as usize + 1];
+            let later = vec![0xCC; super::super::MAX_COVER as usize + 1];
             writer
                 .push_archive_entry(ArchiveEntry::new_file("cover.png"), Some(later.as_slice()))
                 .expect("duplicate entry");

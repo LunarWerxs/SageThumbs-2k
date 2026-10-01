@@ -125,49 +125,36 @@ pub(crate) fn cover_image_only<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Optio
     covers_image_only(zip, 1, &prefs).and_then(|mut v| (!v.is_empty()).then(|| v.swap_remove(0)))
 }
 
-/// Aggregate decode ceiling for a CONTACT SHEET's cover picks (`want` > 1), mirroring
-/// `sevenz::NON_SOLID_COVERS_BUDGET` (the aggregate pattern already retired there).
-/// `read_index`'s [`super::MAX_COVER`] caps each entry independently, but nothing
-/// previously shared a budget ACROSS the up-to-4 picks a contact sheet reads, so a
-/// crafted archive of MAX_COVER-sized "cover" candidates could cost 128 MiB
-/// synchronously for one shell thumbnail. A single-cover request (`want == 1`, the
-/// ordinary `extract`/`cover_image_only` path) is left uncapped by this budget —
-/// MAX_COVER alone was already the right bound there, and this only closes the gap
-/// the aggregation itself opened.
-const CONTACT_SHEET_COVERS_BUDGET: u64 = 8 * 1024 * 1024;
-
 /// Up to `want` natural-first images (cover-named first), one bounded entry read
 /// each. An entry that fails to read (corrupt / encrypted / unsupported method)
 /// is skipped rather than failing the set — the sheet degrades gracefully.
 ///
-/// Each pick is charged against [`CONTACT_SHEET_COVERS_BUDGET`] from the bytes it
-/// ACTUALLY reads, and the read itself is capped at what is left of the budget
-/// (`read_index_bounded`): the `zip` crate never enforces the central directory's
-/// declared uncompressed size against the real deflate output, so a crafted archive can
-/// declare any number and still inflate to the cap. Bounding the read is the only thing
-/// that holds; a declared-size pre-check can neither trust the number nor tell a lie
-/// from an honestly incompressible page whose deflate stream came out a few bytes larger
-/// than the original.
+/// The reads share one [`super::CoverBudget`]: the first picture may be a full cover, the
+/// up-to-three extra pictures of a contact sheet share one small pool (a crafted archive of
+/// MAX_COVER-sized "cover" candidates once cost 128 MiB for one shell thumbnail). Each pick is
+/// charged from the bytes it ACTUALLY reads, and the read itself is capped at what is left
+/// (`read_index_bounded`): the `zip` crate never enforces the central directory's declared
+/// uncompressed size against the real deflate output, so a crafted archive can declare any
+/// number and still inflate to the cap. Bounding the read is the only thing that holds; a
+/// declared-size pre-check can neither trust the number nor tell a lie from an honestly
+/// incompressible page whose deflate stream came out a few bytes larger than the original.
 pub(crate) fn covers_image_only<R: Read + Seek>(
     zip: &mut ZipArchive<R>,
     want: usize,
     prefs: &CoverPrefs,
 ) -> Option<Vec<Vec<u8>>> {
     let entries = list_entries(zip);
-    let mut remaining = if want > 1 {
-        CONTACT_SHEET_COVERS_BUDGET
-    } else {
-        u64::MAX
-    };
+    let mut budget = super::CoverBudget::new();
     let mut out = Vec::new();
     for idx in pick_covers(&entries, want, prefs) {
         if entries.get(idx).is_none() {
             continue;
         }
-        let Some(bytes) = read_index_bounded(zip, idx, remaining) else {
+        let captured_any = !out.is_empty();
+        let Some(bytes) = read_index_bounded(zip, idx, budget.room(captured_any)) else {
             continue;
         };
-        remaining = remaining.saturating_sub(bytes.len() as u64);
+        budget.charge(captured_any, bytes.len() as u64);
         out.push(bytes);
     }
     (!out.is_empty()).then_some(out)
@@ -349,17 +336,17 @@ mod tests {
 
     /// A062: the per-entry MAX_COVER cap alone let a contact sheet's up-to-4 picks each
     /// spend their own full 32 MiB independently — 128 MiB synchronously for one shell
-    /// thumbnail. Three picks here individually clear MAX_COVER easily but together
-    /// clear the much smaller aggregate budget, so the fix must return FEWER than all
-    /// three eligible covers, while a plain want=1 extraction (unaffected by the
-    /// aggregate cap) still gets its one pick.
+    /// thumbnail. The first picture has its own full-cover allowance; the extra pictures
+    /// here individually clear MAX_COVER easily but together clear the much smaller extras
+    /// pool, so the fix must return FEWER than all four eligible covers, while a plain
+    /// want=1 extraction still gets its one pick.
     #[test]
     fn contact_sheet_covers_respect_an_aggregate_budget_across_picks() {
-        // ~3.34 MiB each: comfortably under MAX_COVER (32 MiB) individually, but two of
-        // them already use most of CONTACT_SHEET_COVERS_BUDGET (8 MiB) and three exceed it.
+        // ~3.34 MiB each: comfortably under MAX_COVER (32 MiB) individually; the first is
+        // the cover, two extras fit the 8 MiB extras pool and a third does not.
         let page_bytes = vec![0xABu8; 3_500_000];
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-        for name in ["page01.png", "page02.png", "page03.png"] {
+        for name in ["page01.png", "page02.png", "page03.png", "page04.png"] {
             writer
                 .start_file(name, zip::write::SimpleFileOptions::default())
                 .unwrap();
@@ -376,24 +363,24 @@ mod tests {
             "single-cover extraction must be unaffected by the contact-sheet aggregate budget"
         );
 
-        // want=4 (a contact sheet): the aggregate budget must cap the returned set BELOW
-        // the 3 that are individually eligible under MAX_COVER alone, proving the picks
-        // now share one budget instead of each getting a fresh MAX_COVER allowance.
+        // want=4 (a contact sheet): the extras pool must cap the returned set BELOW the 4
+        // that are individually eligible under MAX_COVER alone, proving the extra picks
+        // share one pool instead of each getting a fresh MAX_COVER allowance.
         let mut zip4 = ZipArchive::new(Cursor::new(&bytes)).unwrap();
         let out = covers_image_only(&mut zip4, 4, &default_prefs())
             .expect("the first pick alone must fit");
         assert_eq!(
             out.len(),
-            2,
-            "2 x ~3.34 MiB fits the 8 MiB budget, a 3rd does not; got {} covers",
+            3,
+            "the cover + 2 x ~3.34 MiB extras fit, a 3rd extra does not; got {} covers",
             out.len()
         );
     }
 
     /// The contact-sheet budget is spent by the bytes an entry REALLY inflates to, and an
     /// entry that does not fit what is left is refused whole. Four 3 MiB pages that all
-    /// declare 1 byte: the first two fit the 8 MiB budget, the third would need 3 MiB of
-    /// the remaining 2 MiB and is skipped, and so is the fourth.
+    /// declare 1 byte: the first is the cover, the next two fit the 8 MiB extras pool, and
+    /// the fourth would need 3 MiB of the remaining 2 MiB and is skipped.
     #[test]
     fn contact_sheet_budget_is_spent_by_real_bytes_not_the_declared_size() {
         let real = vec![0xABu8; 3_000_000]; // inflates to ~3 MiB
@@ -429,8 +416,8 @@ mod tests {
             .expect("the pages that fit the budget are still served");
         assert_eq!(
             covers.len(),
-            2,
-            "two real 3 MiB pages fit an 8 MiB budget, not four"
+            3,
+            "the cover and two real 3 MiB extras fit, not four"
         );
         assert!(
             covers.iter().all(|c| c.len() == real.len()),

@@ -29,19 +29,16 @@ pub(crate) use seek::fuzz_seed;
 /// host. Mirrors 7z's `SOLID_SCAN_BUDGET`, which caps exactly the same drain.
 const SKIP_SCAN_BUDGET: u64 = 8 * 1024 * 1024;
 
-/// Ceiling on the SUM of bytes captured across every picked cover in one contact-sheet
-/// pull (`extract_n`'s `want` targets share ONE pass). Each entry is already capped
-/// individually at `MAX_COVER` (32 MiB) by [`CapBuf`], but nothing previously bounded
-/// their total — up to 4 picks each hitting `MAX_COVER` could synchronously buffer 128
-/// MiB for one shell thumbnail. Mirrors 7z's `NON_SOLID_COVERS_BUDGET`, which caps
-/// exactly the same drain (see `sevenz.rs`).
-const COVERS_AGGREGATE_BUDGET: u64 = 8 * 1024 * 1024;
-
 /// A `Write` sink that appends into a shared buffer, capped at `MAX_COVER` per entry AND
-/// charged against a shared [`COVERS_AGGREGATE_BUDGET`] across every pick in the pass.
+/// charged against the pass's shared [`super::CoverBudget`]: the first pick opened draws on the
+/// first-picture pool, every later one on the contact-sheet extras pool. Before that, every
+/// pick shared one 8 MiB pool, so a `.rar` whose only picture was larger got no thumbnail
+/// (issue #53).
 struct CapBuf {
     buf: Rc<RefCell<Vec<u8>>>,
-    aggregate_remaining: Rc<std::cell::Cell<u64>>,
+    budget: Rc<RefCell<super::CoverBudget>>,
+    /// Whether this pick draws on the extras pool (an earlier pick was opened first).
+    extra: bool,
 }
 
 /// A `Write` sink that DISCARDS its input but charges it against a shared budget, erroring out
@@ -74,14 +71,14 @@ impl Write for CapBuf {
             b.clear();
             return Err(std::io::Error::other("cover too large"));
         }
-        let remaining = self.aggregate_remaining.get();
-        if data.len() as u64 > remaining {
-            // Same poisoning as the per-entry cap above: an aggregate-budget cutoff
-            // mid-write must not leave a truncated buffer that still passes the filter.
+        let mut budget = self.budget.borrow_mut();
+        if data.len() as u64 > budget.room(self.extra) {
+            // Same poisoning as the per-entry cap above: a budget cutoff mid-write must
+            // not leave a truncated buffer that still passes the filter.
             b.clear();
-            return Err(std::io::Error::other("covers aggregate budget exhausted"));
+            return Err(std::io::Error::other("covers budget exhausted"));
         }
-        self.aggregate_remaining.set(remaining - data.len() as u64);
+        budget.charge(self.extra, data.len() as u64);
         b.extend_from_slice(data);
         Ok(data.len())
     }
@@ -143,7 +140,7 @@ pub fn extract_n(bytes: &[u8], want: usize, prefs: &CoverPrefs) -> Option<Vec<Ve
     let bufs: Vec<Rc<RefCell<Vec<u8>>>> = (0..picks.len())
         .map(|_| Rc::new(RefCell::new(Vec::new())))
         .collect();
-    let aggregate_remaining = Rc::new(std::cell::Cell::new(COVERS_AGGREGATE_BUDGET));
+    let budget = Rc::new(RefCell::new(super::CoverBudget::new()));
     let mut remaining = picks.len();
     let drained = Rc::new(std::cell::Cell::new(0u64));
     // Sequential on purpose: `rars` also exposes `extract_to_parallel_buffered`, which
@@ -160,10 +157,12 @@ pub fn extract_n(bytes: &[u8], want: usize, prefs: &CoverPrefs) -> Option<Vec<Ve
         // exactly (same function, same `false`), or a non-ASCII pick can never be found here.
         let name = decode_entry_name(&meta.name, false);
         if let Some(rank) = targets.remove(name.as_str()) {
+            let extra = remaining < picks.len();
             remaining -= 1;
             Ok(Box::new(CapBuf {
                 buf: Rc::clone(&bufs[rank]),
-                aggregate_remaining: Rc::clone(&aggregate_remaining),
+                budget: Rc::clone(&budget),
+                extra,
             }) as Box<dyn Write>)
         } else {
             // Not a pick — discard, but on the clock (see `SKIP_SCAN_BUDGET`).
@@ -209,10 +208,10 @@ mod tests {
     #[test]
     fn capbuf_clears_its_buffer_when_the_per_entry_cap_is_exceeded() {
         let buf = Rc::new(RefCell::new(Vec::new()));
-        let aggregate_remaining = Rc::new(std::cell::Cell::new(COVERS_AGGREGATE_BUDGET));
         let mut cap = CapBuf {
             buf: Rc::clone(&buf),
-            aggregate_remaining,
+            budget: Rc::new(RefCell::new(crate::container::CoverBudget::new())),
+            extra: false,
         };
         // A first, small write succeeds and is visible in the shared buffer.
         cap.write_all(b"partial jpeg bytes").unwrap();
@@ -226,35 +225,38 @@ mod tests {
         assert!(buf.borrow().is_empty());
     }
 
-    /// The SUM of bytes captured across every picked cover in one pass must be bounded,
-    /// even though each individual entry stays under `MAX_COVER`.
+    /// Issue #53: the first picture of a pass may be up to `MAX_COVER` (a 12 MiB page used to
+    /// fail an 8 MiB pool shared by every pick), while the contact sheet's extra pictures
+    /// share one small pool, so a pass still cannot buffer four `MAX_COVER` pages.
     #[test]
-    fn covers_aggregate_budget_is_shared_and_charged_across_picks() {
-        let aggregate_remaining = Rc::new(std::cell::Cell::new(COVERS_AGGREGATE_BUDGET));
-        let buf_a = Rc::new(RefCell::new(Vec::new()));
-        let buf_b = Rc::new(RefCell::new(Vec::new()));
-        let mut cap_a = CapBuf {
-            buf: Rc::clone(&buf_a),
-            aggregate_remaining: Rc::clone(&aggregate_remaining),
+    fn the_first_pick_is_a_full_cover_and_the_extras_share_a_small_pool() {
+        let budget = Rc::new(RefCell::new(crate::container::CoverBudget::new()));
+        let cap = |extra| {
+            let buf = Rc::new(RefCell::new(Vec::new()));
+            let w = CapBuf {
+                buf: Rc::clone(&buf),
+                budget: Rc::clone(&budget),
+                extra,
+            };
+            (buf, w)
         };
-        let mut cap_b = CapBuf {
-            buf: Rc::clone(&buf_b),
-            aggregate_remaining: Rc::clone(&aggregate_remaining),
-        };
+        let (buf_a, mut cap_a) = cap(false);
+        let (buf_b, mut cap_b) = cap(true);
+        let (buf_c, mut cap_c) = cap(true);
 
-        // First pick spends most of the shared budget; well under MAX_COVER on its own.
-        let first = vec![0u8; (COVERS_AGGREGATE_BUDGET - 1024) as usize];
-        cap_a.write_all(&first).unwrap();
+        let first = vec![0u8; 12 * 1024 * 1024];
+        cap_a
+            .write_all(&first)
+            .expect("a 12 MiB first picture fits");
         assert_eq!(buf_a.borrow().len(), first.len());
 
-        // Second pick, also under MAX_COVER individually, no longer fits the SHARED
-        // remaining budget — before this fix only the per-entry MAX_COVER cap applied,
-        // so this write would have succeeded and let two picks buffer far more than the
-        // aggregate ceiling.
-        let second = vec![0u8; 4096];
-        assert!(cap_b.write(&second).is_err());
+        // The second pick spends most of the extras pool; the third no longer fits it.
+        cap_b.write_all(&vec![0u8; 8 * 1024 * 1024 - 1024]).unwrap();
+        assert!(!buf_b.borrow().is_empty());
+        cap_c.write_all(b"page").unwrap();
+        assert!(cap_c.write(&[0u8; 4096]).is_err());
         assert!(
-            buf_b.borrow().is_empty(),
+            buf_c.borrow().is_empty(),
             "the truncated pick must be poisoned, not partial"
         );
     }

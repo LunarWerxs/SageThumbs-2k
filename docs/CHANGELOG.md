@@ -9,6 +9,8 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+- **7-Zip and RAR archives whose first picture is larger than 8 MB now get thumbnails** (#53),
+  as zip and tar archives already did. That includes `.cb7` and `.cbr` comics with big scans.
 - **JPEG XL thumbnails keep their text.** The reference encoder saves repeated letters in a
   screenshot or a lettered comic page once and stamps them into place, and the thumbnail
   skipped that step, so pages came out with most of their text missing and speech bubbles
