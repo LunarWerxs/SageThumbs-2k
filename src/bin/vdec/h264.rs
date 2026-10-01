@@ -31,7 +31,13 @@ pub(super) fn frame_png(input: &[u8]) -> Result<Vec<u8>, String> {
     let (config, keyframe) = split_child_input(input).ok_or("malformed child input")?;
     let avcc = parse_avcc_config(config).map_err(|e| format!("avcC: {e}"))?;
     let units = parse_avcc(keyframe, avcc.length_size);
-    let sps = active_sps(avcc.sps_nals.iter().chain(&avcc.pps_nals).chain(&units))?;
+    let fed: Vec<&NalUnit<'_>> = avcc
+        .sps_nals
+        .iter()
+        .chain(&avcc.pps_nals)
+        .chain(&units)
+        .collect();
+    let sps = active_sps(&fed)?;
     let picture = decode(&avcc.sps_nals, &avcc.pps_nals, &units)?;
     let rgba = to_rgba(&picture, &sps)?;
     let img = image::RgbaImage::from_raw(picture.width, picture.height, rgba)
@@ -57,50 +63,62 @@ pub(super) fn frame_png(input: &[u8]) -> Result<Vec<u8>, String> {
 /// The first slice names a PPS, the PPS names an SPS, and a later set with the same id
 /// replaces an earlier one, as in the decoder. A chain that does not resolve falls back to the
 /// last SPS seen: the decoder cannot decode that slice either.
-fn active_sps<'a, 'b: 'a>(nals: impl Iterator<Item = &'a NalUnit<'b>>) -> Result<Sps, String> {
-    let mut sps_by_id: HashMap<u32, Sps> = HashMap::new();
-    let mut pps_to_sps: HashMap<u32, u32> = HashMap::new();
-    let (mut active, mut last_id) = (None, None);
-    for nal in nals {
-        match nal.nal_unit_type {
-            NalUnitType::Pps => {
-                if let Some([pps_id, sps_id]) = leading_ue(&nal.rbsp) {
-                    pps_to_sps.insert(pps_id, sps_id);
-                }
-                continue;
-            }
-            NalUnitType::Slice | NalUnitType::SliceIdr if active.is_none() => {
-                // slice_header: first_mb_in_slice, slice_type, pic_parameter_set_id.
-                let referenced = leading_ue::<3>(&nal.rbsp)
-                    .and_then(|[_, _, pps_id]| pps_to_sps.get(&pps_id).copied());
-                active = referenced.and_then(|id| sps_by_id.remove(&id));
-                continue;
-            }
-            NalUnitType::Sps => {}
-            _ => continue,
+fn active_sps(nals: &[&NalUnit<'_>]) -> Result<Sps, String> {
+    let mut capped = Vec::new();
+    for (at, nal) in nals.iter().enumerate() {
+        if nal.nal_unit_type == NalUnitType::Sps {
+            capped.extend(capped_sps(nal)?.map(|sps| (at, sps)));
         }
-        let Ok(sps) = parse_sps(&nal.rbsp) else {
-            continue;
-        };
-        let coded_w = sps
-            .pic_width_in_mbs_minus1
-            .saturating_add(1)
-            .saturating_mul(16);
-        let coded_h = sps
-            .pic_height_in_map_units_minus1
-            .saturating_add(1)
-            .saturating_mul(if sps.frame_mbs_only_flag { 16 } else { 32 });
-        if sps.width() == 0 || sps.height() == 0 || coded_w > MAX_DIM || coded_h > MAX_DIM {
-            return Err(format!(
-                "refusing a {coded_w}x{coded_h} coded frame (cap {MAX_DIM})"
-            ));
-        }
-        last_id = Some(sps.seq_parameter_set_id);
-        sps_by_id.insert(sps.seq_parameter_set_id, sps);
     }
-    active
-        .or_else(|| last_id.and_then(|id| sps_by_id.remove(&id)))
-        .ok_or_else(|| "no readable SPS in the record or the keyframe".to_string())
+    let named = first_slice_sps_id(nals).and_then(|(slice_at, id)| {
+        capped
+            .iter()
+            .rposition(|(at, sps)| *at < slice_at && sps.seq_parameter_set_id == id)
+    });
+    let pick = named
+        .or(capped.len().checked_sub(1))
+        .ok_or("no readable SPS in the record or the keyframe")?;
+    Ok(capped.swap_remove(pick).1)
+}
+
+/// Where the first slice sits among `nals`, and the SPS id it names through its PPS.
+fn first_slice_sps_id(nals: &[&NalUnit<'_>]) -> Option<(usize, u32)> {
+    let mut pps_to_sps = HashMap::new();
+    for (at, nal) in nals.iter().enumerate() {
+        match nal.nal_unit_type {
+            // pic_parameter_set_id, seq_parameter_set_id.
+            NalUnitType::Pps => pps_to_sps.extend(leading_ue(&nal.rbsp).map(|[p, s]| (p, s))),
+            NalUnitType::Slice | NalUnitType::SliceIdr => {
+                // first_mb_in_slice, slice_type, pic_parameter_set_id.
+                let [_, _, pps_id] = leading_ue::<3>(&nal.rbsp)?;
+                return pps_to_sps.get(&pps_id).map(|&sps_id| (at, sps_id));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// One SPS unit parsed and held to `MAX_DIM` by its coded size: `Err` past the cap, `None`
+/// for one the parser (and so the decoder) refuses.
+fn capped_sps(nal: &NalUnit<'_>) -> Result<Option<Sps>, String> {
+    let Ok(sps) = parse_sps(&nal.rbsp) else {
+        return Ok(None);
+    };
+    let coded_w = sps
+        .pic_width_in_mbs_minus1
+        .saturating_add(1)
+        .saturating_mul(16);
+    let coded_h = sps
+        .pic_height_in_map_units_minus1
+        .saturating_add(1)
+        .saturating_mul(if sps.frame_mbs_only_flag { 16 } else { 32 });
+    if sps.width() == 0 || sps.height() == 0 || coded_w > MAX_DIM || coded_h > MAX_DIM {
+        return Err(format!(
+            "refusing a {coded_w}x{coded_h} coded frame (cap {MAX_DIM})"
+        ));
+    }
+    Ok(Some(sps))
 }
 
 /// The first `N` unsigned Exp-Golomb values of an RBSP (ITU-T H.264 §9.1), or `None` if it
