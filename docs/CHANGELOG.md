@@ -7,7 +7,20 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 3.5.0
+
+**TL;DR**
+
+- **10-bit anime videos ("Hi10p") get thumbnails** (fixes #52)
+- **Format marks are one size on every thumbnail, with sharp letters** (fixes #50), and stay
+  clear of the film strip on widescreen videos (fixes #51)
+- **The format mark stays visible after you change a file type's default program** (fixes #54)
+- **7-Zip and RAR archives and comics with big pictures get thumbnails** (fixes #53)
+- **DVD rips and other videos with non-square pixels show at their proper shape**
+- **JPEG XL pages keep their text**, and CMYK JPEG XL images open
+- **The Quick preview says why a video has no sound or picture** (fixes #49)
+
+**Everything in 3.5.0**
 
 - **10-bit H.264 videos ("Hi10p", common for anime) now get thumbnails** (#52). Windows has no
   decoder for them, so SageThumbs decodes them itself.
