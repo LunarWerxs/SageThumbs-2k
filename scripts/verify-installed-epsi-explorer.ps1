@@ -359,6 +359,20 @@ try {
     $shell = New-Object -ComObject Shell.Application
     $explorerHwnd = [IntPtr]::Zero
     $previewWasEnabled = $null
+    # Explorer keeps the pane choice and size in the user's GlobalSettings, and turning the
+    # Preview pane on in this window rewrites them for EVERY window the user opens later. The
+    # toggle-back below did not undo that (2026-10-01: the owner's Explorer was left with a
+    # ~3000 px Preview pane), so the exact values are saved here and written back after the
+    # window has closed and saved its own.
+    $paneKeys = @(
+        @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Modules\GlobalSettings\Sizer', 'ReadingPaneSizer'),
+        @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Modules\GlobalSettings\DetailsContainer', 'DetailsContainer')
+    )
+    $paneWas = @{}
+    foreach ($pk in $paneKeys) {
+        $v = Get-ItemProperty -LiteralPath $pk[0] -Name $pk[1] -ErrorAction SilentlyContinue
+        if ($null -ne $v) { $paneWas[$pk[1]] = [byte[]]$v.($pk[1]) }
+    }
     try {
         $shell.Explore($tempDir)
         $explorer = Wait-DedicatedExplorerWindow $shell $tempDir
@@ -390,6 +404,13 @@ try {
         }
         if ($explorerHwnd -ne [IntPtr]::Zero) { [St2kInstalledEpsiProbe]::CloseWindow($explorerHwnd) }
         if ($shell) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) }
+        Start-Sleep -Milliseconds 800
+        foreach ($pk in $paneKeys) {
+            if ($paneWas.ContainsKey($pk[1])) {
+                try { Set-ItemProperty -LiteralPath $pk[0] -Name $pk[1] -Value $paneWas[$pk[1]] -Type Binary }
+                catch { Write-Warning "Could not restore Explorer's $($pk[1]): $($_.Exception.Message)" }
+            }
+        }
     }
     $resultHashes = @(Get-FileHash -Algorithm SHA256 -LiteralPath $thumbnail, $directPreview, $explorerPreview | Select-Object Path, Hash)
 } catch {

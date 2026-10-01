@@ -80,7 +80,13 @@ if (Test-Path -LiteralPath $st2kSettings) {
     $existingDebug = Get-ItemProperty -LiteralPath $st2kSettings -Name Debug -ErrorAction SilentlyContinue
     if ($null -ne $existingDebug) { $debugWas = $existingDebug.Debug }
 }
-New-Item -Path $st2kSettings -Force -ErrorAction SilentlyContinue | Out-Null
+# Create the key only when it is missing. `New-Item -Force` on a registry key that EXISTS
+# replaces it, deleting every value and subkey: this line used to wipe the user's whole
+# SageThumbs configuration on every `verify.ps1 -Install` (found 2026-10-01, when the owner's
+# settings came back as a lone `Debug`).
+if (-not (Test-Path -LiteralPath $st2kSettings)) {
+    New-Item -Path $st2kSettings -ErrorAction SilentlyContinue | Out-Null
+}
 Set-ItemProperty -LiteralPath $st2kSettings -Name Debug -Value 1 -Type DWord
 # The DLL re-reads that switch at most once a second (safety::debug_logging_on), so a host
 # that is already running gets a chance to notice before the first sample.

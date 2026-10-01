@@ -21,7 +21,11 @@ $Dll = (Resolve-Path $Dll).Path
 Write-Host "DLL: $Dll"
 
 if ($Debug) {
-    New-Item -Path 'HKCU:\Software\SageThumbs2K' -Force | Out-Null
+    # Only when missing: `New-Item -Force` on an existing key REPLACES it and wipes every
+    # setting the user has.
+    if (-not (Test-Path 'HKCU:\Software\SageThumbs2K')) {
+        New-Item -Path 'HKCU:\Software\SageThumbs2K' | Out-Null
+    }
     New-ItemProperty -Path 'HKCU:\Software\SageThumbs2K' -Name 'Debug' -Value 1 -PropertyType DWord -Force | Out-Null
     Write-Host "Verbose logging ON -> $env:LOCALAPPDATA\SageThumbs2K.log"
 }
