@@ -121,6 +121,12 @@ pub(super) fn new_surface_seeds() -> Vec<(&'static str, Vec<u8>)> {
         ("ply-tetra", mesh_seed_ply()),
         ("h264-avcc", h264_avcc()),
         ("h264-sps", H264_SPS.to_vec()),
+        // Issue #52's shape: a real High 10 Matroska file (ffmpeg, 72x48), so the Cues walk and
+        // the CodecPrivate record `mkv::h264_keyframe` reads in the shell see real offsets.
+        (
+            "mkv-h264-high10",
+            include_bytes!("../../../../tests/fixtures/h264/high10-3366cc.mkv").to_vec(),
+        ),
         // The JPEG XL shapes, from the committed regression fixtures rather than a synthetic
         // stub: a JPEG-transcoded 4:2:0 file (the exact shape that crashed Explorer in issue
         // #43, which is 4:2:0 chroma through the 1:8 render), its 4:2:2 twin, a modular file

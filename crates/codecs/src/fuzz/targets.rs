@@ -31,6 +31,18 @@ pub(super) fn header_targets() -> Vec<Target> {
         ("mp4::keyframe_mini_mp4", |b| {
             let _ = crate::mp4::keyframe_mini_mp4(&mut Cursor::new(b), 0.30);
         }),
+        // The H.264 tier (issue #52): both readers that pick the keyframe and the decoder
+        // configuration run IN-PROCESS in the shell; only the decode crosses to `st2k
+        // h264-frame`, whose first act is splitting the framing the parent built.
+        ("mkv::h264_keyframe", |b| {
+            let _ = crate::mkv::h264_keyframe(&mut Cursor::new(b), 0.30);
+        }),
+        ("mp4::h264_keyframe", |b| {
+            let _ = crate::mp4::h264_keyframe(&mut Cursor::new(b), 0.30);
+        }),
+        ("h264::split_child_input", |b| {
+            let _ = crate::h264::split_child_input(b);
+        }),
         ("flv::keyframe_mini_mp4", |b| {
             let _ = crate::flv::keyframe_mini_mp4(&mut Cursor::new(b));
         }),

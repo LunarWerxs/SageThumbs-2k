@@ -128,6 +128,9 @@ pub(super) fn synthetic_mp4() -> Vec<u8> {
     vse.extend_from_slice(&[0u8; 32]); // compressorname
     vse.extend_from_slice(&24u16.to_be_bytes()); // depth
     vse.extend_from_slice(&0xFFFFu16.to_be_bytes()); // pre_defined -1
+                                                     // The decoder configuration record as a child box, so `mp4::h264_keyframe` gets past
+                                                     // `stsd_avcc` into the sample tables instead of declining at the entry.
+    vse.extend_from_slice(&mp4box(b"avcC", &h264_avcc()));
     let avc1 = mp4box(b"avc1", &vse);
     // stsd: version+flags(4) entry_count(4) then the entry.
     let mut stsd_body = 1u32.to_be_bytes().to_vec();
