@@ -333,7 +333,7 @@ fn read_vec<R: Read + Seek>(r: &mut R, at: u64, len: u64) -> Option<Vec<u8>> {
 
 /// A RAR 5 writer for stored entries: the tests' fixtures and the fuzz seed.
 #[cfg(test)]
-mod build {
+pub(super) mod build {
     pub(super) fn crc32(bytes: &[u8]) -> u32 {
         let mut crc = !0u32;
         for &b in bytes {
@@ -387,7 +387,7 @@ mod build {
     }
 
     /// A whole archive of stored entries: signature, main header, entries, end block.
-    pub(super) fn archive(entries: &[(&[u8], &[u8])]) -> Vec<u8> {
+    pub(crate) fn archive(entries: &[(&[u8], &[u8])]) -> Vec<u8> {
         let mut out = super::RAR5.to_vec();
         out.extend(block(&[1, 0, 0]));
         for (name, data) in entries {

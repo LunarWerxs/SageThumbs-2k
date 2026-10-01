@@ -636,39 +636,43 @@ impl SolidWalk {
             .filter(|_| !self.captured.contains(name));
         match unclaimed_rank {
             Some(rank) => self.capture(entry, rd, rank),
-            None => {
-                // A non-target neighbor must be decoded to advance the solid stream to
-                // the next entry — drain it to nowhere, capped at the remaining budget
-                // so one large neighbor can't overshoot (a partial drain only ever
-                // precedes the top-of-callback bail, so it never desyncs a later read).
-                let room = SOLID_SCAN_BUDGET.saturating_sub(self.drained);
-                let drained =
-                    std::io::copy(&mut rd.take(room), &mut std::io::sink()).unwrap_or(u64::MAX);
-                self.drained = self.drained.saturating_add(drained);
-                Ok(self.wants_more())
-            }
+            None => self.drain(rd),
         }
     }
 
-    /// Read one wanted entry in full, charged to the cover budget.
+    /// Decode an entry we are not keeping, to advance the solid stream to the next one: to
+    /// nowhere, capped at the remaining skip budget so one large neighbor can't overshoot (a
+    /// partial drain only ever precedes the top-of-callback bail, so it never desyncs a later
+    /// read).
+    fn drain(&mut self, rd: &mut dyn Read) -> Result<bool, sevenz_rust2::Error> {
+        let room = SOLID_SCAN_BUDGET.saturating_sub(self.drained);
+        let drained = std::io::copy(&mut rd.take(room), &mut std::io::sink()).unwrap_or(u64::MAX);
+        self.drained = self.drained.saturating_add(drained);
+        Ok(self.wants_more())
+    }
+
+    /// Read one wanted entry in full, charged to the cover budget. The pool is keyed on the
+    /// RANK, not on what this walk met first: a solid block streams in archive order, and a
+    /// page stored ahead of a large cover must not take the cover's allowance.
     fn capture(
         &mut self,
         entry: &sevenz_rust2::ArchiveEntry,
         rd: &mut dyn Read,
         rank: usize,
     ) -> Result<bool, sevenz_rust2::Error> {
-        let captured_any = !self.found.is_empty();
-        let room = self.budget.room(captured_any);
+        let extra = rank != 0;
+        let room = self.budget.room(extra);
         if entry.size() > room {
-            // A partial image is useless and would break the advertised budget. Stop
-            // before asking the decoder for any of it.
-            return Ok(false);
+            // A partial image is useless and would break the advertised budget. An extra page
+            // too big for its pool is skipped like any neighbor, so the walk can still reach
+            // the cover; the cover itself not fitting ends the walk before any of it decodes.
+            return if extra { self.drain(rd) } else { Ok(false) };
         }
         // Capture on first sighting of the name (7z legally allows two entries
         // with the same name — take one, drain any later twin).
         let mut buf = Vec::with_capacity(entry.size() as usize);
         let ok = rd.take(room).read_to_end(&mut buf).is_ok();
-        self.budget.charge(captured_any, buf.len() as u64);
+        self.budget.charge(extra, buf.len() as u64);
         if !ok || buf.len() as u64 != entry.size() {
             // A failed mid-entry read leaves the SHARED solid stream desynced —
             // the crate aborts the walk on any error, so stop with what we have.
@@ -1000,6 +1004,29 @@ mod tests {
         assert!(is_cover_named("scans/Cover.png"));
         assert!(is_cover_named("front-cover.png"));
         assert!(!is_cover_named("page01.png"));
+    }
+
+    /// A solid block streams in archive order. A small page stored ahead of a 12 MiB
+    /// `cover.jpg` must not take the cover's full allowance: the cover is the main pick (it is
+    /// cover-named, so it ranks first) and draws on the main pool, the page on the extras pool.
+    /// Keyed on the order the walk met them, the cover got the 8 MiB pool and was dropped.
+    #[test]
+    fn a_large_cover_stored_after_a_page_keeps_the_full_allowance() {
+        let cover = vec![0x33u8; 12 * 1024 * 1024];
+        let archive = stored_7z(
+            &[
+                ("page01.png", vec![0x44u8; 1024]),
+                ("cover.jpg", cover.clone()),
+            ],
+            true,
+        );
+        let covers = extract_seek_n(Cursor::new(archive), 4, &default_prefs()).expect("covers");
+        let sizes: Vec<usize> = covers.iter().map(Vec::len).collect();
+        assert_eq!(
+            sizes,
+            vec![cover.len(), 1024],
+            "the cover leads, at full size"
+        );
     }
 
     /// A four-cell contact sheet used to admit four MAX_COVER entries (128 MiB total). The

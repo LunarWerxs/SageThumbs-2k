@@ -191,12 +191,18 @@ const CONTACT_SHEET_EXTRAS: u64 = 8 * 1024 * 1024;
 /// The decode allowance of one cover pull, shared by every archive reader (zip, 7z, rar), so
 /// the formats cannot drift apart on what they agree to read.
 ///
-/// Two pools, spent in order. The FIRST picture may be as large as any single cover
-/// ([`MAX_COVER`]); only the extra pictures of a contact sheet share the small
+/// Two pools. The MAIN picture (the cover, the pick the picker ranked first) may be as large as
+/// any single cover ([`MAX_COVER`]); only the extra pictures of a contact sheet share the small
 /// [`CONTACT_SHEET_EXTRAS`] pool. Issue #53: one pool of 8 MiB for every pick refused a `.7z`
 /// (and a `.rar`) whose only picture was a 13 MiB PNG, which zip and tar thumbnailed fine. A
-/// pick that fails still spends what its decoder emitted, so a run of corrupt first picks cannot
-/// each claim a fresh [`MAX_COVER`]: the worst pull is `MAX_COVER + CONTACT_SHEET_EXTRAS`.
+/// pick that fails still spends what its decoder emitted, so a run of corrupt picks cannot each
+/// claim a fresh [`MAX_COVER`]: the worst pull is `MAX_COVER + CONTACT_SHEET_EXTRAS`.
+///
+/// Which pool a pick draws on is the caller's `extra` flag. Readers that read their picks in
+/// rank order (zip, non-solid 7z) pass "a picture is already captured", so a failed cover hands
+/// the main allowance to the next pick. Readers that meet picks in ARCHIVE order (RAR, solid 7z)
+/// pass "this is not rank 0": a small page stored ahead of a large `cover.jpg` must not take the
+/// cover's allowance and leave it the 8 MiB pool, which is #53 again.
 pub(crate) struct CoverBudget {
     first: u64,
     extras: u64,
@@ -210,10 +216,10 @@ impl CoverBudget {
         }
     }
 
-    /// Bytes the next pick may read: the first pool until a picture has been captured, then
-    /// the extras pool.
-    pub(crate) fn room(&self, captured_any: bool) -> u64 {
-        if captured_any {
+    /// Bytes a pick may read: the main pool, or the extras pool when `extra` (see the type doc
+    /// for which picks are extras in which reader).
+    pub(crate) fn room(&self, extra: bool) -> u64 {
+        if extra {
             self.extras
         } else {
             self.first
@@ -221,8 +227,8 @@ impl CoverBudget {
     }
 
     /// Charge `spent` decoded bytes to the pool [`Self::room`] named.
-    pub(crate) fn charge(&mut self, captured_any: bool, spent: u64) {
-        let pool = if captured_any {
+    pub(crate) fn charge(&mut self, extra: bool, spent: u64) {
+        let pool = if extra {
             &mut self.extras
         } else {
             &mut self.first

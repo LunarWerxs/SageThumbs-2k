@@ -30,14 +30,13 @@ pub(crate) use seek::fuzz_seed;
 const SKIP_SCAN_BUDGET: u64 = 8 * 1024 * 1024;
 
 /// A `Write` sink that appends into a shared buffer, capped at `MAX_COVER` per entry AND
-/// charged against the pass's shared [`super::CoverBudget`]: the first pick opened draws on the
-/// first-picture pool, every later one on the contact-sheet extras pool. Before that, every
-/// pick shared one 8 MiB pool, so a `.rar` whose only picture was larger got no thumbnail
-/// (issue #53).
+/// charged against the pass's shared [`super::CoverBudget`]: the main pick (rank 0) draws on
+/// the main pool, every other pick on the contact-sheet extras pool. Before that, every pick
+/// shared one 8 MiB pool, so a `.rar` whose only picture was larger got no thumbnail (issue #53).
 struct CapBuf {
     buf: Rc<RefCell<Vec<u8>>>,
     budget: Rc<RefCell<super::CoverBudget>>,
-    /// Whether this pick draws on the extras pool (an earlier pick was opened first).
+    /// Whether this pick draws on the extras pool (it is not the main, rank-0 pick).
     extra: bool,
 }
 
@@ -157,7 +156,9 @@ pub fn extract_n(bytes: &[u8], want: usize, prefs: &CoverPrefs) -> Option<Vec<Ve
         // exactly (same function, same `false`), or a non-ASCII pick can never be found here.
         let name = decode_entry_name(&meta.name, false);
         if let Some(rank) = targets.remove(name.as_str()) {
-            let extra = remaining < picks.len();
+            // The pool goes by RANK, not by which pick the archive streams first: a small page
+            // stored ahead of a large cover must not take the cover's allowance.
+            let extra = rank != 0;
             remaining -= 1;
             Ok(Box::new(CapBuf {
                 buf: Rc::clone(&bufs[rank]),
@@ -258,6 +259,28 @@ mod tests {
         assert!(
             buf_c.borrow().is_empty(),
             "the truncated pick must be poisoned, not partial"
+        );
+    }
+
+    /// RAR streams its entries in archive order. A small page stored ahead of a 12 MiB
+    /// `cover.jpg` must not take the cover's full allowance: the pool goes by rank (the
+    /// cover-named entry leads), so the cover still comes back whole, first.
+    #[test]
+    fn a_large_cover_stored_after_a_page_keeps_the_full_allowance() {
+        let cover = vec![0x33u8; 12 * 1024 * 1024];
+        let page = vec![0x44u8; 1024];
+        let rar = seek::build::archive(&[(b"page01.png", &page), (b"cover.jpg", &cover)]);
+        let prefs = CoverPrefs {
+            prefer_cover: true,
+            sort: true,
+            skip_scanlation: false,
+        };
+        let covers = extract_n(&rar, 4, &prefs).expect("covers");
+        let sizes: Vec<usize> = covers.iter().map(Vec::len).collect();
+        assert_eq!(
+            sizes,
+            vec![cover.len(), page.len()],
+            "the cover leads, at full size"
         );
     }
 
