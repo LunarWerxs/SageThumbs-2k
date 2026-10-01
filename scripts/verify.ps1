@@ -85,6 +85,48 @@ Set-Location $root
 # A release being cut from this checkout holds the tree: wait for it (scripts\release-lock.ps1).
 & (Join-Path $PSScriptRoot 'release-lock.ps1')
 
+# Every stage must leave the developer's own machine as it found it. (2026-10-01) Two stages changed the real machine and nothing noticed for weeks: the dllhost
+# check's `New-Item -Force` reset HKCU\Software\SageThumbs2K to a lone Debug value on every
+# -Install run, and the EPS preview check left Explorer's Preview pane on at ~3000 px for every
+# window the user opened afterwards. So the run snapshots those keys first and compares them on
+# every way out; a difference is merged back from the snapshot and FAILS the run, so the stage
+# that did it gets fixed instead of quietly costing someone their settings.
+$userStateDir = Join-Path ([IO.Path]::GetTempPath()) "st2k-verify-userstate-$PID"
+New-Item -ItemType Directory -Force $userStateDir | Out-Null
+$userStateKeys = [ordered]@{
+    'SageThumbs settings'      = 'HKCU\Software\SageThumbs2K'
+    'Explorer pane settings'   = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Modules\GlobalSettings'
+}
+$i = 0
+foreach ($k in $userStateKeys.Values) {
+    & reg.exe export $k (Join-Path $userStateDir "before-$i.reg") /y *> $null
+    $i++
+}
+$global:LASTEXITCODE = 0
+function Test-UserStateUnchanged {
+    $changed = @()
+    $i = 0
+    foreach ($name in $userStateKeys.Keys) {
+        $before = Join-Path $userStateDir "before-$i.reg"
+        $after = Join-Path $userStateDir "after-$i.reg"
+        $i++
+        if (-not (Test-Path -LiteralPath $before)) { continue }
+        & reg.exe export $userStateKeys[$name] $after /y *> $null
+        if (Compare-Object @(Get-Content -LiteralPath $before) @(Get-Content -LiteralPath $after -ErrorAction SilentlyContinue)) {
+            $changed += $name
+            & reg.exe import $before *> $null
+        }
+    }
+    $global:LASTEXITCODE = 0
+    if ($changed) {
+        Write-Host "[verify] a stage CHANGED the user's own $($changed -join ' and ') - merged back from the snapshot taken at the start. Find the stage and fix it." -ForegroundColor Red
+        return $false
+    }
+    return $true
+}
+# A stage that throws (every `throw '... failed'` below) still gets the check on its way out.
+trap { [void](Test-UserStateUnchanged); break }
+
 $script:timings = @()
 function Stage([string]$name, [scriptblock]$body) {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -92,6 +134,7 @@ function Stage([string]$name, [scriptblock]$body) {
     & $body
     if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
         Write-Host "[verify] FAILED at: $name (exit $LASTEXITCODE)" -ForegroundColor Red
+        [void](Test-UserStateUnchanged)
         exit 1
     }
     $sw.Stop()
@@ -507,5 +550,6 @@ exit `$code
     }
 }
 
+if (-not (Test-UserStateUnchanged)) { exit 1 }
 Write-Host "`n[verify] ALL GREEN" -ForegroundColor Green
 $script:timings | ForEach-Object { Write-Host "  $_" }

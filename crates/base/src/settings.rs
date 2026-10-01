@@ -548,10 +548,21 @@ mod tracking_default_tests {
         // Skip rather than fail if another test in this binary already resolved the root: the
         // cache is process-wide and by design, so racing it would be the test's bug, not the
         // code's. In practice `--lib` runs this in its own process alongside pure-helper tests.
-        if std::env::var("ST2K_SETTINGS_ROOT").is_err() {
+        // The scratch key is removed when the test ends, pass or fail, or every run leaves an
+        // empty `TestScratch<pid>` under the developer's real settings key.
+        struct RemoveOnDrop(String);
+        impl Drop for RemoveOnDrop {
+            fn drop(&mut self) {
+                let _ = windows_registry::CURRENT_USER.remove_tree(&self.0);
+            }
+        }
+        let _scratch = if std::env::var("ST2K_SETTINGS_ROOT").is_err() {
             let scratch = format!(r"{ROOT}\TestScratch{}", std::process::id());
             unsafe { std::env::set_var("ST2K_SETTINGS_ROOT", &scratch) };
-        }
+            Some(RemoveOnDrop(scratch))
+        } else {
+            None
+        };
 
         // Start clean, whatever a previous run left.
         remove_dword(NAME);

@@ -68,9 +68,24 @@ fn cleanup(out: &Path, lang_case: Option<&str>) {
     }
 }
 
+/// Removes a case's scratch settings key when the test ends, pass or fail. `cleanup` only ran
+/// after every assertion passed, so a failed run left `__test_f29_lang_<pid>_<case>` under the
+/// developer's real settings key.
+struct ScratchKey(String);
+
+impl Drop for ScratchKey {
+    fn drop(&mut self) {
+        let _ = CURRENT_USER.remove_tree(&self.0);
+    }
+}
+
 #[test]
 fn outline_header_follows_the_active_locale_not_a_hardcoded_english_literal() {
     let md = "# Heading one\n\nbody text here\n\n## Heading two\n\nmore body text\n";
+    let _scratch = ScratchKey(format!(
+        r"Software\SageThumbs2K\__test_f29_lang_{}_fr",
+        std::process::id()
+    ));
 
     let (status_en, out_en) = shot_markdown_with_lang("en", md, None);
     assert!(
