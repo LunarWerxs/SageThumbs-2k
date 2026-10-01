@@ -244,6 +244,10 @@ pub(super) fn publish_abandoned(state: &AtomicU8, count: &AtomicU64) {
 /// prevent).
 pub(super) fn finish_worker(state: &AtomicU8, count: &AtomicU64) {
     if worker_finished(state) {
+        // `fetch_update` is `try_update` on newer stable Rust, which deprecates the old name and CI
+        // builds with; the builders here are still on a stable without `try_update`. Swap the
+        // name and drop the allow once every builder has it (2026-10-01).
+        #[allow(deprecated)]
         let _ = count.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
     }
 }

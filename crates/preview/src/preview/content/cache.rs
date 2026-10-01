@@ -224,12 +224,16 @@ pub(crate) fn spawn_prefetch(path: String) {
     if ext == "pdf" || classify(&path) != ContentKind::Image {
         return;
     }
-    if PREFETCH_IN_FLIGHT
+    // `fetch_update` is `try_update` on newer stable Rust, which deprecates the old name and CI
+    // builds with; the builders here are still on a stable without `try_update`. Swap the
+    // name and drop the allow once every builder has it (2026-10-01).
+    #[allow(deprecated)]
+    let at_cap = PREFETCH_IN_FLIGHT
         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
             (n < MAX_PREFETCH_IN_FLIGHT).then_some(n + 1)
         })
-        .is_err()
-    {
+        .is_err();
+    if at_cap {
         return; // already at the cap — the user is arrowing faster than we can read ahead
     }
     std::thread::spawn(move || {

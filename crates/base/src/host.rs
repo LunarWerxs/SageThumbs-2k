@@ -38,6 +38,10 @@ pub fn dll_release() {
     // Clamp at zero: a stray/unbalanced release must NOT push the count negative,
     // or it could cancel a live object's reference and let the DLL unload while in
     // use. `fetch_update` leaves a zero count untouched and only ever decrements.
+    // `fetch_update` is `try_update` on newer stable Rust, which deprecates the old name and CI
+    // builds with; the builders here are still on a stable without `try_update`. Swap the
+    // name and drop the allow once every builder has it (2026-10-01).
+    #[allow(deprecated)]
     let prev = MODULE_REFS.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
         if n > 0 {
             Some(n - 1)
