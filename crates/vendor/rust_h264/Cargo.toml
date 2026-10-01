@@ -1,0 +1,25 @@
+[package]
+name = "rust_h264"
+version = "0.4.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Pure Rust H.264/AVC video decoder: SageThumbs 2K's copy with the high bit depth patch (see ../rust_h264-patches)"
+repository = "https://github.com/roticv/rust_h264"
+publish = false
+
+[lib]
+# Upstream's tests read its `testdata/` (68 MB), which is not vendored. The patch was checked
+# against that full suite plus its own 10-bit streams where it was made
+# (../rust_h264-patches/README.md); the app's tests decode High 10 through this crate.
+test = false
+doctest = false
+
+[features]
+# Upstream's switch that makes `sps`, `pps` and `slice` public; `st2k h264-frame` reads the
+# SPS (dimensions and colour description) before decoding.
+dev-internals = []
+
+# Third-party code: upstream's style is upstream's. The patch keeps it, so a style lint here
+# is not a finding about our code (cycle.py lints a vendored crate it sees changed).
+[lints.clippy]
+all = { level = "allow", priority = -1 }

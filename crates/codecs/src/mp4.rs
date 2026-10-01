@@ -58,24 +58,9 @@ pub fn keyframe_mini_mp4<R: Read + Seek>(
 
     // --- Locate the video track's sample tables inside the moov ------------------------------
     let trak = video_trak(box_body(&moov))?;
-    let (stsd, stts, stsc, stss, chunks, sizes, media_timescale) = video_sample_tables(trak)?;
-
-    // --- Map 30 %-of-duration → decoding-order sample → nearest preceding sync sample --------
-    let (target_sample, frame_delta) = stts_target(full_box_body(stts), fraction)?;
-    let kf_sample0 = nearest_sync(stss, target_sample + 1)?.saturating_sub(1); // back to 0-based
-
-    let kf_size = sizes.size_of(kf_sample0)?;
-    if kf_size == 0 || kf_size > KEYFRAME_MAX {
-        return None;
-    }
-    let (kf_offset, desc_index) = sample_location(full_box_body(stsc), chunks, &sizes, kf_sample0)?;
-
-    // --- Read just that keyframe's bytes -----------------------------------------------------
-    if kf_offset.checked_add(kf_size)? > total {
-        return None;
-    }
-    let mut keyframe = vec![0u8; kf_size as usize];
-    read_exact_at(r, kf_offset, &mut keyframe)?;
+    let tables = video_sample_tables(trak)?;
+    let (stsd, media_timescale) = (tables.0, tables.6);
+    let (keyframe, desc_index, frame_delta) = keyframe_sample(r, total, &tables, fraction)?;
 
     // --- Coded dimensions from the visual sample entry (display hints for tkhd/mvhd) ---------
     let (width, height) = visual_dims(stsd).unwrap_or((1920, 1080));
@@ -98,6 +83,48 @@ pub fn keyframe_mini_mp4<R: Read + Seek>(
         ),
         rotation,
     ))
+}
+
+/// The bytes of the sync sample nearest `fraction` of the running time, with its sample
+/// description index and the frame duration `stts` gives there. Shared by the mini-MP4 the
+/// Media Foundation tiers decode and the raw keyframe [`h264_keyframe`] hands `st2k h264-frame`.
+fn keyframe_sample<R: Read + Seek>(
+    r: &mut R,
+    total: u64,
+    tables: &VideoSampleTables<'_>,
+    fraction: f64,
+) -> Option<(Vec<u8>, u32, u64)> {
+    let (_, stts, stsc, stss, chunks, sizes, _) = tables;
+    // Map the fraction of the duration → decoding-order sample → nearest preceding sync sample.
+    let (target_sample, frame_delta) = stts_target(full_box_body(stts), fraction)?;
+    let kf_sample0 = nearest_sync(*stss, target_sample + 1)?.saturating_sub(1); // back to 0-based
+
+    let kf_size = sizes.size_of(kf_sample0)?;
+    if kf_size == 0 || kf_size > KEYFRAME_MAX {
+        return None;
+    }
+    let (kf_offset, desc_index) = sample_location(full_box_body(stsc), *chunks, sizes, kf_sample0)?;
+
+    // Read just that keyframe's bytes.
+    if kf_offset.checked_add(kf_size)? > total {
+        return None;
+    }
+    let mut keyframe = vec![0u8; kf_size as usize];
+    read_exact_at(r, kf_offset, &mut keyframe)?;
+    Some((keyframe, desc_index, frame_delta))
+}
+
+/// The H.264 decoder configuration (`avcC` body) and the raw keyframe nearest `fraction` of an
+/// MP4/MOV whose video track is H.264, for the out-of-process `st2k h264-frame` decoder
+/// (`crate::h264`). `None` for any other codec or container. The keyframe is the sample as
+/// stored: length-prefixed NAL units, the prefix size given by the `avcC`.
+pub fn h264_keyframe<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<(Vec<u8>, Vec<u8>)> {
+    let (total, _, moov) = scan_top_level(r)?;
+    let trak = video_trak(box_body(&moov))?;
+    let tables = video_sample_tables(trak)?;
+    let avcc = stsd_avcc(tables.0)?.to_vec();
+    let (keyframe, _, _) = keyframe_sample(r, total, &tables, fraction)?;
+    Some((avcc, keyframe))
 }
 
 /// `stsd`, `stts`, `stsc`, the optional `stss`, the chunk-offset table with its 64-bit flag,
@@ -440,17 +467,20 @@ const VISUAL_SAMPLE_ENTRY_LEN: usize = 8 + 78;
 /// is deliberately a byte read and not a decode: the whole point is answering "can Windows
 /// decode this" without asking Windows to try.
 pub fn h264_profile_idc<R: Read + Seek>(r: &mut R) -> Option<u8> {
-    with_video_stsd(r, |stsd| {
-        // stsd: header(8) version+flags(4) entry_count(4) | entries, each a box of its own.
-        let (typ, entry) = boxes(stsd.get(16..)?).next()?;
-        if &typ != b"avc1" && &typ != b"avc3" {
-            return None;
-        }
-        let children = entry.get(VISUAL_SAMPLE_ENTRY_LEN..)?;
-        let avcc = find(children, b"avcC")?;
-        // AVCDecoderConfigurationRecord: configurationVersion, AVCProfileIndication, ...
-        box_body(avcc).get(1).copied()
-    })
+    // AVCDecoderConfigurationRecord: configurationVersion, AVCProfileIndication, ...
+    with_video_stsd(r, |stsd| stsd_avcc(stsd)?.get(1).copied())
+}
+
+/// The `avcC` body (an `AVCDecoderConfigurationRecord`) of an H.264 `stsd`'s first entry
+/// (`avc1` / `avc3`), or `None` for any other codec or an entry with no readable `avcC`.
+fn stsd_avcc(stsd: &[u8]) -> Option<&[u8]> {
+    // stsd: header(8) version+flags(4) entry_count(4) | entries, each a box of its own.
+    let (typ, entry) = boxes(stsd.get(16..)?).next()?;
+    if &typ != b"avc1" && &typ != b"avc3" {
+        return None;
+    }
+    let children = entry.get(VISUAL_SAMPLE_ENTRY_LEN..)?;
+    Some(box_body(find(children, b"avcC")?))
 }
 
 // ---------------------------------------------------------------------------------------------

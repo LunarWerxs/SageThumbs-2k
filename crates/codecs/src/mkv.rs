@@ -306,19 +306,41 @@ fn mini_mkv_from_candidates<R: Read + Seek>(
 /// keyframe is the first video SimpleBlock with the key flag, or the first BlockGroup
 /// without a ReferenceBlock; laced blocks are declined (see [`unlaced_frame`]).
 pub fn vp9_keyframe<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec<u8>> {
+    video_keyframe(r, fraction, "V_VP9").map(|(_, frame)| frame)
+}
+
+/// The H.264 twin of [`vp9_keyframe`], for the out-of-process `st2k h264-frame` decoder
+/// (`crate::h264`): the video track's `CodecPrivate` (the `AVCDecoderConfigurationRecord`
+/// carrying the SPS/PPS) and one keyframe, its NAL units length-prefixed as Matroska stores
+/// them. Self-gates on the first video track being `V_MPEG4/ISO/AVC` with a CodecPrivate.
+pub fn h264_keyframe<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<(Vec<u8>, Vec<u8>)> {
+    let (private, frame) = video_keyframe(r, fraction, "V_MPEG4/ISO/AVC")?;
+    Some((private?, frame))
+}
+
+/// One keyframe of the first video track when its CodecID is `codec`, with that track's
+/// `CodecPrivate` when it has one. The cluster choice is [`vp9_keyframe`]'s.
+fn video_keyframe<R: Read + Seek>(
+    r: &mut R,
+    fraction: f64,
+    codec: &str,
+) -> Option<(Option<Vec<u8>>, Vec<u8>)> {
     let map = segment_map(r)?;
     let (_, tracks_hlen, tracks) = read_element_full(r, map.tracks?, META_MAX, ID_TRACKS)?;
     let tracks_body = &tracks[tracks_hlen..];
-    if video_track_codec(tracks_body).as_deref() != Some("V_VP9") {
+    if video_track_codec(tracks_body).as_deref() != Some(codec) {
         return None;
     }
     let video_track = video_track_number(tracks_body)?;
+    let private = video_track_entry(tracks_body).and_then(|entry| {
+        children(entry).find_map(|(cid, _, cd)| (cid == ID_CODEC_PRIVATE).then(|| cd.to_vec()))
+    });
 
     // Preferred cluster from the Cues (representative mid-video frame), first cluster as
     // the fallback — also taken when the indexed cluster turns out to hold no keyframe
     // block we can use (e.g. its video blocks are laced).
     let mut candidates: Vec<u64> = Vec::new();
-    if let Some(abs) = vp9_cued_cluster(r, &map, video_track, fraction) {
+    if let Some(abs) = cued_cluster(r, &map, video_track, fraction) {
         candidates.push(abs);
     }
     if let Some(first) = map.first_cluster {
@@ -327,14 +349,15 @@ pub fn vp9_keyframe<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<Vec<u8>>
         }
     }
 
-    vp9_keyframe_in_clusters(r, &map, &candidates, video_track)
+    let frame = keyframe_in_clusters(r, &map, &candidates, video_track)?;
+    Some((private, frame))
 }
 
 /// The absolute Cluster position of the Cues entry nearest `fraction`, read from the file's
 /// own Cues and Info elements (both read even when one turns out unusable, matching the
 /// caller's original evaluation) — the representative mid-video candidate. `None` (so the
 /// caller falls back to the first Cluster) when either element is missing or the lookup fails.
-fn vp9_cued_cluster<R: Read + Seek>(
+fn cued_cluster<R: Read + Seek>(
     r: &mut R,
     map: &SegmentMap,
     video_track: u64,
@@ -355,9 +378,9 @@ fn vp9_cued_cluster<R: Read + Seek>(
     map.seg_data.checked_add(rel)
 }
 
-/// The first VP9 keyframe among the candidate Clusters, in order; a Cluster past the file
+/// The first video keyframe among the candidate Clusters, in order; a Cluster past the file
 /// end, one that cannot be read, or one holding no keyframe for the video track is skipped.
-fn vp9_keyframe_in_clusters<R: Read + Seek>(
+fn keyframe_in_clusters<R: Read + Seek>(
     r: &mut R,
     map: &SegmentMap,
     candidates: &[u64],

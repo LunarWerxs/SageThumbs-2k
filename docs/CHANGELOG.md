@@ -9,6 +9,9 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+- **10-bit H.264 videos ("Hi10p", common for anime) now get thumbnails** (#52). Windows has no
+  decoder for them, so SageThumbs decodes them itself. A DVD-sized one stored narrower than it
+  is meant to be shown comes out at its proper shape.
 - **Format marks are the same size on every thumbnail, with smooth, sharp letters** (#50). The
   mark followed each picture's shape, so a square picture got twice the mark of a widescreen
   video frame or a book cover, and its letters turned jagged and blurry once Explorer resized

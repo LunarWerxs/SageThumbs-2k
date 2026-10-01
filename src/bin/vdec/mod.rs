@@ -15,6 +15,10 @@
 //!   a PNG on STDOUT (`oxideav-mpeg12video` — VideoCD-era MPEG-1 system streams and bare
 //!   MPEG video elementary streams, which Media Foundation cannot open on any Windows, and
 //!   MPEG-2 program streams without the Store extension).
+//! * `st2k h264-frame` ([`h264`], feature `h264-video`): an H.264 decoder configuration
+//!   record plus one keyframe on STDIN (cut by the parent's own Matroska / MP4 readers) → a
+//!   PNG on STDOUT (the vendored `rust_h264` with our high bit depth patch — High 10, which
+//!   Windows' H.264 decoder cannot open at all; issue #52).
 //!
 //! All three are the CHILD side of a `sagethumbs2k_core` spawner (`flv::flash_frame` /
 //! `vp9::vp9_frame` / `mpeg12::mpeg_frame`, sharing one harness: `flv::child_frame_png`).
@@ -35,6 +39,8 @@ use std::io::{Cursor, Read, Write};
 mod avif;
 #[cfg(feature = "flash-video")]
 mod flv;
+#[cfg(feature = "h264-video")]
+mod h264;
 #[cfg(feature = "mpeg-video")]
 mod mpeg;
 #[cfg(feature = "vp9-video")]
@@ -114,9 +120,9 @@ pub(super) fn encode_png(width: u32, height: u32, rgba: Vec<u8>) -> Result<Vec<u
     Ok(png)
 }
 
-/// Push one clamped RGB triple plus opaque alpha — the per-pixel tail the MPEG and VP9
-/// converters share verbatim.
-#[cfg(any(feature = "mpeg-video", feature = "vp9-video"))]
+/// Push one clamped RGB triple plus opaque alpha — the per-pixel tail the MPEG, VP9 and
+/// H.264 converters share verbatim.
+#[cfg(any(feature = "mpeg-video", feature = "vp9-video", feature = "h264-video"))]
 fn push_rgb(rgba: &mut Vec<u8>, r: f32, g: f32, b: f32) {
     rgba.push((r.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
     rgba.push((g.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
@@ -194,5 +200,15 @@ pub fn run_mpeg() -> i32 {
         "mpeg-frame",
         st2k_codecs::mpeg12::MPEG_INPUT_CAP,
         mpeg::frame_png,
+    )
+}
+
+/// Entry point for `st2k h264-frame`: returns the process exit code.
+#[cfg(feature = "h264-video")]
+pub fn run_h264() -> i32 {
+    run_child(
+        "h264-frame",
+        st2k_codecs::h264::H264_INPUT_CAP,
+        h264::frame_png,
     )
 }

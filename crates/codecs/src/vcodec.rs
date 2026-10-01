@@ -83,8 +83,22 @@ pub fn identify<R: Read + Seek>(r: &mut R) -> Option<CodecInfo> {
     // the cascade refuses on purpose (issue #35). Say which, so the report names the cause.
     if info.subtype == Some(MFVideoFormat_H264) {
         info.mf_profile_block = mf_undecodable_reason(r);
+        // ...unless it is a profile we decode ourselves (issue #52), in which case the file
+        // is no more stuck than an FLV: name our decoder instead of the refusal.
+        let idc = crate::mp4::h264_profile_idc(r).or_else(|| crate::mkv::h264_profile_idc(r));
+        if idc.is_some_and(h264_profile_self_decoded) {
+            info.mf_profile_block = None;
+            info.self_decoded = true;
+        }
     }
     Some(info)
+}
+
+/// H.264 profiles Windows cannot decode but SageThumbs decodes itself, out of process
+/// (`crate::h264`, issue #52): High 10 (`profile_idc` 110, always 4:2:0). High 4:2:2 and the
+/// 4:4:4 profiles are not, and stay [`h264_profile_mf_cannot_decode`]'s refusal.
+pub fn h264_profile_self_decoded(profile_idc: u8) -> bool {
+    profile_idc == 110
 }
 
 /// H.264 `profile_idc` values Windows' own H.264 decoder does not implement, by name.
@@ -327,6 +341,19 @@ mod profile_gate_tests {
         assert_eq!(refused(110), Some("High 10"));
         assert_eq!(refused(122), Some("High 4:2:2"));
         assert_eq!(refused(244), Some("High 4:4:4 Predictive"));
+    }
+
+    /// Issue #52: `st2k doctor` on a High 10 file names our own decoder (it still never
+    /// reaches Media Foundation), while a 4:4:4 file keeps the refusal and its advice.
+    #[test]
+    fn doctor_reads_high10_as_ours_and_444_as_refused() {
+        use std::io::Cursor;
+        let hi10 = include_bytes!("../../../tests/fixtures/h264/high10-3366cc.mkv");
+        let info = super::identify(&mut Cursor::new(&hi10[..])).expect("an H.264 MKV");
+        assert!(info.self_decoded && info.mf_profile_block.is_none());
+        let hi444 = include_bytes!("../../../tests/fixtures/h264/high444-3366cc.mkv");
+        let info = super::identify(&mut Cursor::new(&hi444[..])).expect("an H.264 MKV");
+        assert!(!info.self_decoded && info.mf_profile_block.is_some());
     }
 
     /// Not a video at all is a shrug, never a refusal.

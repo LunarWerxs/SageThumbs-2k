@@ -383,9 +383,9 @@ fn flv_clip_profile_checked(
     (flv_clip, mf && flv_refused.is_none())
 }
 
-/// Tiers 2b through 6: the tier-1/2 mini-clip (if any) decoded, then FLV remux, the
+/// Tiers 2b through 8: the tier-1/2 mini-clip (if any) decoded, then FLV remux, the
 /// out-of-process Flash decode, MF's own demuxer over a block-caching stream, the
-/// head-prefix and tail-remux fallbacks, and finally out-of-process VP9 profile 2/3.
+/// head-prefix and tail-remux fallbacks, and finally [`self_decoded_tiers`].
 /// `clip_bytes` is [`ContainerProbe::clip_bytes`] and `mf` is its (possibly downgraded)
 /// `mf` flag - see `probe_container_tiers` and the tier comments in `try_video_source`.
 unsafe fn mp4_mkv_or_else_tiers(
@@ -437,42 +437,66 @@ unsafe fn mp4_mkv_or_else_tiers(
                     .and_then(crate::video::frame_from_owned_bytes)
             })
         })
-        .or_else(|| {
-            // 6. VP9 Profile 2/3 (10/12-bit HDR, issue #26): MF's VP9 decoder stops at
-            //    Profile 0/1 even with the Store extension installed, so when every tier
-            //    above came back empty AND the container says V_VP9, the keyframe (located
-            //    via the same Cues read as tier 2) is decoded out of process by the sibling
-            //    st2k.exe (`crate::vp9`). Deliberately LAST: Profile 0 must keep hitting the
-            //    hardware-accelerated in-process MF path, and only otherwise-blank tiles pay
-            //    for a process spawn. Self-gated on the codec id; bounded targeted reads.
-            crate::vp9::vp9_frame(
-                &mut IStreamReader {
+        .or_else(|| self_decoded_tiers(stream, head, at))
+}
+
+/// Tiers 6 to 8: the codecs Windows cannot decode and SageThumbs decodes itself, out of process
+/// (VP9 profile 2/3, MPEG-1/2 streams, H.264 High 10). Each self-gates on its container and
+/// codec, so a file that is none of them pays a few KB of header reads. Kept apart from
+/// [`mp4_mkv_or_else_tiers`] so neither chain grows past the complexity gate.
+unsafe fn self_decoded_tiers(
+    stream: &IStream,
+    head: &StreamHead,
+    at: f64,
+) -> Option<image::DynamicImage> {
+    // 6. VP9 Profile 2/3 (10/12-bit HDR, issue #26): MF's VP9 decoder stops at
+    //    Profile 0/1 even with the Store extension installed, so when every tier
+    //    above came back empty AND the container says V_VP9, the keyframe (located
+    //    via the same Cues read as tier 2) is decoded out of process by the sibling
+    //    st2k.exe (`crate::vp9`). Deliberately LAST: Profile 0 must keep hitting the
+    //    hardware-accelerated in-process MF path, and only otherwise-blank tiles pay
+    //    for a process spawn. Self-gated on the codec id; bounded targeted reads.
+    crate::vp9::vp9_frame(
+        &mut IStreamReader {
+            stream: stream.clone(),
+        },
+        at,
+    )
+    .or_else(|| {
+        // 7. MPEG-1 system streams, bare MPEG-1/2 elementary streams, MPEG-2 program
+        //    streams without the Store extension: Media Foundation has no source for the
+        //    first two on any Windows, so when every tier above came back empty AND the
+        //    head is one of the two MPEG magics, our own bounded demux (a window around
+        //    the mark, coalesced block reads) cuts one intra picture and the sibling
+        //    st2k.exe decodes it out of process (`crate::mpeg12`). Deliberately LAST,
+        //    like VP9: a `.vob` on a machine with the Store extension keeps hitting the
+        //    hardware-accelerated in-process MF path.
+        // Through `EndAt`: a padded transport stream's head is trimmed to its last packet
+        // (`videosrc`), and the demux measures the stream from its END to place the mark.
+        crate::mpeg12::mpeg_frame(
+            &mut EndAt::new(
+                IStreamReader {
                     stream: stream.clone(),
                 },
-                at,
-            )
-        })
-        .or_else(|| {
-            // 7. MPEG-1 system streams, bare MPEG-1/2 elementary streams, MPEG-2 program
-            //    streams without the Store extension: Media Foundation has no source for the
-            //    first two on any Windows, so when every tier above came back empty AND the
-            //    head is one of the two MPEG magics, our own bounded demux (a window around
-            //    the mark, coalesced block reads) cuts one intra picture and the sibling
-            //    st2k.exe decodes it out of process (`crate::mpeg12`). Deliberately LAST,
-            //    like VP9: a `.vob` on a machine with the Store extension keeps hitting the
-            //    hardware-accelerated in-process MF path.
-            // Through `EndAt`: a padded transport stream's head is trimmed to its last packet
-            // (`videosrc`), and the demux measures the stream from its END to place the mark.
-            crate::mpeg12::mpeg_frame(
-                &mut EndAt::new(
-                    IStreamReader {
-                        stream: stream.clone(),
-                    },
-                    head.size,
-                ),
-                at,
-            )
-        })
+                head.size,
+            ),
+            at,
+        )
+    })
+    .or_else(|| {
+        // 8. H.264 that Windows cannot decode: High 10 (10-bit 4:2:0) above all, the
+        //    standard for anime encodes (issue #52). The profile gate kept Media
+        //    Foundation away from it (issue #35), so every tier above came back empty;
+        //    one keyframe and the track's decoder record (Matroska Cues or MP4 sample
+        //    tables, bounded reads) go to the sibling st2k.exe (`crate::h264`). LAST, so
+        //    ordinary 8-bit H.264 keeps MF's hardware-accelerated in-process decode.
+        crate::h264::h264_frame(
+            &mut IStreamReader {
+                stream: stream.clone(),
+            },
+            at,
+        )
+    })
 }
 
 /// OPENEXR - decode scaled straight off the (seekable) stream. A 12K VFX render

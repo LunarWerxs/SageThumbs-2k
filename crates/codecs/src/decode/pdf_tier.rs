@@ -250,6 +250,11 @@ fn frame_by_bytes(
         // same reason as VP9: a `.vob` with the Store extension, or a transport stream
         // named `.mpg`, keeps hitting the in-process MF path.
         .or_else(|| crate::mpeg12::mpeg_frame(&mut std::io::Cursor::new(bytes), at))
+        // H.264 Windows cannot decode, High 10 above all (issue #52): the profile gate keeps
+        // Media Foundation away from it (issue #35), so the keyframe and the track's decoder
+        // record go to the sibling st2k.exe (`crate::h264`). Last for the same reason as VP9:
+        // ordinary 8-bit H.264 keeps the in-process MF path.
+        .or_else(|| crate::h264::h264_frame(&mut std::io::Cursor::new(bytes), at))
 }
 
 /// ISSUE #32, the by-bytes twin of the gate in `streamsrc::try_video_source`, and kept in

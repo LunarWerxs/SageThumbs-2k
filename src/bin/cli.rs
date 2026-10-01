@@ -585,6 +585,12 @@ fn main() {
         #[cfg(not(feature = "mpeg-video"))]
         missing_feature("mpeg-video");
     }
+    if args.first().is_some_and(|a| a == "h264-frame") {
+        #[cfg(feature = "h264-video")]
+        std::process::exit(vdec::run_h264());
+        #[cfg(not(feature = "h264-video"))]
+        missing_feature("h264-video");
+    }
 
     // MCP server mode (`st2k --mcp` or `st2k mcp`): hand off to the stdio
     // JSON-RPC loop, which owns stdin/stdout until the client disconnects.

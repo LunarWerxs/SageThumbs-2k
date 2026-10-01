@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/screenshot", "crates/preview", "crates/appkit", "crates/actions", "crates/codecs", "crates/base", "crates/dll", "crates/dlghook", "crates/build-support"]
-exclude = ["crates/vendor/exr", "crates/vendor/jxl-render", "crates/vendor/jxl-oxide", "crates/vendor/jxl-frame", "crates/vendor/jxl-color", "crates/vendor/djvu-rs"]
+exclude = ["crates/vendor/exr", "crates/vendor/jxl-render", "crates/vendor/jxl-oxide", "crates/vendor/jxl-frame", "crates/vendor/jxl-color", "crates/vendor/djvu-rs", "crates/vendor/rust_h264"]
 # Build BOTH the core package (rlib + the two EXEs) AND the cdylib wrapper on a bare
 # `cargo build` — so `cargo build --release` still produces sagethumbs2k.dll + the EXEs.
 # CI + the integration tests rely on the DLL existing. `dlghook` is the third artifact
@@ -252,6 +252,18 @@ vp9dec = { version = "0.1.1", optional = true }
 # under the 512 MiB job cap, never the shell DLL. Acceptance check:
 # `cargo tree -p sagethumbs2k-dll` must never list oxideav.
 oxideav-mpeg12video = { version = "0.0.13", optional = true }
+# --- H.264 Windows cannot decode: High 10 above all (10-bit anime encodes, issue #52) ---
+# Windows' H.264 decoder stops at 8-bit 4:2:0, and `vcodec::mf_undecodable_reason` keeps the
+# FRExt profiles away from it altogether (on Windows 10 they wedged it, issue #35), so a High 10
+# file had no thumbnail. `rust_h264` is a pure-Rust decoder (MIT OR Apache-2.0, zero
+# dependencies), VENDORED with our high bit depth patch because upstream is 8-bit only:
+# crates/vendor/rust_h264-patches/README.md says what changed and how it was checked
+# (200 tests, eight High 10 streams bit-exact against ffmpeg). `dev-internals` is upstream's
+# switch that makes `sps` public. OPTIONAL behind the EXE-only `h264-video` feature, the same
+# containment as `vp9-video` and `mpeg-video`: it runs ONLY in the throwaway `st2k h264-frame`
+# child under the 512 MiB job cap, never the shell DLL. Acceptance check:
+# `cargo tree -p sagethumbs2k-dll` must never list rust_h264.
+rust_h264 = { path = "crates/vendor/rust_h264", optional = true, features = ["dev-internals"] }
 
 nihav_core = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", version = "0.1", optional = true }
 nihav_codec_support = { git = "https://github.com/ruffle-rs/nihav-vp6", rev = "12d0bdf10a85641dc2de3d6900c747894431ed77", version = "0.1", optional = true }
@@ -275,7 +287,7 @@ hdr-capture = ["st2k_screenshot/hdr-capture"]
 # VP6/Sorenson path; the DLL stays clean because crates/dll depends on this package with
 # `default-features = false` (its effective feature set was empty before this and is
 # unchanged). See the `flash-video` entry below for why the DLL must never enable it.
-default = ["flash-video", "vp9-video", "mpeg-video", "avif-video"]
+default = ["flash-video", "vp9-video", "mpeg-video", "avif-video", "h264-video"]
 # Quick preview's WebView2 HTML host (local .html render + optional .url live preview).
 # EXE-ONLY, off by default: build-release.ps1 enables it for the `-p sagethumbs2k` (EXE)
 # build; the separately-built slim DLL never requests it, so `webview2-com` never links
@@ -318,6 +330,13 @@ vp9-video = ["dep:vp9dec"]
 # without this feature answers that spawn with a clean non-zero exit (no thumbnail — exactly
 # the pre-support behaviour for these streams).
 mpeg-video = ["dep:oxideav-mpeg12video"]
+# H.264 High 10 (and the other bit depths up to 14, 4:2:0) for the hidden `st2k h264-frame`
+# child verb. EXE-ONLY, the exact `vp9-video` / `mpeg-video` containment: `rust_h264` is
+# referenced ONLY from `src/bin/vdec/`, and the DLL package opts out via
+# `default-features = false` on its core dependency (acceptance check:
+# `cargo tree -p sagethumbs2k-dll` lists no rust_h264). A build without it answers the spawn
+# with a clean non-zero exit: no thumbnail, the behaviour before issue #52.
+h264-video = ["dep:rust_h264"]
 # AVIF decode in process (`rav1d`) for the EXEs, and for the hidden `st2k avif-frame` child verb
 # the shell extension asks instead. EXE-ONLY, the exact `flash-video` containment: rav1d panics
 # on some malformed input (an `unwrap` in its own error path, found by the fuzz gate on

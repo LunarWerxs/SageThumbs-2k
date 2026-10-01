@@ -17,6 +17,7 @@ pub mod flv;
 // Structure-aware mutation fuzzing of the pure-Rust parsers, compiled only for tests.
 #[cfg(test)]
 mod fuzz;
+pub mod h264;
 pub mod isobmff;
 pub mod jpegtran;
 mod mkv;
