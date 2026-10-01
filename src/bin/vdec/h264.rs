@@ -5,7 +5,7 @@
 //! 1. Splits the parent's framing (`h264::split_child_input`) and reads every SPS the decoder
 //!    will see BEFORE decoding, the configuration record's and any the keyframe repeats in
 //!    band: each one's coded size is refused against `decode::limits::MAX_DIM` before the
-//!    decoder can allocate a picture for it, and the last one's VUI
+//!    decoder can allocate a picture for it, and the VUI of the one the slices name
 //!    (`video_full_range_flag`, `matrix_coefficients`) drives the colour conversion.
 //! 2. Decodes with the vendored `rust_h264` (`crates/vendor/rust_h264`, with the high bit depth
 //!    patch in `crates/vendor/rust_h264-patches`): the record's SPS and PPS, then the
@@ -19,6 +19,8 @@
 //! 4. Stretches the width to the sample aspect ratio the SPS gives, so an anamorphic DVD-sized
 //!    encode (720x480 at 8:9) comes out at the 4:3 it is shown at.
 
+use std::collections::HashMap;
+
 use rust_h264::decoder::{Frame, OrderedDecoder};
 use rust_h264::nal::{parse_avcc, parse_avcc_config, NalUnit, NalUnitType};
 use rust_h264::sps::{parse_sps, Sps};
@@ -29,7 +31,7 @@ pub(super) fn frame_png(input: &[u8]) -> Result<Vec<u8>, String> {
     let (config, keyframe) = split_child_input(input).ok_or("malformed child input")?;
     let avcc = parse_avcc_config(config).map_err(|e| format!("avcC: {e}"))?;
     let units = parse_avcc(keyframe, avcc.length_size);
-    let sps = checked_sps(avcc.sps_nals.iter().chain(&units))?;
+    let sps = active_sps(avcc.sps_nals.iter().chain(&avcc.pps_nals).chain(&units))?;
     let picture = decode(&avcc.sps_nals, &avcc.pps_nals, &units)?;
     let rgba = to_rgba(&picture, &sps)?;
     let img = image::RgbaImage::from_raw(picture.width, picture.height, rgba)
@@ -43,16 +45,40 @@ pub(super) fn frame_png(input: &[u8]) -> Result<Vec<u8>, String> {
     super::encode_png(shown.width(), shown.height(), shown.into_rgba8().into_raw())
 }
 
-/// Every SPS the decoder will be handed, the record's AND any the keyframe repeats in band,
-/// refused against `MAX_DIM` by its CODED size (whole macroblocks, before the crop) — the size
-/// the decoder allocates — so no parameter set reaches it unchecked. One `parse_sps` refuses,
-/// the decoder refuses too (it parses with the same function), so it cannot size anything.
+/// Walks the NAL units in the order the decoder is fed them (the record's SPS and PPS, then the
+/// keyframe's) and returns the SPS the first slice is decoded with: its VUI is the one that
+/// describes the picture.
 ///
-/// Returns the last one: a later SPS replaces an earlier one with the same id, so that is the
-/// one the picture is decoded with, and its VUI is the one that describes it.
-fn checked_sps<'a, 'b: 'a>(nals: impl Iterator<Item = &'a NalUnit<'b>>) -> Result<Sps, String> {
-    let mut last = None;
-    for nal in nals.filter(|n| n.nal_unit_type == NalUnitType::Sps) {
+/// Every SPS on the way, the record's AND any the keyframe repeats in band, is refused against
+/// `MAX_DIM` by its CODED size (whole macroblocks, before the crop) — the size the decoder
+/// allocates — so no parameter set reaches it unchecked. One `parse_sps` refuses, the decoder
+/// refuses too (it parses with the same function), so it cannot size anything.
+///
+/// The first slice names a PPS, the PPS names an SPS, and a later set with the same id
+/// replaces an earlier one, as in the decoder. A chain that does not resolve falls back to the
+/// last SPS seen: the decoder cannot decode that slice either.
+fn active_sps<'a, 'b: 'a>(nals: impl Iterator<Item = &'a NalUnit<'b>>) -> Result<Sps, String> {
+    let mut sps_by_id: HashMap<u32, Sps> = HashMap::new();
+    let mut pps_to_sps: HashMap<u32, u32> = HashMap::new();
+    let (mut active, mut last_id) = (None, None);
+    for nal in nals {
+        match nal.nal_unit_type {
+            NalUnitType::Pps => {
+                if let Some([pps_id, sps_id]) = leading_ue(&nal.rbsp) {
+                    pps_to_sps.insert(pps_id, sps_id);
+                }
+                continue;
+            }
+            NalUnitType::Slice | NalUnitType::SliceIdr if active.is_none() => {
+                // slice_header: first_mb_in_slice, slice_type, pic_parameter_set_id.
+                let referenced = leading_ue::<3>(&nal.rbsp)
+                    .and_then(|[_, _, pps_id]| pps_to_sps.get(&pps_id).copied());
+                active = referenced.and_then(|id| sps_by_id.remove(&id));
+                continue;
+            }
+            NalUnitType::Sps => {}
+            _ => continue,
+        }
         let Ok(sps) = parse_sps(&nal.rbsp) else {
             continue;
         };
@@ -69,9 +95,42 @@ fn checked_sps<'a, 'b: 'a>(nals: impl Iterator<Item = &'a NalUnit<'b>>) -> Resul
                 "refusing a {coded_w}x{coded_h} coded frame (cap {MAX_DIM})"
             ));
         }
-        last = Some(sps);
+        last_id = Some(sps.seq_parameter_set_id);
+        sps_by_id.insert(sps.seq_parameter_set_id, sps);
     }
-    last.ok_or_else(|| "no readable SPS in the record or the keyframe".to_string())
+    active
+        .or_else(|| last_id.and_then(|id| sps_by_id.remove(&id)))
+        .ok_or_else(|| "no readable SPS in the record or the keyframe".to_string())
+}
+
+/// The first `N` unsigned Exp-Golomb values of an RBSP (ITU-T H.264 §9.1), or `None` if it
+/// ends first. Enough to follow a slice to its PPS and a PPS to its SPS, both of which open
+/// with these ids.
+fn leading_ue<const N: usize>(rbsp: &[u8]) -> Option<[u32; N]> {
+    let bit = |pos: usize| {
+        rbsp.get(pos / 8)
+            .map(|b| u32::from((b >> (7 - pos % 8)) & 1))
+    };
+    let mut pos = 0;
+    let mut out = [0u32; N];
+    for slot in &mut out {
+        let mut zeros = 0;
+        while bit(pos)? == 0 {
+            zeros += 1;
+            pos += 1;
+            if zeros > 31 {
+                return None;
+            }
+        }
+        pos += 1;
+        let mut v = 1u32;
+        for _ in 0..zeros {
+            v = (v << 1) | bit(pos)?;
+            pos += 1;
+        }
+        *slot = v - 1;
+    }
+    Some(out)
 }
 
 /// Feed the parameter sets, then the keyframe's NAL units, and return the first picture.
@@ -183,11 +242,30 @@ mod tests {
     /// back as that colour, give or take the codec, at the 64x48 it is shown at.
     #[test]
     fn a_high10_matroska_keyframe_decodes_to_its_colour() {
+        let png = frame_png(&high10_input(None)).expect("High 10 decodes");
+        assert_is_3366cc_at_64x48(&png);
+    }
+
+    /// The fixture's child input, with `inband` (one NAL unit) placed ahead of the keyframe's
+    /// own units, where a stream that repeats its parameter sets carries them.
+    fn high10_input(inband: Option<&[u8]>) -> Vec<u8> {
         let mkv = include_bytes!("../../../tests/fixtures/h264/high10-3366cc.mkv");
         let input = st2k_codecs::h264::child_input(&mut Cursor::new(&mkv[..]), 0.30)
             .expect("the reader finds the H.264 track's record and keyframe");
-        let png = frame_png(&input).expect("High 10 decodes");
-        let img = image::load_from_memory(&png).expect("PNG").to_rgba8();
+        let Some(nal) = inband else {
+            return input;
+        };
+        let cfg_len = u32::from_le_bytes(input[..4].try_into().unwrap()) as usize;
+        let length_size = usize::from(input[4 + 4] & 3) + 1;
+        let mut spliced = input[..4 + cfg_len].to_vec();
+        spliced.extend_from_slice(&(nal.len() as u32).to_be_bytes()[4 - length_size..]);
+        spliced.extend_from_slice(nal);
+        spliced.extend_from_slice(&input[4 + cfg_len..]);
+        spliced
+    }
+
+    fn assert_is_3366cc_at_64x48(png: &[u8]) {
+        let img = image::load_from_memory(png).expect("PNG").to_rgba8();
         assert_eq!((img.width(), img.height()), (64, 48));
         let px = img.get_pixel(32, 24).0;
         for (got, want) in px.iter().zip([0x33u8, 0x66, 0xcc]) {
@@ -198,33 +276,11 @@ mod tests {
         }
     }
 
-    /// The size cap holds for EVERY parameter set the decoder sees, not just the record's: a
-    /// keyframe may repeat its SPS in band, and a later SPS with the same id replaces the
-    /// record's. This one is coded 16400 wide (past `MAX_DIM`) but cropped to 64, so neither
-    /// a record-only check nor one on the cropped size would stop it reaching the decoder.
-    #[test]
-    fn an_oversized_parameter_set_inside_the_keyframe_is_refused_before_decoding() {
-        fn ue(bits: &mut Vec<bool>, v: u32) {
-            let x = v + 1;
-            let n = 32 - x.leading_zeros();
-            bits.extend(std::iter::repeat_n(false, n as usize - 1));
-            bits.extend((0..n).rev().map(|i| (x >> i) & 1 == 1));
-        }
-        // Baseline SPS, id 0: 1025 macroblocks (16400 px) wide, 48 tall, right crop 8168 x 2.
-        let mut bits = Vec::new();
-        for v in [0, 0, 2, 1] {
-            ue(&mut bits, v); // id, log2_max_frame_num-4, poc type 2, one reference frame
-        }
-        bits.push(false); // gaps_in_frame_num_value_allowed
-        ue(&mut bits, 1024);
-        ue(&mut bits, 2);
-        bits.extend([true, true, true]); // frame_mbs_only, direct_8x8, frame_cropping
-        for v in [0, 8168, 0, 0] {
-            ue(&mut bits, v);
-        }
-        bits.extend([false, true]); // no VUI, rbsp stop bit
+    /// A Baseline SPS NAL unit: `fields` are the bits after `profile_idc`, `constraint_flags`
+    /// and `level_idc`, up to and including the RBSP stop bit.
+    fn baseline_sps(fields: &[bool]) -> Vec<u8> {
         let mut rbsp = vec![66u8, 0, 30];
-        rbsp.extend(bits.chunks(8).map(|c| {
+        rbsp.extend(fields.chunks(8).map(|c| {
             c.iter()
                 .enumerate()
                 .fold(0u8, |b, (i, &on)| b | (u8::from(on) << (7 - i)))
@@ -236,21 +292,65 @@ mod tests {
             }
             nal.push(b);
         }
+        nal
+    }
 
-        let mkv = include_bytes!("../../../tests/fixtures/h264/high10-3366cc.mkv");
-        let input = st2k_codecs::h264::child_input(&mut Cursor::new(&mkv[..]), 0.30).unwrap();
-        let cfg_len = u32::from_le_bytes(input[..4].try_into().unwrap()) as usize;
-        let length_size = usize::from(input[4 + 4] & 3) + 1;
-        let mut spliced = input[..4 + cfg_len].to_vec();
-        spliced.extend_from_slice(&(nal.len() as u32).to_be_bytes()[4 - length_size..]);
-        spliced.extend_from_slice(&nal);
-        spliced.extend_from_slice(&input[4 + cfg_len..]);
+    /// Appends `v` as unsigned Exp-Golomb.
+    fn ue(bits: &mut Vec<bool>, v: u32) {
+        let x = v + 1;
+        let n = 32 - x.leading_zeros();
+        bits.extend(std::iter::repeat_n(false, n as usize - 1));
+        bits.extend((0..n).rev().map(|i| (x >> i) & 1 == 1));
+    }
 
-        let err = frame_png(&spliced).expect_err("an over-cap SPS must not decode");
+    /// The SPS fields up to `frame_mbs_only_flag`: `id`, log2_max_frame_num-4 0, POC type 2,
+    /// one reference frame, no gaps, then the size in macroblocks.
+    fn sps_head(id: u32, width_mbs: u32, height_mbs: u32) -> Vec<bool> {
+        let mut bits = Vec::new();
+        for v in [id, 0, 2, 1] {
+            ue(&mut bits, v);
+        }
+        bits.push(false);
+        ue(&mut bits, width_mbs - 1);
+        ue(&mut bits, height_mbs - 1);
+        bits
+    }
+
+    /// The size cap holds for EVERY parameter set the decoder sees, not just the record's: a
+    /// keyframe may repeat its SPS in band, and a later SPS with the same id replaces the
+    /// record's. This one is coded 16400 wide (past `MAX_DIM`) but cropped to 64, so neither
+    /// a record-only check nor one on the cropped size would stop it reaching the decoder.
+    #[test]
+    fn an_oversized_parameter_set_inside_the_keyframe_is_refused_before_decoding() {
+        let mut bits = sps_head(0, 1025, 3);
+        bits.extend([true, true, true]); // frame_mbs_only, direct_8x8, frame_cropping
+        for v in [0, 8168, 0, 0] {
+            ue(&mut bits, v); // right crop 8168 x 2: 16400 coded, 64 shown
+        }
+        bits.extend([false, true]); // no VUI, RBSP stop bit
+        let err = frame_png(&high10_input(Some(&baseline_sps(&bits))))
+            .expect_err("an over-cap SPS must not decode");
         assert!(
             err.starts_with("refusing"),
             "refused only after decoding: {err}"
         );
+    }
+
+    /// The colour rules come from the SPS the picture is decoded WITH. A second SPS under
+    /// another id, one nothing in the stream refers to, says full range; the slices still name
+    /// id 0 (studio swing), so the colour must not move.
+    #[test]
+    fn colour_comes_from_the_parameter_set_the_slices_name() {
+        let mut bits = sps_head(1, 4, 3);
+        bits.extend([true, true, false]); // frame_mbs_only, direct_8x8, no cropping
+        bits.push(true); // VUI present
+        bits.extend([false, false]); // no aspect ratio, no overscan
+        bits.extend([true, true, false, true, true, false]); // signal type: format 5, FULL range
+        bits.extend([false; 6]); // chroma loc, timing, NAL/VCL HRD, pic_struct, restriction
+        bits.push(true); // RBSP stop bit
+        let png = frame_png(&high10_input(Some(&baseline_sps(&bits))))
+            .expect("an unused SPS does not stop the decode");
+        assert_is_3366cc_at_64x48(&png);
     }
 
     /// A 4:4:4 stream (the High 4:4:4 Predictive profile issue #35 was about) is refused by
