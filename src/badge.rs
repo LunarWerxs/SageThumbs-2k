@@ -183,14 +183,14 @@ struct BadgeGeom {
     pad_y: f32,
     fold: f32,
     /// Extra advance between letters, in pixels.
-    tracking: f32,
+    spacing: f32,
     chip_w: u32,
     chip_h: u32,
     x0: u32,
     y0: u32,
 }
 
-/// Advance width of `label` in font units, without tracking. Every character is known to
+/// Advance width of `label` in font units, without letter spacing. Every character is known to
 /// [`font`] (`label_for` refuses the rest); an unknown one counts as nothing.
 fn label_units(label: &str) -> f32 {
     label
@@ -247,7 +247,7 @@ fn badge_geometry(
         pad_x: cap * 0.42,
         pad_y,
         fold: fold_for(cap, style),
-        tracking: cap * 0.06,
+        spacing: cap * 0.06,
         chip_w,
         chip_h,
         x0: (right - chip_w as f32).floor() as u32,
@@ -344,7 +344,7 @@ fn text_path(g: &BadgeGeom, label: &str) -> Option<Path> {
                 font::Seg::Z => pb.close(),
             }
         }
-        pen += glyph.advance as f32 * g.scale + g.tracking;
+        pen += glyph.advance as f32 * g.scale + g.spacing;
     }
     pb.finish()
 }
