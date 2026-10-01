@@ -36,29 +36,15 @@ pub(super) fn frame_png(input: &[u8]) -> Result<Vec<u8>, String> {
     }
     let picture = decode(&avcc.sps_nals, &avcc.pps_nals, keyframe, avcc.length_size)?;
     let rgba = to_rgba(&picture, &sps)?;
-    let (width, rgba) =
-        to_display_aspect(picture.width, picture.height, rgba, sps.sample_aspect_ratio)?;
-    super::encode_png(width, picture.height, rgba)
-}
-
-/// Stretch the picture to the shape it is meant to be SHOWN at. A DVD-sized encode stores
-/// 720x480 with non-square pixels (8:9 for 4:3, 32:27 for 16:9) and says so in the SPS; the
-/// reporter's file (issue #52) is one, and drawn square it is a 3:2 picture squeezed sideways.
-/// Only the width moves, so the height stays the stream's own.
-fn to_display_aspect(
-    w: u32,
-    h: u32,
-    rgba: Vec<u8>,
-    (sar_w, sar_h): (u16, u16),
-) -> Result<(u32, Vec<u8>), String> {
-    if sar_w == sar_h || sar_w == 0 || sar_h == 0 {
-        return Ok((w, rgba));
-    }
-    let shown = (u64::from(w) * u64::from(sar_w) + u64::from(sar_h) / 2) / u64::from(sar_h);
-    let shown = u32::try_from(shown).unwrap_or(MAX_DIM).clamp(1, MAX_DIM);
-    let img = image::RgbaImage::from_raw(w, h, rgba).ok_or("RGBA size does not match the frame")?;
-    let out = image::imageops::resize(&img, shown, h, image::imageops::FilterType::Triangle);
-    Ok((shown, out.into_raw()))
+    let img = image::RgbaImage::from_raw(picture.width, picture.height, rgba)
+        .ok_or("RGBA size does not match the frame")?;
+    // Stretched to the shape it is SHOWN at (the reporter's 720x480 file is 4:3, not 3:2).
+    let (sar_w, sar_h) = sps.sample_aspect_ratio;
+    let shown = st2k_codecs::video::apply_pixel_aspect(
+        image::DynamicImage::ImageRgba8(img),
+        (u32::from(sar_w), u32::from(sar_h)),
+    );
+    super::encode_png(shown.width(), shown.height(), shown.into_rgba8().into_raw())
 }
 
 /// Feed the parameter sets, then the keyframe's NAL units, and return the first picture.

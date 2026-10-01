@@ -68,6 +68,34 @@ pub fn apply_display_rotation(img: DynamicImage, clockwise_degrees: u32) -> Dyna
     }
 }
 
+/// The width a `w`-pixel-wide frame is SHOWN at when its pixels are `num:den` (width:height),
+/// or `None` when they are square or the ratio says nothing usable.
+///
+/// Video is often stored with non-square pixels: a DVD-sized encode is 720x480 for both its
+/// 4:3 (8:9 pixels, shown 640 wide) and its 16:9 (32:27, shown 853 wide) pictures, and every
+/// player stretches it. A thumbnail drawn from the stored pixels is the same picture squeezed
+/// or stretched sideways (issue #52's file came out 3:2 instead of 4:3). A ratio past 4:1
+/// either way is not a real pixel shape and is ignored rather than trusted.
+pub fn display_width(w: u32, (num, den): (u32, u32)) -> Option<u32> {
+    if num == 0 || den == 0 || num == den || num > den * 4 || den > num * 4 {
+        return None;
+    }
+    let shown = (u64::from(w) * u64::from(num) + u64::from(den) / 2) / u64::from(den);
+    let shown = u32::try_from(shown)
+        .ok()?
+        .clamp(1, crate::decode::limits::MAX_DIM);
+    (shown != w).then_some(shown)
+}
+
+/// `img` stretched or squeezed to the width its pixel shape says it is shown at
+/// ([`display_width`]); its height is the stream's own. Square pixels come back untouched.
+pub fn apply_pixel_aspect(img: DynamicImage, pixel_aspect: (u32, u32)) -> DynamicImage {
+    match display_width(img.width(), pixel_aspect) {
+        Some(w) => img.resize_exact(w, img.height(), image::imageops::FilterType::Triangle),
+        None => img,
+    }
+}
+
 /// Is Media Foundation actually present on this machine?
 ///
 /// `mfplat.dll` / `mfreadwrite.dll` are **delay-loaded** (see `delay_load_media_foundation`
@@ -485,8 +513,37 @@ unsafe fn image_from_sample(
     let rgba = copy_bgrx_to_rgba(data, max_len as usize, w, h, stride);
     let _ = buffer.Unlock();
 
-    let img = RgbaImage::from_raw(w, h, rgba?)?;
-    Some(DynamicImage::ImageRgba8(img))
+    let mut img = DynamicImage::ImageRgba8(RgbaImage::from_raw(w, h, rgba?)?);
+    // The Source Reader hands back the CODED frame, like the display matrix above: what a
+    // renderer does next is ours to do. First the crop: H.264 codes whole 16-pixel blocks, so
+    // a 1080p picture arrives 1088 tall and a 72-wide one 80 wide, edge padding included,
+    // with the real picture named by the minimum display aperture.
+    if let Some((x, y, cw, ch)) = display_aperture(&out, w, h) {
+        img = img.crop_imm(x, y, cw, ch);
+    }
+    // Then the pixel shape the decoder read from the stream (an H.264 SPS, an MPEG-2 sequence
+    // header): a DVD-sized 720x480 at 8:9 comes out at its 4:3 rather than 3:2 (issue #52).
+    let par = out
+        .GetUINT64(&MF_MT_PIXEL_ASPECT_RATIO)
+        .map(|v| ((v >> 32) as u32, v as u32))
+        .unwrap_or((1, 1));
+    Some(apply_pixel_aspect(img, par))
+}
+
+/// The part of a `w` x `h` frame that is picture, from `MF_MT_MINIMUM_DISPLAY_APERTURE` (an
+/// `MFVideoArea`: two 16.16 offsets, then a width and a height), as `(x, y, width, height)`.
+/// `None` when the type carries none, when it covers the whole frame, or when it does not fit
+/// inside the frame, so a missing or crafted aperture can only ever leave the frame whole.
+unsafe fn display_aperture(t: &IMFMediaType, w: u32, h: u32) -> Option<(u32, u32, u32, u32)> {
+    let mut area = [0u8; 16];
+    t.GetBlob(&MF_MT_MINIMUM_DISPLAY_APERTURE, &mut area, None)
+        .ok()?;
+    let x = u32::try_from(i16::from_le_bytes([area[2], area[3]])).ok()?;
+    let y = u32::try_from(i16::from_le_bytes([area[6], area[7]])).ok()?;
+    let cw = u32::try_from(i32::from_le_bytes([area[8], area[9], area[10], area[11]])).ok()?;
+    let ch = u32::try_from(i32::from_le_bytes([area[12], area[13], area[14], area[15]])).ok()?;
+    let fits = cw > 0 && ch > 0 && x.checked_add(cw)? <= w && y.checked_add(ch)? <= h;
+    (fits && (cw, ch) != (w, h)).then_some((x, y, cw, ch))
 }
 
 /// Best-effort seek to `seek.frac` of the running time (e.g. 0.30 = 30% in) so the grabbed

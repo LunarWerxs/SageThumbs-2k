@@ -168,11 +168,12 @@ if ($featSection.Success) {
 if (-not $declared.Count) { $recipeFail += 'could not parse Cargo.toml [features]' }
 
 # EXE-only by construction: each links a stack the shell DLL must never load - webview2,
-# the D3D11/DXGI capture stack, and the three pure-Rust video decoders that either panic on
-# malformed input or are 0.x crates (nihav/h263, vp9dec, oxideav-mpeg12video). They reach the
+# the D3D11/DXGI capture stack, and the pure-Rust video decoders that either panic on
+# malformed input or are 0.x / vendored crates (nihav/h263, vp9dec, oxideav-mpeg12video,
+# rav1d, the patched rust_h264). They reach the
 # shipped EXE through Cargo's `default` set; the DLL package opts out with
 # `default-features = false`, and naming them here keeps the recipe from ever adding one back.
-$exeOnly = @('html-preview', 'hdr-capture', 'flash-video', 'vp9-video', 'mpeg-video')
+$exeOnly = @('html-preview', 'hdr-capture', 'flash-video', 'vp9-video', 'mpeg-video', 'avif-video', 'h264-video')
 
 foreach ($pkg in @('sagethumbs2k', 'sagethumbs2k-dll')) {
   $recipe = @((Get-ReleaseFeatureList -Package $pkg) -split ',' | Where-Object { $_ })

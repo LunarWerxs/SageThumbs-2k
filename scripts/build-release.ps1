@@ -255,7 +255,7 @@ if (-not $SkipBuild) {
     try {
         $dllTree = @(& cargo tree -p sagethumbs2k-dll --locked 2>&1)
         if ($LASTEXITCODE) { throw "cargo tree -p sagethumbs2k-dll failed (exit $LASTEXITCODE)" }
-        foreach ($forbidden in 'vp9dec', 'nihav', 'h263', 'oxideav', 'rav1d') {
+        foreach ($forbidden in 'vp9dec', 'nihav', 'h263', 'oxideav', 'rav1d', 'rust_h264') {
             if ($dllTree -match $forbidden) {
                 throw "Containment violation: '$forbidden' is linked into sagethumbs2k-dll (run ``cargo tree -p sagethumbs2k-dll`` to see the path)"
             }

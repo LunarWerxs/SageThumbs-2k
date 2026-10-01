@@ -208,3 +208,30 @@ fn frame_from_bytes_and_frame_from_owned_bytes_agree_on_the_same_input() {
     assert!(super::frame_from_bytes(&[]).is_none());
     assert!(super::frame_from_owned_bytes(Vec::new()).is_none());
 }
+
+/// The width every video path stretches a frame to (issue #52's DVD-sized file): 720 wide at
+/// 8:9 is the 640 of a 4:3 picture, at 32:27 the 853 of a 16:9 one, NTSC VideoCD's 352 at
+/// 1.095 tall is 321; square pixels and ratios no real pixel has leave the frame alone.
+#[test]
+fn display_width_is_the_shown_width_of_non_square_pixels() {
+    use super::display_width;
+    assert_eq!(display_width(720, (8, 9)), Some(640));
+    assert_eq!(display_width(720, (32, 27)), Some(853));
+    assert_eq!(display_width(352, (10000, 10950)), Some(321));
+    assert_eq!(display_width(720, (1, 1)), None);
+    assert_eq!(display_width(720, (0, 9)), None);
+    assert_eq!(display_width(720, (100, 1)), None);
+}
+
+/// Windows decodes an 8-bit H.264 with 8:9 pixels and hands back the 72x48 it stores; the
+/// thumbnail must be the 64x48 it is shown at. Needs Media Foundation, so a host without it
+/// (an N edition, `ST2K_NO_MF=1`) has nothing to prove here.
+#[test]
+fn a_windows_decoded_frame_comes_out_at_its_display_shape() {
+    if !super::media_foundation_available() {
+        return;
+    }
+    let mkv = include_bytes!("../../../../tests/fixtures/aspect/h264-8bit-sar8x9.mkv");
+    let img = super::frame_from_bytes(mkv).expect("Media Foundation decodes an 8-bit H.264 MKV");
+    assert_eq!((img.width(), img.height()), (64, 48));
+}

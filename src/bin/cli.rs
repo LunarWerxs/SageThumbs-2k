@@ -6,10 +6,18 @@
 use sagethumbs2k_core::cli;
 
 // The hidden video-decode child verbs (`flv-frame`: VP6 via nihav + Sorenson via h263-rs;
-// `vp9-frame`: VP9 Profile 2/3 via vp9dec; `mpeg-frame`: MPEG-1/2 via oxideav-mpeg12video). Behind EXE-only features so the panicky /
+// `vp9-frame`: VP9 Profile 2/3 via vp9dec; `mpeg-frame`: MPEG-1/2 via oxideav-mpeg12video;
+// `avif-frame`: AV1 via rav1d; `h264-frame`: High 10 via the vendored rust_h264). Behind
+// EXE-only features so the panicky /
 // unsafe-heavy decoder crates exist ONLY in this console binary — see src/bin/vdec/mod.rs
 // for the whole containment argument.
-#[cfg(any(feature = "flash-video", feature = "vp9-video", feature = "mpeg-video"))]
+#[cfg(any(
+    feature = "flash-video",
+    feature = "vp9-video",
+    feature = "mpeg-video",
+    feature = "avif-video",
+    feature = "h264-video"
+))]
 mod vdec;
 
 const USAGE: &str = "\
@@ -532,8 +540,15 @@ fn need<'a>(pos: &'a [&'a String], i: usize) -> Result<&'a str, String> {
 }
 
 /// Exits 1 with the "compiled without" notice for a video-decoder feature this build
-/// does not have (the hidden `flv-frame`/`vp9-frame`/`mpeg-frame` verbs).
-#[cfg(not(all(feature = "flash-video", feature = "vp9-video", feature = "mpeg-video")))]
+/// does not have (the hidden `flv-frame`/`vp9-frame`/`mpeg-frame`/`avif-frame`/`h264-frame`
+/// verbs).
+#[cfg(not(all(
+    feature = "flash-video",
+    feature = "vp9-video",
+    feature = "mpeg-video",
+    feature = "avif-video",
+    feature = "h264-video"
+)))]
 fn missing_feature(feature: &str) -> ! {
     eprintln!("st2k: this build was compiled without the {feature} feature");
     std::process::exit(1)

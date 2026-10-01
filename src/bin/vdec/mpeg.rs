@@ -46,6 +46,9 @@ struct SeqHeader {
     matrix: Option<u8>,
     /// Whether a `sequence_extension` follows the header (MPEG-2) or not (MPEG-1).
     mpeg2: bool,
+    /// `aspect_ratio_information` (§6.3.3): a display ratio for MPEG-2, a pixel shape for
+    /// MPEG-1. See [`pixel_aspect`].
+    aspect: u8,
 }
 
 /// The testable core: one elementary-stream unit → PNG bytes.
@@ -68,7 +71,39 @@ pub(super) fn frame_png(unit: &[u8]) -> Result<Vec<u8>, String> {
         .or_else(|| frames.first())
         .ok_or("MPEG unit decoded to no frame")?;
     let (width, height, rgba) = to_rgba(&decoded.frame, &hdr)?;
-    super::encode_png(width, height, rgba)
+    let img = image::RgbaImage::from_raw(width, height, rgba)
+        .ok_or("RGBA size does not match the frame")?;
+    // A DVD's 720x480 is shown at 4:3 or 16:9, never at the 3:2 its pixels count out to.
+    let shown = st2k_codecs::video::apply_pixel_aspect(
+        image::DynamicImage::ImageRgba8(img),
+        pixel_aspect(&hdr),
+    );
+    super::encode_png(shown.width(), shown.height(), shown.into_rgba8().into_raw())
+}
+
+/// The picture's pixel shape as (width, height) from `aspect_ratio_information` (§6.3.3).
+/// MPEG-2 gives the DISPLAY ratio of the whole frame (2 = 4:3, 3 = 16:9, 4 = 2.21:1), so a
+/// pixel is that ratio over the frame's own; MPEG-1 gives one pixel's height:width straight
+/// (ISO/IEC 11172-2 Table 2-D.4, in ten-thousandths: 12 is NTSC VideoCD's 1.0950). Anything
+/// else, including the forbidden 0 and the reserved codes, is square.
+fn pixel_aspect(hdr: &SeqHeader) -> (u32, u32) {
+    const PEL_HEIGHT_PER_WIDTH: [u32; 15] = [
+        0, 10000, 6735, 7031, 7615, 8055, 8437, 8935, 9157, 9815, 10255, 10695, 10950, 11575, 12015,
+    ];
+    if hdr.mpeg2 {
+        let (dw, dh) = match hdr.aspect {
+            2 => (4, 3),
+            3 => (16, 9),
+            4 => (221, 100),
+            _ => return (1, 1),
+        };
+        (dw * hdr.height, dh * hdr.width)
+    } else {
+        match PEL_HEIGHT_PER_WIDTH.get(usize::from(hdr.aspect)) {
+            Some(&v) if v != 0 => (10000, v),
+            _ => (1, 1),
+        }
+    }
 }
 
 /// Convert a decoded frame to 8-bit RGBA (see the module docs for the exact rules).
@@ -166,6 +201,7 @@ fn parse_sequence_layer(unit: &[u8]) -> Result<SeqHeader, String> {
         height: take(12)?,
         matrix: None,
         mpeg2: false,
+        aspect: take(4)? as u8,
     };
     // Walk the extension blocks that follow the header, up to the first GOP / picture.
     let mut pos = seq + 4;
@@ -221,6 +257,17 @@ fn display_extension(hdr: &mut SeqHeader, eb: &mut Bits<'_>) -> Result<(), Strin
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    /// A DVD-shaped MPEG-2 frame is drawn at its display ratio, not at the shape its pixel
+    /// count makes: ffmpeg wrote this 80x48 picture flagged 16:9 (`-aspect 16:9`), so it must
+    /// come out 85 wide rather than 5:3.
+    #[test]
+    fn an_mpeg2_frame_comes_out_at_its_display_ratio() {
+        let m2v = include_bytes!("../../../tests/fixtures/aspect/mpeg2-dar16x9.m2v");
+        let png = frame_png(m2v).expect("one intra picture decodes");
+        let img = image::load_from_memory(&png).expect("PNG");
+        assert_eq!((img.width(), img.height()), (85, 48));
+    }
 
     /// An MPEG-2 sequence header + extension pair declaring the given size (12 + 2 bits
     /// each), plus a display extension declaring BT.709 — bit-exact to the layout
@@ -333,6 +380,7 @@ mod tests {
             height: 2,
             matrix: None,
             mpeg2: false,
+            aspect: 1,
         };
         assert_eq!(flat(16, &sd), (0, 0, 0, 255));
         assert_eq!(flat(235, &sd), (255, 255, 255, 255));
@@ -443,6 +491,8 @@ mod tests {
     /// END-TO-END on the corpus: extract the unit with the SAME core walk the parent uses
     /// (`mpeg12::intra_slice_bytes`), decode it here, and get a plausible PNG back. Covers
     /// MPEG-2 ES, MPEG-1 system stream, MPEG-2 program streams and the real MPEG-1 ES.
+    /// The sizes are the DISPLAY sizes (ffprobe's sample aspect ratio applied): the two
+    /// anamorphic DVD-shaped streams are drawn at 4:3, not at their stored 720 wide.
     /// Skips when the corpus is absent (CI).
     #[test]
     fn corpus_mpeg_streams_decode() {
@@ -454,10 +504,10 @@ mod tests {
             ("sample.mpeg", 640, 360),
             ("sample.vob", 640, 360),
             ("real.m2v", 192, 240),
-            ("real.vob", 720, 480),
+            ("real.vob", 640, 480),
             ("real.m1v", 160, 120),
             ("real-vcd.mpg", 160, 120),
-            ("real-es.m2v", 720, 576),
+            ("real-es.m2v", 768, 576),
             // Transport streams (2026-09-17), one per packet stride: `.ts` is 188-byte
             // broadcast packets, `.m2ts` and `.mts` carry M2TS's 4-byte arrival timestamp
             // before each one. The corpus's `real.mpg` is a transport stream too, but it is

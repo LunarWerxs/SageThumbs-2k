@@ -56,11 +56,12 @@ File types.
 If it is one particular video, run `st2k doctor <that file>` and read the **Video codec** line.
 Video frames decode through the codecs Windows ships, and two things stop that: a codec Windows
 does not have (HEVC and AV1 are Store add-ons, and the doctor names the one to install), or an
-H.264 file in a profile the Windows decoder does not implement at all (4:4:4, 4:2:2 or 10-bit
-colour, which some encoders write when asked for `yuv444p` or similar). The second kind is
-skipped on purpose and instantly, because the Windows 10 decoder hangs on such files rather
-than declining them. Re-encode as ordinary 8-bit 4:2:0 H.264 (`ffmpeg -c:v libx264 -pix_fmt
-yuv420p`), or attach cover art, which is shown whenever no frame can be decoded.
+H.264 file in a profile the Windows decoder does not implement at all. 10-bit H.264 ("Hi10p",
+the usual format of anime encodes) is one of those, and SageThumbs decodes it itself. 4:4:4 and
+4:2:2 colour, which some encoders write when asked for `yuv444p` or similar, are skipped on
+purpose and instantly, because the Windows 10 decoder hangs on such files rather than declining
+them. Re-encode those as ordinary 8-bit 4:2:0 H.264 (`ffmpeg -c:v libx264 -pix_fmt yuv420p`),
+or attach cover art, which is shown whenever no frame can be decoded.
 
 MPEG files need nothing installed. Windows has no decoder path at all for MPEG-1 system
 streams (VideoCD-era `.mpg`, and what most late-1990s cameras recorded) or for bare MPEG video
