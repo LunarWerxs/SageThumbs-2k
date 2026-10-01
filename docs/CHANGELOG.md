@@ -9,6 +9,15 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+- **Format marks are the same size on every thumbnail, with smooth, sharp letters** (#50). The
+  mark followed each picture's shape, so a square picture got twice the mark of a widescreen
+  video frame or a book cover, and its letters turned jagged and blurry once Explorer resized
+  the thumbnail.
+- **On widescreen videos the format mark no longer hides under Explorer's film-strip border**
+  (#51).
+- **The format mark stays visible after you pick a new default program for a file type** (#54).
+  A program such as Readest puts its own icon in that corner, and choosing it after SageThumbs
+  was set up let the icon cover the mark.
 - **7-Zip and RAR archives whose first picture is larger than 8 MB now get thumbnails** (#53),
   as zip and tar archives already did. That includes `.cb7` and `.cbr` comics with big scans.
 - **JPEG XL thumbnails keep their text.** The reference encoder saves repeated letters in a

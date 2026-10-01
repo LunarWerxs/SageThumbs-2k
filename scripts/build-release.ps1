@@ -336,6 +336,10 @@ if ($LASTEXITCODE) { throw "signing the staged binaries failed (see above)" }
 foreach ($doc in 'README.md','LICENSE','LICENSE-MIT','LICENSE-APACHE') {
     if (Test-Path "$root\$doc") { Copy-Item "$root\$doc" $stage }
 }
+# The format badge's letters are DejaVu outlines compiled into the DLL (src/badge/font.rs);
+# their licence asks for the notice to travel with them. The installer and the portable zip
+# both take every LICENSE* file in the stage.
+Copy-Item "$root\assets\fonts\LICENSE-DejaVu.txt" $stage -Force
 # Always ship the hardened policy with the core app. The decoder can still
 # use an explicitly installed Program Files ImageMagick fallback; it must receive
 # the same restrictions even when the curated engine component is not selected.

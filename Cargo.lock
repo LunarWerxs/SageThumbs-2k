@@ -1481,6 +1481,7 @@ dependencies = [
  "sagethumbs2k-preview",
  "sagethumbs2k-screenshot",
  "serde_json",
+ "tiny-skia",
  "toml",
  "vp9dec",
  "windows",

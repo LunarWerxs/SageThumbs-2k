@@ -160,6 +160,10 @@ exr = { version = "=1.74.2", default-features = false }
 # lists it as a duplicate the moment the two drift apart again.
 # Pure-Rust, Apache-2.0 OR BSD-3 (no C, no GPL).
 moxcms = "0.8"
+# Anti-aliased fills for the format badge's letters (`src/badge.rs`). NOT a new dependency:
+# resvg already links tiny-skia 0.12 into the DLL for SVG thumbnails, so naming it here
+# shares the same compiled crate. Keep it on the version resvg uses.
+tiny-skia = "0.12"
 kamadak-exif = "0.6"
 # JSON for the `st2k --mcp` MCP server (JSON-RPC 2.0 over stdio). Pure-Rust,
 # MIT OR Apache-2.0. Only reached from the CLI binary — LTO dead-strips it from

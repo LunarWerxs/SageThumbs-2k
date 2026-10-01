@@ -42,6 +42,25 @@
 //!   and no values, so Explorer had no icon to draw. Writing the `.27` icon as `.26`'s
 //!   overlay put the Photoshop mark back.
 //!
+//! # And one place that holds whichever program owns the type (2026-10-01, issue #54)
+//!
+//! A user set Readest as the default for PDF, MOBI and AZW3 AFTER SageThumbs was set up, and
+//! Readest's icon covered the badge: its installer registers its own ProgIDs (`PDF Document`,
+//! `AZW Document`, …), and a suppression written under the ProgIDs known at the last sync
+//! cannot reach one chosen later. Measured with a stand-in ProgID (a `DefaultIcon` and no
+//! `TypeOverlay`) made the default for `.azw3`, `PrintWindow` captures of a fresh Explorer
+//! window after `SHChangeNotify(SHCNE_ASSOCCHANGED)`:
+//!
+//! * `TypeOverlay = ""` under `HKCU\Software\Classes\SystemFileAssociations\.azw3` **removes**
+//!   the overlay. Explorer reads the value through the whole association chain, and the
+//!   extension-wide `SystemFileAssociations` key is in it whichever ProgID is the default.
+//! * Under `HKCU\Software\Classes\.azw3` it does nothing (the 2026-08-08 finding, again).
+//! * Under the ProgID itself it removes it, as it always did.
+//!
+//! So [`apply_ext`] writes both: the ProgID values for every program known now (a ProgID
+//! that declares its own overlay is consulted before `SystemFileAssociations`), and the
+//! extension-wide value for every program chosen later.
+//!
 //! So `CornerMark::SystemIcon` is not "do nothing": [`sync`]`(false)` removes our
 //! suppression AND, for those two cases, writes the icon Explorer would otherwise skip.
 //! Everything else is left exactly as Explorer would draw it: a format Windows decodes itself
@@ -145,15 +164,26 @@ fn effective_progid(ext: &str) -> Option<String> {
         .find(|p| CLASSES_ROOT.open(p).is_ok())
 }
 
-/// Write `TypeOverlay = ""` for every ProgID that serves `.ext`, marking each write as ours.
+/// The extension-wide key Explorer also reads `TypeOverlay` from, whichever ProgID is the
+/// default (see the module doc, issue #54).
+const TYPE_LEVEL: &str = "SystemFileAssociations";
+
+/// `SystemFileAssociations\.ext`, relative to the classes root.
+fn type_level_key(ext: &str) -> String {
+    format!(r"{TYPE_LEVEL}\.{ext}")
+}
+
+/// Write `TypeOverlay = ""` for every ProgID that serves `.ext`, and once for the extension
+/// itself so a program chosen after this sync is covered too, marking each write as ours.
 ///
-/// Skips any ProgID that already carries a `TypeOverlay` we did not write: that is a
+/// Skips any key that already carries a `TypeOverlay` we did not write: that is a
 /// deliberate choice by whoever owns the type, and silently replacing it would be the same
 /// class of rudeness this feature exists to undo.
 fn apply_ext(classes: &windows_registry::Key, ext: &str) {
     for progid in progids_for(ext) {
         apply_progid(classes, &progid);
     }
+    apply_progid(classes, &type_level_key(ext));
 }
 
 /// The single-ProgID half of [`apply_ext`], split out so the write/marker contract can be
@@ -208,6 +238,24 @@ fn clear_every_mark(classes: &windows_registry::Key) {
     let names: Vec<String> = names.collect();
     for name in names {
         remove_progid(classes, &name);
+    }
+    // The extension-wide values live one level down, under `SystemFileAssociations`.
+    let type_level: Vec<String> = classes
+        .open(TYPE_LEVEL)
+        .and_then(|k| k.keys().map(Iterator::collect))
+        .unwrap_or_default();
+    for name in type_level {
+        remove_progid(classes, &format!(r"{TYPE_LEVEL}\{name}"));
+    }
+    // Our writes may have been what created the per-user `SystemFileAssociations`; an empty
+    // one goes with them.
+    if let Ok(k) = classes.open(TYPE_LEVEL) {
+        let empty = k.values().map(|v| v.count() == 0).unwrap_or(false)
+            && k.keys().map(|s| s.count() == 0).unwrap_or(false);
+        drop(k);
+        if empty {
+            let _ = classes.remove_tree(TYPE_LEVEL);
+        }
     }
 }
 

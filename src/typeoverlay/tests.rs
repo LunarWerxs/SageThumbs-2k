@@ -96,6 +96,29 @@ fn clearing_finds_a_mark_under_a_progid_nothing_points_at_any_more() {
     );
 }
 
+/// Issue #54: a program made the default AFTER the last sync (Readest, for PDF and AZW3) has
+/// a ProgID no per-ProgID write reached, so the suppression also goes on the extension-wide
+/// key Explorer reads whichever program owns the type. The clearing sweep must find it there
+/// too, or a switch back to Windows' icon, or an uninstall, would strand it.
+#[test]
+fn the_extension_wide_suppression_is_written_and_swept() {
+    let (_guard, classes) = Scratch::new("type-level");
+    // An extension nothing on this machine is registered for: only the type-level write runs.
+    apply_ext(&classes, "st2ktestext");
+    let k = classes
+        .open(r"SystemFileAssociations\.st2ktestext")
+        .expect("extension-wide key written");
+    assert_eq!(k.get_string(VALUE).as_deref(), Ok(""), "overlay suppressed");
+    assert!(k.get_string(MARK).is_ok(), "our marker is present");
+    drop(k);
+
+    clear_every_mark(&classes);
+    assert!(
+        classes.open("SystemFileAssociations").is_err(),
+        "the sweep takes the value, and the keys that only held it, back out"
+    );
+}
+
 /// The rule that keeps this feature polite: an overlay somebody else chose is theirs.
 /// We neither replace it going in nor delete it coming out.
 #[test]

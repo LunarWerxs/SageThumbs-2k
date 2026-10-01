@@ -54,12 +54,7 @@ fn badge_size_round_trips_through_its_dword() {
     assert_eq!(BadgeSize::default(), BadgeSize::Small);
     assert_eq!(BadgeSize::from_dword(DEFAULT_BADGE_SIZE), BadgeSize::Small);
     assert_eq!(BadgeSize::from_dword(99), BadgeSize::Small);
-    // Bigger step, smaller divisor - the ordering the badge geometry depends on.
-    assert!(BadgeSize::Medium.divisor() < BadgeSize::Small.divisor());
-    assert!(BadgeSize::Large.divisor() < BadgeSize::Medium.divisor());
-    assert_eq!(
-        BadgeSize::Small.divisor(),
-        110,
-        "the shipped look must not move"
-    );
+    // Bigger step, bigger letters - the ordering the badge geometry depends on.
+    assert!(BadgeSize::Medium.cap_fraction() > BadgeSize::Small.cap_fraction());
+    assert!(BadgeSize::Large.cap_fraction() > BadgeSize::Medium.cap_fraction());
 }

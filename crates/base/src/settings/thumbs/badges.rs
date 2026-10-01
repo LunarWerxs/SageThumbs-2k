@@ -41,11 +41,12 @@ impl BadgeStyle {
 
 /// How big the format mark is drawn, as a share of the tile.
 ///
-/// The badge scales off the tile's SHORT EDGE divided by a constant, so a step here is a
-/// constant fraction of the picture at every thumbnail size rather than a pixel count that
-/// would be invisible on a 512 px tile and cover a 96 px one. Reported 2026-09-10: at the
-/// original ~18% the three letters are too small to read at a glance on a normal-DPI
-/// Explorer window, and there was no way to ask for a bigger one.
+/// The letters' cap height is a constant fraction of the tile's LONG side (the side Explorer
+/// fits to the tile it shows), so a step here is the same share of every tile in a folder at
+/// every thumbnail size, rather than a pixel count that would be invisible on a 512 px tile
+/// and cover a 96 px one. Reported 2026-09-10: at the original ~18% the three letters are too
+/// small to read at a glance on a normal-DPI Explorer window, and there was no way to ask for
+/// a bigger one.
 ///
 /// Which mark you get is [`CornerMark`]; this is only its size, and it is read only when
 /// that says [`CornerMark::Badge`].
@@ -82,14 +83,14 @@ impl BadgeSize {
         }
     }
 
-    /// The divisor `crate::badge` scales the glyph cells by: `short_edge / divisor`, clamped.
-    /// SMALLER divides less often, so a smaller number is a BIGGER badge. 110 is the shipped
-    /// value and must not move - see `badge::badge_geometry` for why 48 was wrong.
-    pub const fn divisor(self) -> u32 {
+    /// The badge letters' cap height as a share of the tile's long side. These keep the
+    /// size each step had on the 256 px tile it was tuned on (14, 21 and 28 px letters), where
+    /// the old pixel font drew 7-row glyphs at a scale of 2, 3 and 4.
+    pub const fn cap_fraction(self) -> f32 {
         match self {
-            Self::Small => 110,
-            Self::Medium => 80,
-            Self::Large => 55,
+            Self::Small => 0.055,
+            Self::Medium => 0.082,
+            Self::Large => 0.11,
         }
     }
 }

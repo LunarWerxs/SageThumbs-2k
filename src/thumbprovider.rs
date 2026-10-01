@@ -367,6 +367,8 @@ impl ThumbnailProvider_Impl {
                     .and_then(|n| crate::badge::label_for(&n))
             };
             if let Some(label) = label {
+                // Explorer lays its film strip over a landscape video tile (issue #51).
+                let frame = crate::badge::Frame::explorer_draws_over(&label, img.width, img.height);
                 crate::badge::stamp(
                     &mut img.rgba,
                     img.width,
@@ -374,6 +376,7 @@ impl ThumbnailProvider_Impl {
                     &label,
                     cfg.badge_style,
                     cfg.badge_size,
+                    frame,
                 );
             }
         }
