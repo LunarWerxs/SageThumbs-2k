@@ -2,9 +2,10 @@
 //! → PNG. The CHILD side of `st2k_codecs::h264::h264_frame` (see [`super`] for the shared
 //! containment story; issue #52 for why it exists).
 //!
-//! 1. Splits the parent's framing (`h264::split_child_input`) and reads the SPS out of the
-//!    configuration record BEFORE decoding: the dimensions are refused against
-//!    `decode::limits::MAX_DIM` before the decoder allocates a picture, and the SPS's VUI
+//! 1. Splits the parent's framing (`h264::split_child_input`) and reads every SPS the decoder
+//!    will see BEFORE decoding, the configuration record's and any the keyframe repeats in
+//!    band: each one's coded size is refused against `decode::limits::MAX_DIM` before the
+//!    decoder can allocate a picture for it, and the last one's VUI
 //!    (`video_full_range_flag`, `matrix_coefficients`) drives the colour conversion.
 //! 2. Decodes with the vendored `rust_h264` (`crates/vendor/rust_h264`, with the high bit depth
 //!    patch in `crates/vendor/rust_h264-patches`): the record's SPS and PPS, then the
@@ -19,7 +20,7 @@
 //!    encode (720x480 at 8:9) comes out at the 4:3 it is shown at.
 
 use rust_h264::decoder::{Frame, OrderedDecoder};
-use rust_h264::nal::{parse_avcc, parse_avcc_config};
+use rust_h264::nal::{parse_avcc, parse_avcc_config, NalUnit, NalUnitType};
 use rust_h264::sps::{parse_sps, Sps};
 use st2k_codecs::h264::{split_child_input, MAX_DIM};
 
@@ -27,16 +28,9 @@ use st2k_codecs::h264::{split_child_input, MAX_DIM};
 pub(super) fn frame_png(input: &[u8]) -> Result<Vec<u8>, String> {
     let (config, keyframe) = split_child_input(input).ok_or("malformed child input")?;
     let avcc = parse_avcc_config(config).map_err(|e| format!("avcC: {e}"))?;
-    let sps_nal = avcc
-        .sps_nals
-        .first()
-        .ok_or("the avcC record carries no SPS")?;
-    let sps = parse_sps(&sps_nal.rbsp).map_err(|e| format!("SPS: {e}"))?;
-    let (w, h) = (sps.width(), sps.height());
-    if w == 0 || h == 0 || w > MAX_DIM || h > MAX_DIM {
-        return Err(format!("refusing {w}x{h} frame (cap {MAX_DIM})"));
-    }
-    let picture = decode(&avcc.sps_nals, &avcc.pps_nals, keyframe, avcc.length_size)?;
+    let units = parse_avcc(keyframe, avcc.length_size);
+    let sps = checked_sps(avcc.sps_nals.iter().chain(&units))?;
+    let picture = decode(&avcc.sps_nals, &avcc.pps_nals, &units)?;
     let rgba = to_rgba(&picture, &sps)?;
     let img = image::RgbaImage::from_raw(picture.width, picture.height, rgba)
         .ok_or("RGBA size does not match the frame")?;
@@ -49,22 +43,51 @@ pub(super) fn frame_png(input: &[u8]) -> Result<Vec<u8>, String> {
     super::encode_png(shown.width(), shown.height(), shown.into_rgba8().into_raw())
 }
 
+/// Every SPS the decoder will be handed, the record's AND any the keyframe repeats in band,
+/// refused against `MAX_DIM` by its CODED size (whole macroblocks, before the crop) — the size
+/// the decoder allocates — so no parameter set reaches it unchecked. One `parse_sps` refuses,
+/// the decoder refuses too (it parses with the same function), so it cannot size anything.
+///
+/// Returns the last one: a later SPS replaces an earlier one with the same id, so that is the
+/// one the picture is decoded with, and its VUI is the one that describes it.
+fn checked_sps<'a, 'b: 'a>(nals: impl Iterator<Item = &'a NalUnit<'b>>) -> Result<Sps, String> {
+    let mut last = None;
+    for nal in nals.filter(|n| n.nal_unit_type == NalUnitType::Sps) {
+        let Ok(sps) = parse_sps(&nal.rbsp) else {
+            continue;
+        };
+        let coded_w = sps
+            .pic_width_in_mbs_minus1
+            .saturating_add(1)
+            .saturating_mul(16);
+        let coded_h = sps
+            .pic_height_in_map_units_minus1
+            .saturating_add(1)
+            .saturating_mul(if sps.frame_mbs_only_flag { 16 } else { 32 });
+        if sps.width() == 0 || sps.height() == 0 || coded_w > MAX_DIM || coded_h > MAX_DIM {
+            return Err(format!(
+                "refusing a {coded_w}x{coded_h} coded frame (cap {MAX_DIM})"
+            ));
+        }
+        last = Some(sps);
+    }
+    last.ok_or_else(|| "no readable SPS in the record or the keyframe".to_string())
+}
+
 /// Feed the parameter sets, then the keyframe's NAL units, and return the first picture.
 ///
 /// An error on one NAL unit does not end the decode: a keyframe access unit can carry SEI,
 /// AUD or filler units that matter to nobody here. Only "no picture came out" is a failure,
 /// reported with the last error seen, which is the one that explains it.
 fn decode(
-    sps: &[rust_h264::nal::NalUnit<'_>],
-    pps: &[rust_h264::nal::NalUnit<'_>],
-    keyframe: &[u8],
-    length_size: usize,
+    sps: &[NalUnit<'_>],
+    pps: &[NalUnit<'_>],
+    units: &[NalUnit<'_>],
 ) -> Result<Frame, String> {
     let mut decoder = OrderedDecoder::new();
     let mut frames = Vec::new();
     let mut last_error = None;
-    let units = parse_avcc(keyframe, length_size);
-    for nal in sps.iter().chain(pps).chain(units.iter()) {
+    for nal in sps.iter().chain(pps).chain(units) {
         match decoder.decode_nal(nal) {
             Ok(out) => frames.extend(out),
             Err(e) => last_error = Some(e.to_string()),
@@ -173,6 +196,61 @@ mod tests {
                 "centre pixel {px:?}, want about (51, 102, 204)"
             );
         }
+    }
+
+    /// The size cap holds for EVERY parameter set the decoder sees, not just the record's: a
+    /// keyframe may repeat its SPS in band, and a later SPS with the same id replaces the
+    /// record's. This one is coded 16400 wide (past `MAX_DIM`) but cropped to 64, so neither
+    /// a record-only check nor one on the cropped size would stop it reaching the decoder.
+    #[test]
+    fn an_oversized_parameter_set_inside_the_keyframe_is_refused_before_decoding() {
+        fn ue(bits: &mut Vec<bool>, v: u32) {
+            let x = v + 1;
+            let n = 32 - x.leading_zeros();
+            bits.extend(std::iter::repeat_n(false, n as usize - 1));
+            bits.extend((0..n).rev().map(|i| (x >> i) & 1 == 1));
+        }
+        // Baseline SPS, id 0: 1025 macroblocks (16400 px) wide, 48 tall, right crop 8168 x 2.
+        let mut bits = Vec::new();
+        for v in [0, 0, 2, 1] {
+            ue(&mut bits, v); // id, log2_max_frame_num-4, poc type 2, one reference frame
+        }
+        bits.push(false); // gaps_in_frame_num_value_allowed
+        ue(&mut bits, 1024);
+        ue(&mut bits, 2);
+        bits.extend([true, true, true]); // frame_mbs_only, direct_8x8, frame_cropping
+        for v in [0, 8168, 0, 0] {
+            ue(&mut bits, v);
+        }
+        bits.extend([false, true]); // no VUI, rbsp stop bit
+        let mut rbsp = vec![66u8, 0, 30];
+        rbsp.extend(bits.chunks(8).map(|c| {
+            c.iter()
+                .enumerate()
+                .fold(0u8, |b, (i, &on)| b | (u8::from(on) << (7 - i)))
+        }));
+        let mut nal = vec![0x67u8];
+        for &b in &rbsp {
+            if b <= 3 && nal.ends_with(&[0, 0]) {
+                nal.push(3); // emulation prevention
+            }
+            nal.push(b);
+        }
+
+        let mkv = include_bytes!("../../../tests/fixtures/h264/high10-3366cc.mkv");
+        let input = st2k_codecs::h264::child_input(&mut Cursor::new(&mkv[..]), 0.30).unwrap();
+        let cfg_len = u32::from_le_bytes(input[..4].try_into().unwrap()) as usize;
+        let length_size = usize::from(input[4 + 4] & 3) + 1;
+        let mut spliced = input[..4 + cfg_len].to_vec();
+        spliced.extend_from_slice(&(nal.len() as u32).to_be_bytes()[4 - length_size..]);
+        spliced.extend_from_slice(&nal);
+        spliced.extend_from_slice(&input[4 + cfg_len..]);
+
+        let err = frame_png(&spliced).expect_err("an over-cap SPS must not decode");
+        assert!(
+            err.starts_with("refusing"),
+            "refused only after decoding: {err}"
+        );
     }
 
     /// A 4:4:4 stream (the High 4:4:4 Predictive profile issue #35 was about) is refused by
