@@ -7,7 +7,10 @@
   its entries and indexed out of bounds, a panic that aborts the shell under panic = "abort"
   (found by the deep fuzz session, 2026-09-23; regression fixture
   tests/fixtures/jxl/toc-group-past-entries.jxl). Drop it when an upstream release stops
-  panicking on that file, independently of the LF-only patch below. jxl-color's patch is the
+  panicking on that file, independently of the LF-only patch below. It also refuses progressive
+  passes that leave a downsampling level for no pass to decode, which jxl-modular unwrapped a
+  lookup on (the nightly deep session, 2026-10-02; fixture pass-shifts-short-of-a-level.jxl in
+  the same directory, same rule for dropping it). jxl-color's patch is the
   same kind (2026-09-27, the nightly deep session): a header declaring the XYB or an unknown
   colour space, an unknown transfer function or a zero gamma reached `todo!()`, `panic!()` and
   a division by zero while synthesizing an ICC profile; it now yields an empty profile the

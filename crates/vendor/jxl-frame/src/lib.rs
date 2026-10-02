@@ -219,11 +219,41 @@ impl Bundle<FrameContext<'_>> for Frame {
         let mut pass_shifts = BTreeMap::new();
         let mut maxshift = 3i32;
         for (&downsample, &last_pass) in passes.downsample.iter().zip(&passes.last_pass) {
+            // SageThumbs 2K patch: an entry naming the final pass adds nothing, since that pass
+            // decodes every level still left, down to full resolution (libjxl's
+            // `GetDownsamplingBracket`). Counting it shrank the final pass's range below to
+            // (0, the entry's own level), which for a level of 1 is empty.
+            if last_pass + 1 == passes.num_passes {
+                continue;
+            }
             let minshift = downsample.trailing_zeros() as i32;
             pass_shifts.insert(last_pass, (minshift, maxshift));
             maxshift = minshift;
         }
         pass_shifts.insert(header.passes.num_passes - 1, (0i32, maxshift));
+
+        // SageThumbs 2K patch (crates/vendor/jxl-patches/jxl-frame.patch): refuse passes that
+        // leave a downsampling level with no pass to decode it. `last_pass` and `downsample`
+        // are read unchecked, so a malformed file can name a pass twice (the later entry
+        // replaces the earlier one's range, as the final pass's entry above does) or list its
+        // levels out of order, and a Modular channel at the level left over made `jxl-modular`
+        // unwrap a lookup that found nothing (`prepare_groups`), a panic that aborts a
+        // `panic = "abort"` host (found by fuzzing). libjxl refuses such a header too: it wants
+        // `downsample` decreasing, `last_pass` increasing and every `last_pass` under
+        // `num_passes`.
+        let covered = |shift: i32| {
+            pass_shifts
+                .values()
+                .any(|&(minshift, maxshift)| (minshift..maxshift).contains(&shift))
+        };
+        if passes.last_pass.iter().any(|&pass| pass >= passes.num_passes)
+            || !(0..3).all(covered)
+        {
+            return Err(jxl_bitstream::Error::ValidationFailed(
+                "Invalid passes: a downsampling level is decoded by no pass",
+            )
+            .into());
+        }
 
         Ok(Self {
             pool,

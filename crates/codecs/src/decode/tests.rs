@@ -173,6 +173,12 @@ const JXL_ICC_XYB_COLOUR_SPACE: &[u8] =
     include_bytes!("../../../../tests/fixtures/jxl/icc-xyb-colour-space.jxl");
 const JXL_LF_SMOOTHING_SUBSAMPLED_CHROMA: &[u8] =
     include_bytes!("../../../../tests/fixtures/jxl/lf-smoothing-subsampled-chroma.jxl");
+/// A 624-byte mutation of the modular-ICC fuzz seed the nightly deep session found on
+/// 2026-10-02: its progressive passes leave a downsampling level that no pass decodes, and
+/// `jxl-modular` unwrapped the pass it looked up for a channel at that level (`image.rs`).
+/// Fixed where the passes are read, in crates/vendor/jxl-patches/jxl-frame.patch.
+const JXL_PASS_SHIFTS_SHORT_OF_A_LEVEL: &[u8] =
+    include_bytes!("../../../../tests/fixtures/jxl/pass-shifts-short-of-a-level.jxl");
 /// A 512x384 screenshot of text (26 lines of Consolas 12 pt, light on #1e1e1e), which cjxl
 /// stores as PATCHES: each repeated glyph once, then stamped onto the frame after the VarDCT
 /// decode. Comic lettering can take the same route. Regenerate with

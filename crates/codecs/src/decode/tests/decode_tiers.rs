@@ -10,7 +10,8 @@ use super::*;
 /// Every malformed JPEG XL the fuzzer has found is a decode result on both jxl paths, never a
 /// panic, which ends a `panic = "abort"` host. Each file panicked in the unpatched crates:
 /// `jxl-frame` 0.13.3 indexed past a short TOC; `jxl-color` 0.11.0 divided by a zero gamma and
-/// hit `todo!()` on XYB; `jxl-render` 0.12.4 asserted in adaptive LF smoothing on 4:2:0 chroma.
+/// hit `todo!()` on XYB; `jxl-render` 0.12.4 asserted in adaptive LF smoothing on 4:2:0 chroma;
+/// `jxl-modular` 0.11.3 unwrapped the pass of a level that `jxl-frame` gave no pass.
 #[test]
 fn fuzz_found_malformed_jxls_are_refused_not_a_panic() {
     for (name, bytes) in [
@@ -20,6 +21,10 @@ fn fuzz_found_malformed_jxls_are_refused_not_a_panic() {
         (
             "LF smoothing on 4:2:0 chroma",
             JXL_LF_SMOOTHING_SUBSAMPLED_CHROMA,
+        ),
+        (
+            "passes short of a downsampling level",
+            JXL_PASS_SHIFTS_SHORT_OF_A_LEVEL,
         ),
     ] {
         for (path, target) in [("1:1", None), ("1:8", Some(256))] {

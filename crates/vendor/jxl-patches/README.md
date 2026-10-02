@@ -106,6 +106,7 @@ an upstream release stops panicking on its regression fixture in `tests/fixtures
 | Patch | Panic | Now |
 | --- | --- | --- |
 | `jxl-frame.patch` (2026-09-23) | a TOC asked for a group past its entries (`toc.rs`, index out of bounds) | decode error |
+| `jxl-frame.patch` (2026-10-02) | progressive passes that leave a downsampling level for no pass to decode (a pass named twice, levels out of order): `jxl-modular` 0.11.3 unwrapped its lookup of the pass for a channel at that level (`image.rs`, `prepare_groups`) | the frame is refused where its passes are read (`lib.rs`), so `jxl-modular` needs no copy here; an entry naming the final pass is skipped, as libjxl treats it, instead of emptying that pass's range |
 | `jxl-color.patch` (2026-09-27) | an XYB or unknown colour space, an unknown transfer function or a zero gamma reached `todo!()`, `panic!()` and a division by zero in `colour_encoding_to_icc` | empty profile, which `ColorTransform::new` refuses with `UnsupportedColorEncoding` |
 | `jxl-render.patch` (2026-09-27, beside the LF-only hunks) | an LF frame of level 4 indexed `lf_frame[4]` (a valid frame; the slot does not exist); adaptive LF smoothing ran on subsampled chroma planes and failed its equal-length assertion | the index is checked; smoothing with non-4:4:4 chroma is refused as malformed, as libjxl does |
 
