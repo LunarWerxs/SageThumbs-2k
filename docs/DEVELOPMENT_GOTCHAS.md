@@ -1494,3 +1494,13 @@ Two mechanics for the vendored patch, both paid for this session. `vendor-jxl.ps
 mode) writes LF, while the patched files are committed CRLF, so restore each file's line endings
 before committing or git sees whole-file rewrites; `-Check` passes either way. And `cycle.py`
 clippies the vendored crate when you touch it, which the repo's own gate never does.
+
+## `prevhost_pane` calls a single-colour picture "nothing drawn" (2026-10-01)
+
+`tests/prevhost_pane.rs` decides the installed preview handler drew something by checking that
+the capture of its window is not one flat colour. A sample that IS one flat colour and fills
+the pane (the 72x48 `color=#3366cc` H.264 fixtures under `tests/fixtures/h264` and
+`tests/fixtures/aspect`) therefore fails with `nothing drawn within 20s (flat #3266CB ...)`,
+while the colour it names is the picture, decoded correctly. Smoke the pane with patterned
+samples instead, e.g. `ffmpeg -f lavfi -i testsrc=size=320x240:rate=5 -frames:v 10 -c:v libx264
+-profile:v high10 -pix_fmt yuv420p10le x.mkv`, passed through `PREVHOST_FILES`.
