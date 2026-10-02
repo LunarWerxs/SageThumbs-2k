@@ -226,6 +226,29 @@ try {
     $sha = (git rev-parse HEAD).Trim()
     Write-Host "[3/6] push main + wait for CI on $($sha.Substring(0,7))" -ForegroundColor Green
     git push origin main; if ($LASTEXITCODE) { throw "git push failed" }
+    # Start the release-profile suite ([3b/6]) NOW, beside CI, and only wait for it after CI.
+    # It is a full LTO build plus the suite, about 27 minutes, and it does not depend on CI's
+    # result; started only once CI was green (until 3.5.0), the two ran back to back and every
+    # release paid CI's 10-15 minutes on top. A red CI still stops everything at [3/6], so the
+    # most an early start can waste is a runner.
+    $rptRunId = $null
+    if (-not $SkipReleaseProfileTests) {
+        # A suite already running (or green) on this commit, or on an ancestor whose commits
+        # since are verification-only, proves the same shipped binaries: reuse it rather than
+        # dispatching a second full LTO build. The relaunch after a script-only fix is exactly
+        # this case, and it used to cost the whole suite again.
+        $rptProving = Find-ReleaseProvingRun -Root $root -Sha $sha -Workflow 'release-profile-tests.yml' -Event workflow_dispatch
+        if ($rptProving) {
+            Write-Host ("      release-profile run {0} on {1} ({2}) proves this commit; reusing it" -f `
+                $rptProving.Id, $rptProving.HeadSha.Substring(0, 7), $rptProving.Status) -ForegroundColor Yellow
+            $rptRunId = $rptProving.Id
+        } else {
+            $rptDispatchedAt = (Get-Date).ToUniversalTime().AddSeconds(-2).ToString('o')
+            gh workflow run 'release-profile-tests.yml'
+            if ($LASTEXITCODE) { throw "could not dispatch release-profile-tests.yml; nothing has been built or published" }
+            Write-Host "      release-profile suite dispatched; it runs while CI does" -ForegroundColor Green
+        }
+    }
     # Find the CI run for THIS exact commit. It usually registers in seconds, but under
     # Actions load (e.g. a prior push's run still queued) it can lag minutes — so poll for up
     # to 12 min (the old 6-min window aborted the 0.8.0 release when a prior run was busy).
@@ -300,24 +323,13 @@ try {
             '-SkipReleaseProfileTests flag: the suite was NOT run against the release-profile, ' +
             'shipped-feature binaries; only the debug default-feature CI run stands behind this release')
     } else {
-        # A suite already running (or green) on this commit, or on an ancestor whose commits
-        # since are verification-only, proves the same shipped binaries: reuse it rather than
-        # dispatching a second full LTO build. The relaunch after a script-only fix is exactly
-        # this case, and it used to cost the whole suite again.
-        $rptRunId = $null
-        $rptProving = Find-ReleaseProvingRun -Root $root -Sha $sha -Workflow 'release-profile-tests.yml' -Event workflow_dispatch
-        if ($rptProving) {
-            Write-Host ("      release-profile run {0} on {1} ({2}) proves this commit; reusing it" -f `
-                $rptProving.Id, $rptProving.HeadSha.Substring(0, 7), $rptProving.Status) -ForegroundColor Yellow
-            $rptRunId = $rptProving.Id
-        } else {
-            $rptDispatchedAt = (Get-Date).ToUniversalTime().AddSeconds(-2).ToString('o')
-            gh workflow run 'release-profile-tests.yml'
-            if ($LASTEXITCODE) { throw "could not dispatch release-profile-tests.yml; nothing has been built or published" }
+        # Dispatched (or found) at [3/6], beside CI; what is left here is the wait.
+        if (-not $rptRunId) {
             # By identity, not by timestamp: the run must be on THIS commit (audit concern 1).
+            # It registered while CI ran, so the first look almost always finds it.
             for ($i = 0; $i -lt 40 -and -not $rptRunId; $i++) {
-                Start-Sleep -Seconds 6
                 $rptRunId = Find-ReleaseDispatchedRun -Workflow 'release-profile-tests.yml' -Sha $sha -DispatchedAt $rptDispatchedAt
+                if (-not $rptRunId) { Start-Sleep -Seconds 6 }
             }
             if (-not $rptRunId) { throw 'release-profile-tests.yml was dispatched but no run appeared in 4 min; nothing has been built or published' }
         }

@@ -13,6 +13,7 @@ const SIGNER = join(dirname(fileURLToPath(import.meta.url)), 'packaging', 'sign-
 
 const STUB = `
 let buf = '';
+let calls = 0;
 const send = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n');
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (c) => {
@@ -26,7 +27,10 @@ process.stdin.on('data', (c) => {
       const a = m.params.arguments;
       const n = a.file.length;
       const target = ' [' + [a.endpoint, a.account, a.profile].map((v) => v || '').join('|') + ']';
-      send(m.id, { content: [{ type: 'text', text: inherited
+      calls += 1;
+      if (process.env.STUB_REFUSE_FIRST && calls === 1)
+        send(m.id, { content: [{ type: 'text', text: "sign_artifact: We couldn't check your credits just now" }] });
+      else send(m.id, { content: [{ type: 'text', text: inherited
         ? 'sign_artifact: could not read the signature back - the module could not be loaded'
         : 'sign_artifact: signed and verified ' + n + ' file(s)' + target }] });
     }
@@ -73,6 +77,24 @@ test('a named endpoint, account and profile reach the signing tool', () => {
     const r = spawnSync(process.execPath, [SIGNER, target], { encoding: 'utf8', timeout: 60_000, env });
     assert.equal(r.status, 0, `signer failed:\n${r.stdout}\n${r.stderr}`);
     assert.match(r.stdout, /\[https:\/\/eus\.example\/\|acct\|prof\]/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// One refusal from the server's own calls out (3.5.0's "couldn't check your credits just now")
+// is asked again rather than failing the release run outright.
+test('a refused signing call is asked again before it fails', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'st2k-sign-mcp-'));
+  try {
+    const stub = join(dir, 'stub-server.mjs');
+    const target = join(dir, 'a.dll');
+    writeFileSync(stub, STUB);
+    writeFileSync(target, 'MZ');
+    const env = { ...process.env, ST2K_SIGN_MCP: JSON.stringify([process.execPath, stub]), STUB_REFUSE_FIRST: '1' };
+    const r = spawnSync(process.execPath, [SIGNER, target], { encoding: 'utf8', timeout: 60_000, env });
+    assert.equal(r.status, 0, `signer failed:\n${r.stdout}\n${r.stderr}`);
+    assert.match(r.stdout, /couldn't check your credits[\s\S]*asking again[\s\S]*signed and verified 1 file/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

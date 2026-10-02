@@ -129,20 +129,29 @@ try {
     call = { name: "connections_execute", arguments: { local: true, tool_name: TOOL, params } };
   else fail(`the MCP server exposes no ${TOOL} tool (it lists: ${[...names].join(", ") || "nothing"}).`);
 
-  const result = await request("tools/call", call);
-  const text = (result?.content || [])
-    .filter((c) => c?.type === "text")
-    .map((c) => c.text)
-    .join("\n");
-  console.log(text);
-  // The tool's own success headline, and ONLY that, counts. Its failure texts, a refusal
-  // naming a missing credential, and an isError result all fall through to exit 1.
-  const m = /sign_artifact: signed and verified (\d+) file/.exec(text);
-  if (result?.isError || !m || Number(m[1]) !== files.length)
-    fail(`the server did not report all ${files.length} file(s) signed and verified; treat them as UNSIGNED.`);
-  clearTimeout(timer);
-  child.kill();
-  process.exit(0);
+  // A refusal is asked again, twice, before it fails the build: the server's own calls out
+  // (the vault lease, Azure) fail transiently, and one such blip used to cost a whole release
+  // run - 3.5.0 lost three that way. Re-signing a file that did sign is harmless.
+  for (const pause of [5_000, 30_000, null]) {
+    const result = await request("tools/call", call);
+    const text = (result?.content || [])
+      .filter((c) => c?.type === "text")
+      .map((c) => c.text)
+      .join("\n");
+    console.log(text);
+    // The tool's own success headline, and ONLY that, counts. Its failure texts, a refusal
+    // naming a missing credential, and an isError result all fall through to a retry, then exit 1.
+    const m = /sign_artifact: signed and verified (\d+) file/.exec(text);
+    if (!result?.isError && m && Number(m[1]) === files.length) {
+      clearTimeout(timer);
+      child.kill();
+      process.exit(0);
+    }
+    if (pause === null) break;
+    console.log(`sign-via-mcp: not every file was reported signed; asking again in ${pause / 1000} s.`);
+    await new Promise((r) => setTimeout(r, pause));
+  }
+  fail(`the server did not report all ${files.length} file(s) signed and verified after three tries; treat them as UNSIGNED.`);
 } catch (e) {
   fail(e?.message || String(e));
 }
