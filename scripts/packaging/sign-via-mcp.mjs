@@ -19,6 +19,13 @@
 //                              needs `artifact-signing`: without it the tool asks for `default`,
 //                              which is not a signing credential.
 //   ST2K_SIGN_EXPECT_SUBJECT   optional: refuse unless the signer subject contains this
+//   ST2K_SIGN_ENDPOINT, ST2K_SIGN_ACCOUNT, ST2K_SIGN_PROFILE
+//                              optional, the signtool backend's own three names: with all three
+//                              set the tool signs against them instead of reading them out of
+//                              Azure first. That lookup goes through the server's metered Azure
+//                              lane, which can refuse for reasons of its own (3.5.0's first runs:
+//                              "couldn't check your credits just now"); the signature is still
+//                              read back and its subject still checked.
 //
 // Usage: node sign-via-mcp.mjs <file> [<file> ...]
 // Exit:  0 every file signed and verified by the server; 1 anything else, with the reason.
@@ -51,6 +58,8 @@ if (!Array.isArray(command) || !command.length || command.some((p) => typeof p !
 const params = { file: files };
 if (process.env.ST2K_SIGN_MCP_INSTANCE) params.instance = process.env.ST2K_SIGN_MCP_INSTANCE;
 if (process.env.ST2K_SIGN_EXPECT_SUBJECT) params.expect_subject = process.env.ST2K_SIGN_EXPECT_SUBJECT;
+const target = ["ENDPOINT", "ACCOUNT", "PROFILE"].map((k) => process.env[`ST2K_SIGN_${k}`]);
+if (target.every(Boolean)) [params.endpoint, params.account, params.profile] = target;
 params.description = "SageThumbs 2K";
 
 // The server reads each signature back with Windows PowerShell 5.1. Under release.ps1 this
