@@ -1,4 +1,4 @@
-"""Build the zswarm task file for the churn-hotspots family: one task per untested hot file.
+"""Build the HSwarm task file for the churn-hotspots family: one task per untested hot file.
 
 Usage: python churn_tasks.py [--report DIR] [--exclude a.rs,b.rs] [--only a.rs,b.rs] [--out PATH]
 

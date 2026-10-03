@@ -1,8 +1,8 @@
-"""Build the zswarm task file for the complexity warn band: one task per FILE.
+"""Build the HSwarm task file for the complexity warn band: one task per FILE.
 
 Usage: python band_tasks.py [--pilot N] [--out PATH] [--exclude-done PATH]
 Reads tmp/cx.json (scripts/complexity-scan.py --json --warnings) in the repo, drops test
-code and the leave-alone list, groups by file, writes a zswarm CLI task file.
+code and the leave-alone list, groups by file, writes an HSwarm CLI task file.
 """
 import argparse
 import json

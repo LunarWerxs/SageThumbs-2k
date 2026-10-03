@@ -1,4 +1,4 @@
-"""Build the zswarm task file for the Architect FLOOR: the three warning families that are a
+"""Build the HSwarm task file for the Architect FLOOR: the three warning families that are a
 judgement call rather than a mechanical split (maintainability-index, oversized-files,
 code-duplication-core).
 

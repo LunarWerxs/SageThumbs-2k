@@ -1,4 +1,4 @@
-"""Translate new en.toml keys into all 35 other locales with the zswarm, checked three ways.
+"""Translate new en.toml keys into all 35 other locales with HSwarm, checked three ways.
 
 Every new user-facing string has to land in all 36 locale files before the build will run
 (`crates/build-support/src/locales.rs` refuses a key that is en-only). This is the pipeline
@@ -21,13 +21,13 @@ siblings (a fixed minutes abbreviation must change in every dur_* string that us
 pass them to `apply` as an overrides file.
 
     python i18n_tasks.py build  <keys.json> <workdir>     # keys.json: {"key": "what it is"}
-    python zswarm.py run --model deepseek-flash --tools none --concurrency 40 \
+    hswarm run --model deepseek-flash --tools none --concurrency 40 \
         --out <workdir>/i18n-job.json <workdir>/tasks.json
     python i18n_tasks.py review <workdir>
-    python zswarm.py run --model groq-gpt-oss-120b --tools none \
+    hswarm run --model groq-gpt-oss-120b --tools none \
         --out <workdir>/review-job.json <workdir>/review-tasks.json
     python i18n_tasks.py judge  <workdir>
-    python zswarm.py run --model deepseek-flash --tools none \
+    hswarm run --model deepseek-flash --tools none \
         --out <workdir>/judge-job.json <workdir>/judge-tasks.json
     python i18n_tasks.py confirmed <workdir>              # what the judge would change
     python i18n_tasks.py apply  <workdir> [--overrides o.json] [--dry]
