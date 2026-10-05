@@ -392,12 +392,13 @@ pub unsafe fn confirm_verbs(
     }
 
     // comctl32 refused (no v6 activation context in some embedding we do not control):
-    // still ask, just with the generic buttons.
+    // still ask, just with the generic buttons - No stays the default, as above, so Enter
+    // never takes the action.
     MessageBoxW(
         Some(parent),
         PCWSTR(w_body.as_ptr()),
         PCWSTR(w_title.as_ptr()),
-        MB_YESNO | MB_ICONINFORMATION,
+        MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2,
     ) == IDYES
 }
 

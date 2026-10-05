@@ -71,7 +71,11 @@ if ($Baseline) {
     if (-not $pick) { Write-Host "[parity] no portable zip for $Baseline in dist\" -ForegroundColor Red; exit 2 }
 } else {
     $current = if ((Get-Content (Join-Path $root 'Cargo.toml') -Raw) -match '(?m)^version\s*=\s*"([\d.]+)"') { [version]$Matches[1] } else { $null }
-    $pick = $zips | Where-Object { -not $current -or $_.Ver -lt $current } | Select-Object -First 1
+    # Cargo.toml keeps the released version until the next bump, so between releases the
+    # current version IS the last release; once tagged it is the baseline, or every run until
+    # the bump re-reports the pictures that release already shipped (2026-10-05).
+    $shipped = $current -and (& git -C $root tag -l "v$current")
+    $pick = $zips | Where-Object { -not $current -or $_.Ver -lt $current -or ($shipped -and $_.Ver -eq $current) } | Select-Object -First 1
     if (-not $pick) { $pick = $zips | Select-Object -First 1 }
 }
 if (-not $pick) { Write-Host '[parity] no previous release in dist\ to compare against — SKIPPED' -ForegroundColor Yellow; exit 2 }
