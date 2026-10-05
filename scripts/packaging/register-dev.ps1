@@ -170,5 +170,7 @@ Get-AppxPackage $pkgName | Format-List Name, PackageFullName, InstallLocation, S
 
 # 4) Restart Explorer so it loads the new package's shell extensions.
 Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
-Start-Process explorer.exe
+# Outside any job: under fairjob a Start-Process'd shell dies when this script ends.
+. (Join-Path $PSScriptRoot '..\_start-outside-job.ps1')
+$null = Start-OutsideJob 'explorer.exe'
 Write-Host "Registered. Right-click a .jpg/.png for 'SageThumbs'; check .tga/.dds thumbnails."

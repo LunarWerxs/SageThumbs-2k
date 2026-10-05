@@ -491,8 +491,31 @@ taskkill /f /im st2k.exe 2>`$null | Out-Null
 Remove-Item "`$env:LOCALAPPDATA\Microsoft\Windows\Explorer\thumbcache_*.db" -Force -ErrorAction SilentlyContinue
 exit `$code
 "@ | Set-Content $payload -Encoding UTF8
+        # What the payload is about to take away from the developer, so it can be handed back:
+        # the tray helper (screenshot hotkey + Quick preview's Space hook) and the folder
+        # windows a killed Explorer closes. Only real folders and shell-namespace GUIDs are
+        # kept: anything else (a search, a library view) could reopen as an error box.
+        $helperRunning = {
+            @(Get-CimInstance Win32_Process -Filter "Name='SageThumbs2K.exe'" -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandLine -like '*--screenshot-daemon*' }).Count -gt 0
+        }
+        $helperBefore = & $helperRunning
+        $openFolders = @(try {
+                (New-Object -ComObject Shell.Application).Windows() |
+                    Where-Object { $_.FullName -and [IO.Path]::GetFileName($_.FullName) -ieq 'explorer.exe' } |
+                    ForEach-Object { $_.Document.Folder.Self.Path } |
+                    Where-Object { $_ -and ($_ -like '::{*' -or (Test-Path -LiteralPath $_ -PathType Container)) } |
+                    Select-Object -Unique
+            } catch {
+                # Best-effort: only which folders to reopen afterwards. The install goes ahead.
+                Write-Host "  (could not list the open folder windows, none will be reopened: $($_.Exception.Message))" -ForegroundColor DarkYellow
+            })
         $p = Start-Process pwsh -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile', '-File', $payload)
-        Start-Process explorer.exe   # unelevated shell restart
+        # Everything started from here on must OUTLIVE this run, so it starts outside any job
+        # (see _start-outside-job.ps1): under fairjob, a Start-Process'd shell and helper were
+        # killed the moment verify exited, after every agent install (2026-10-05).
+        . (Join-Path $PSScriptRoot '_start-outside-job.ps1')
+        $null = Start-OutsideJob 'explorer.exe'   # unelevated shell restart
         # Bring the resident helper back, exactly as installer.iss does after a real setup
         # (its `--heal-hotkeys` [Run] entry). The install killed it to replace the EXE, and
         # nothing else restarts it until the next logon.
@@ -510,8 +533,11 @@ exit `$code
         # a silent no-op when nothing wants it.
         $appExe = 'C:\Program Files\SageThumbs2K\SageThumbs2K.exe'
         if (Test-Path $appExe) {
-            Start-Process -FilePath $appExe -ArgumentList '--heal-hotkeys' -WindowStyle Hidden
+            $null = Start-OutsideJob "`"$appExe`" --heal-hotkeys"
         }
+        # Give the shell a moment to come up before reopening windows into it.
+        for ($i = 0; $i -lt 40 -and -not (Get-Process explorer -ErrorAction SilentlyContinue); $i++) { Start-Sleep -Milliseconds 250 }
+        foreach ($folder in $openFolders) { $null = Start-OutsideJob "explorer.exe `"$folder`"" }
         if ($p.ExitCode -ne 0) {
             Write-Host "[verify] elevated install exited $($p.ExitCode) — log:" -ForegroundColor Red
             if (Test-Path $log) { Get-Content $log | Select-Object -Last 10 | Write-Host }
@@ -525,6 +551,16 @@ exit `$code
             exit 1
         }
         Write-Host "  installed == built (SHA256 $($a.Substring(0,12))...)"
+        # Leave the machine as it was found: a helper that was running must be running again.
+        if ($helperBefore) {
+            $deadline = (Get-Date).AddSeconds(20)
+            while (-not (& $helperRunning) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+            if (-not (& $helperRunning)) {
+                Write-Host '[verify] the tray helper (screenshot hotkey + Quick preview Space hook) was running before the install and is not after it' -ForegroundColor Red
+                exit 1
+            }
+            Write-Host '  tray helper running again (screenshot hotkey + Quick preview)'
+        }
         $global:LASTEXITCODE = 0
     }
     # The two deepest installed-surface probes existed but were wired into nothing (found

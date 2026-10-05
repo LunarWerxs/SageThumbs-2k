@@ -50,6 +50,8 @@ $cache = "$env:LOCALAPPDATA\Microsoft\Windows\Explorer"
 Get-ChildItem "$cache\thumbcache_*.db" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 
 Write-Host "Restarting explorer.exe..."
-Start-Process explorer.exe
+# Outside any job: under fairjob a Start-Process'd shell dies when this script ends.
+. (Join-Path $PSScriptRoot '_start-outside-job.ps1')
+$null = Start-OutsideJob 'explorer.exe'
 
 Write-Host "Done. Open a folder of images to test. Log: $env:LOCALAPPDATA\SageThumbs2K.log"
