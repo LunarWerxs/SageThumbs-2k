@@ -269,39 +269,54 @@ function Set-ExplorerPreviewPane {
     if ($viewMatches.Count -ne 1) {
         throw "Expected exactly one visible View button inside the dedicated Explorer frame; found $($viewMatches.Count)."
     }
-    $viewMatches[0].GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
-    # The Windows 11 flyout is a desktop popup, not a child of Explorer's HWND.
-    # Search the desktop only after invoking this exact window, scope the visible
-    # toggle to its screen bounds, and fail closed on ambiguity. No keyboard,
-    # mouse, registry, or global Explorer preference is used.
+    $view = $viewMatches[0]
+    $menu = $view.GetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern)
+    # The View menu is a light-dismiss XAML MenuFlyout: invoking View on an inactive window
+    # only activates it, and any foreground change closes an open menu (both measured
+    # 2026-10-05 on Windows 11 26200, where one click and a 5 s wait went red). So the menu
+    # is reopened, at most every 2 s, until the toggle reads the wanted state; 20 s matches
+    # the window wait above. Its PopupHost is an owned window of this CabinetWClass, so the
+    # toggle is found under this window's own element, proving ownership by structure: a
+    # screen-rectangle test drops it whenever the menu hangs past a short window's edge.
+    # No keyboard, mouse, registry or global Explorer preference is used; ambiguity fails closed.
     $previewCondition = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, 'Preview pane')
-    $deadline = [datetime]::UtcNow.AddSeconds(5)
-    $toggle = $null
+    $deadline = [datetime]::UtcNow.AddSeconds(20)
+    $opened = [datetime]::MinValue
+    $wasEnabled = $null
+    $done = $false
     do {
-        $matches = [Collections.Generic.List[object]]::new()
-        foreach ($candidate in [Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Descendants, $previewCondition)) {
-            if ($candidate.Current.IsOffscreen) { continue }
-            $bounds = $candidate.Current.BoundingRectangle
-            $centreX = $bounds.Left + ($bounds.Width / 2)
-            $centreY = $bounds.Top + ($bounds.Height / 2)
-            if ($centreX -lt $frame.Left -or $centreX -gt $frame.Right -or
-                $centreY -lt $frame.Top -or $centreY -gt $frame.Bottom) { continue }
-            try {
-                $candidateToggle = $candidate.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern)
-                $matches.Add([pscustomobject]@{ Element = $candidate; Toggle = $candidateToggle })
-            } catch { }
+        if ($menu.Current.ExpandCollapseState -ne [Windows.Automation.ExpandCollapseState]::Expanded -and
+            [datetime]::UtcNow -ge $opened.AddSeconds(2)) {
+            $view.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+            $opened = [datetime]::UtcNow
         }
-        if ($matches.Count -gt 1) {
-            throw "More than one visible Preview pane toggle appeared inside the dedicated Explorer frame."
+        try {
+            $toggles = [Collections.Generic.List[object]]::new()
+            foreach ($candidate in $ExplorerRoot.FindAll([Windows.Automation.TreeScope]::Descendants, $previewCondition)) {
+                if ($candidate.Current.IsOffscreen) { continue }
+                # floor-ok: the item's same-named TextBlock has no Toggle pattern; skip it.
+                try { $toggles.Add($candidate.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern)) } catch { }
+            }
+            if ($toggles.Count -gt 1) {
+                throw "More than one visible Preview pane toggle appeared in the dedicated Explorer window."
+            }
+            if ($toggles.Count -eq 1) {
+                $isOn = $toggles[0].Current.ToggleState -eq [Windows.Automation.ToggleState]::On
+                if ($null -eq $wasEnabled) { $wasEnabled = $isOn }
+                if ($isOn -eq $Enabled) { $done = $true; break }
+                # Toggling closes the menu; a later pass reopens it and reads the result.
+                $toggles[0].Toggle()
+                Start-Sleep -Milliseconds 400
+                continue
+            }
+        } catch [Windows.Automation.ElementNotAvailableException] {
+            # The menu closed under this pass; a later pass reopens it.
         }
-        if ($matches.Count -eq 1) { $toggle = $matches[0].Toggle; break }
         Start-Sleep -Milliseconds 100
     } while ([datetime]::UtcNow -lt $deadline)
-    if (-not $toggle) { throw 'Explorer did not expose a unique Preview pane toggle for the dedicated window.' }
-    $isEnabled = $toggle.Current.ToggleState -eq [Windows.Automation.ToggleState]::On
-    if ($isEnabled -ne $Enabled) { $toggle.Toggle() }
-    Start-Sleep -Milliseconds 400
-    return $isEnabled
+    if (-not $done) { throw "Explorer did not expose a unique Preview pane toggle for the dedicated window (View menu: $($menu.Current.ExpandCollapseState); toggle seen: $($null -ne $wasEnabled))." }
+    if ($menu.Current.ExpandCollapseState -eq [Windows.Automation.ExpandCollapseState]::Expanded) { $menu.Collapse() }
+    return $wasEnabled
 }
 
 function Get-LoadedPreviewModules {
