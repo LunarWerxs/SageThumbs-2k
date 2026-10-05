@@ -9,6 +9,15 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+- **The Quick preview's Upload button no longer uploads on one click.** It is off until you
+  turn on **Allow uploading from the preview** (Settings ▸ Quick preview); until then a click
+  says why nothing happened and offers to open that page. Once it is on, it names the file and
+  asks before every upload, with Cancel as the default answer.
+- **With "Close when the preview loses focus" on, the preview's own dialogs no longer close
+  it.** Saving a page, printing, or answering the Upload question used to count as clicking
+  away, which closed the window and its dialog together.
+- **The buttons on the "Keep these settings everywhere" banner have clean corners.** Each one
+  showed a notch of the page colour at its corners against the banner's tint.
 - **One more damaged JPEG XL file that could crash the thumbnail host no longer does.** A
   `.jxl` whose progressive passes leave part of the picture for no pass to decode stopped the
   JPEG XL decoder dead; it is now an ordinary decode error, so the file shows the normal icon

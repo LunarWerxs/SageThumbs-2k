@@ -403,6 +403,18 @@ pub fn set_preview_open_front(on: bool) -> windows_registry::Result<()> {
     set_dword("PreviewOpenFront", on as u32)
 }
 
+/// Whether the viewer's Upload button may upload at all. **OFF by default**: one click puts the
+/// file on a public website, and the button sits among Copy/Info/Open in a bar people click
+/// without reading. Off, the click explains and offers this setting; on, it still asks before
+/// every upload.
+pub fn preview_upload() -> bool {
+    get_dword("PreviewUpload", 0) != 0
+}
+/// Persist the allow-upload-from-the-preview toggle.
+pub fn set_preview_upload(on: bool) -> windows_registry::Result<()> {
+    set_dword("PreviewUpload", on as u32)
+}
+
 /// Keep the Markdown outline (table-of-contents) sidebar OPEN. ON by default; the viewer's outline
 /// toggle button persists the user's choice here (so it stays pinned open/closed across previews).
 pub fn preview_toc_open() -> bool {

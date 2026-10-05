@@ -763,3 +763,10 @@ preview_note_no_picture_store = "Image fixe : {codec} nécessite {extension} dep
 preview_note_no_picture_unknown = "Image fixe : Windows ne peut pas décoder cette vidéo"
 preview_note_no_sound = "Aucun son : {codec} n'est pas pris en charge par Windows"
 preview_note_no_sound_unknown = "Aucun son : Windows ne peut pas décoder cet audio"
+
+chk_preview_upload = "Autoriser l'envoi depuis l'aperçu"
+tip_preview_upload = "Le bouton Envoyer de l'aperçu place le fichier sur un site public gratuit et copie un lien vers celui-ci, afin que toute personne disposant du lien puisse l'ouvrir. Désactivé par défaut, pour qu'un clic malencontreux ne partage pas un fichier privé. Une fois activé, il demande toujours confirmation avant chaque envoi."
+preview_upload_off_body = "L'envoi depuis l'aperçu est désactivé.\n\nLe bouton Envoyer place le fichier sur un site public gratuit et copie un lien vers celui-ci, afin que toute personne disposant du lien puisse l'ouvrir. Il est désactivé par défaut pour qu'un clic malencontreux ne partage pas un fichier privé. Vous pouvez l'activer dans les paramètres de l'aperçu rapide."
+preview_upload_off_open = "Ouvrir les paramètres"
+preview_upload_confirm_body = "Envoyer « {name} » ?\n\nIl sera placé sur un site public gratuit et un lien vers celui-ci sera copié dans votre presse-papiers. Toute personne disposant du lien pourra l'ouvrir."
+preview_upload_confirm_yes = "Envoyer"

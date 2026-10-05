@@ -766,3 +766,10 @@ preview_note_no_picture_store = "Sabit kare: {codec}, Microsoft Store’dan {ext
 preview_note_no_picture_unknown = "Sabit kare: Windows bu videoyu çözemiyor"
 preview_note_no_sound = "Ses yok: {codec} Windows tarafından desteklenmiyor"
 preview_note_no_sound_unknown = "Ses yok: Windows bu sesi çözemiyor"
+
+chk_preview_upload = "Önizlemeden yüklemeye izin ver"
+tip_preview_upload = "Önizlemenin Yükle düğmesi dosyayı ücretsiz bir herkese açık siteye koyar ve ona bir bağlantı kopyalar; bağlantıyı bilen herkes açabilir. Varsayılan olarak kapalıdır, böylece yanlış bir tıklama özel bir dosyayı paylaşamaz. Açıkken her yüklemeden önce yine sorar."
+preview_upload_off_body = "Önizlemeden yükleme kapalı.\n\nYükle düğmesi dosyayı ücretsiz bir herkese açık siteye koyar ve ona bir bağlantı kopyalar; bağlantıyı bilen herkes açabilir. Yanlış bir tıklama özel bir dosyayı paylaşmasın diye varsayılan olarak kapalıdır. Hızlı önizleme ayarlarından açabilirsiniz."
+preview_upload_off_open = "Ayarları aç"
+preview_upload_confirm_body = "“{name}” yüklensin mi?\n\nÜcretsiz bir herkese açık siteye konulacak ve bağlantısı panonuza kopyalanacak. Bağlantıyı bilen herkes açabilir."
+preview_upload_confirm_yes = "Yükle"

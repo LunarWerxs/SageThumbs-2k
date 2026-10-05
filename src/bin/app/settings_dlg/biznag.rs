@@ -129,7 +129,9 @@ fn card_h() -> i32 {
 /// a little more insistent against the page background than the soft sign-in nudge does,
 /// without inventing a whole second "danger" palette this app has no other use for. An
 /// urgent posture (the evaluation over, the shell stopped) leans harder on the accent.
-fn tint() -> COLORREF {
+///
+/// Also what the strip's buttons paint behind their rounded corners (`restyle::backdrop`).
+pub(super) fn tint() -> COLORREF {
     let urgent = POSTURE.with(|p| p.get()).is_urgent();
     let weight = match (is_dark(), urgent) {
         (true, true) => 44,

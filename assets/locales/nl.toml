@@ -767,3 +767,10 @@ preview_note_no_picture_store = "Stilstaand beeld: {codec} vereist de {extension
 preview_note_no_picture_unknown = "Stilstaand beeld: Windows kan deze video niet decoderen"
 preview_note_no_sound = "Geen geluid: {codec} wordt niet ondersteund door Windows"
 preview_note_no_sound_unknown = "Geen geluid: Windows kan deze audio niet decoderen"
+
+chk_preview_upload = "Uploaden vanuit de voorvertoning toestaan"
+tip_preview_upload = "Met de knop Uploaden in de voorvertoning wordt het bestand op een gratis openbare website gezet en wordt er een koppeling ernaar gekopieerd, zodat iedereen met de koppeling het kan openen. Staat standaard uit, zodat één verkeerde klik geen privébestand deelt. Als het aanstaat, wordt er nog steeds voor elke upload om bevestiging gevraagd."
+preview_upload_off_body = "Uploaden vanuit de voorvertoning staat uit.\n\nMet de knop Uploaden wordt het bestand op een gratis openbare website gezet en wordt er een koppeling ernaar gekopieerd, zodat iedereen met de koppeling het kan openen. Het staat standaard uit, zodat één verkeerde klik geen privébestand deelt. Je kunt het aanzetten bij de Instellingen voor Snelle weergave."
+preview_upload_off_open = "Instellingen openen"
+preview_upload_confirm_body = "“{name}” uploaden?\n\nHet bestand wordt op een gratis openbare website gezet en er wordt een koppeling ernaar naar je klembord gekopieerd. Iedereen met de koppeling kan het openen."
+preview_upload_confirm_yes = "Uploaden"

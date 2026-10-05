@@ -757,3 +757,10 @@ preview_note_no_picture_store = "Nakatigil na frame: kailangan ng {codec} ang {e
 preview_note_no_picture_unknown = "Nakatigil na frame: hindi ma-decode ng Windows ang video na ito"
 preview_note_no_sound = "Walang tunog: hindi sinusuportahan ng Windows ang {codec}"
 preview_note_no_sound_unknown = "Walang tunog: hindi ma-decode ng Windows ang audio na ito"
+
+chk_preview_upload = "Payagan ang pag-upload mula sa preview"
+tip_preview_upload = "Inilalagay ng Upload na button ng preview ang file sa isang libreng pampublikong website at kinokopya ang link nito, kaya kahit sino na may link ay makakabukas nito. Naka-off bilang default, kaya hindi maibabahagi ng isang aksidenteng click ang isang pribadong file. Kapag naka-on, nagtatanong pa rin ito bago ang bawat upload."
+preview_upload_off_body = "Naka-off ang pag-upload mula sa preview.\n\nInilalagay ng Upload na button ang file sa isang libreng pampublikong website at kinokopya ang link nito, kaya kahit sino na may link ay makakabukas nito. Naka-off ito bilang default para hindi maibahagi ng isang aksidenteng click ang isang pribadong file. Maaari mo itong i-on sa mga setting ng Quick preview."
+preview_upload_off_open = "Buksan ang mga setting"
+preview_upload_confirm_body = "I-upload ang “{name}”?\n\nIlalagay ito sa isang libreng pampublikong website at kokopyahin ang link nito sa iyong clipboard. Kahit sino na may link ay makakabukas nito."
+preview_upload_confirm_yes = "I-upload"

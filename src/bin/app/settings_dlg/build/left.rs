@@ -490,6 +490,7 @@ pub(super) unsafe fn build_quick_preview(lc: &mut LeftCol, sty: &Styles) {
         ID_PREVIEW_CLOSE_FOCUS,
     );
     lc.checkbox(t("chk_preview_topmost"), sty.cb, 312, ID_PREVIEW_TOPMOST);
+    lc.checkbox(t("chk_preview_upload"), sty.cb, 312, ID_PREVIEW_UPLOAD);
     // Per-extension blocklist: a free-text edit (NOT `edit_style` above — that forces
     // ES_NUMBER), same wide-single-line shape as the licence key / settings-search boxes.
     let blocked_exts_style = WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_TABSTOP;

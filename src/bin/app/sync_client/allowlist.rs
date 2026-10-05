@@ -69,6 +69,7 @@ pub(super) const ALLOW: &[(&str, Kind)] = &[
     ("PreviewHoldPeek", Kind::Dword),
     ("PreviewCloseOnFocusLoss", Kind::Dword),
     ("PreviewOpenFront", Kind::Dword),
+    ("PreviewUpload", Kind::Dword),
     ("PreviewText", Kind::Dword),
     ("PreviewMarkdown", Kind::Dword),
     ("PreviewTocOpen", Kind::Dword),

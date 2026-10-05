@@ -764,3 +764,10 @@ preview_note_no_picture_store = "静态帧：{codec} 需要 Microsoft Store 中�
 preview_note_no_picture_unknown = "静态帧：Windows 无法解码此视频"
 preview_note_no_sound = "没有声音：Windows 不支持 {codec}"
 preview_note_no_sound_unknown = "没有声音：Windows 无法解码此音频"
+
+chk_preview_upload = "允许从预览上传"
+tip_preview_upload = "预览的“上传”按钮会把文件放到免费的公共网站上，并复制一个链接，所以任何拿到链接的人都能打开它。默认关闭，这样误点一下也不会分享私密文件。开启后，每次上传前仍会询问。"
+preview_upload_off_body = "从预览上传已关闭。\n\n“上传”按钮会把文件放到免费的公共网站上，并复制一个链接，所以任何拿到链接的人都能打开它。默认关闭是为了避免误点一下分享私密文件。你可以在快速预览设置中开启。"
+preview_upload_off_open = "打开设置"
+preview_upload_confirm_body = "上传“{name}”？\n\n它会放到免费的公共网站上，并把链接复制到你的剪贴板。任何拿到链接的人都能打开它。"
+preview_upload_confirm_yes = "上传"

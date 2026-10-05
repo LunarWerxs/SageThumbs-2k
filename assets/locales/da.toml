@@ -759,3 +759,10 @@ preview_note_no_picture_store = "Stillbillede: {codec} kræver {extension} fra M
 preview_note_no_picture_unknown = "Stillbillede: Windows kan ikke afkode denne video"
 preview_note_no_sound = "Ingen lyd: {codec} understøttes ikke af Windows"
 preview_note_no_sound_unknown = "Ingen lyd: Windows kan ikke afkode denne lyd"
+
+chk_preview_upload = "Tillad upload fra eksempelvisningen"
+tip_preview_upload = "Eksempelvisningens Upload-knap lægger filen på et gratis offentligt websted og kopierer et link til den, så alle med linket kan åbne den. Slået fra som standard, så et enkelt fejlklik ikke kan dele en privat fil. Når den er slået til, spørger den stadig før hver upload."
+preview_upload_off_body = "Upload fra eksempelvisningen er slået fra.\n\nUpload-knappen lægger filen på et gratis offentligt websted og kopierer et link til den, så alle med linket kan åbne den. Den er slået fra som standard, så et enkelt fejlklik ikke kan dele en privat fil. Du kan slå den til i indstillingerne for Hurtig eksempelvisning."
+preview_upload_off_open = "Åbn indstillinger"
+preview_upload_confirm_body = "Upload »{name}«?\n\nDen bliver lagt på et gratis offentligt websted, og et link til den kopieres til din udklipsholder. Alle med linket kan åbne den."
+preview_upload_confirm_yes = "Upload"

@@ -761,3 +761,10 @@ preview_note_no_picture_store = "Mirujoča slika: {codec} potrebuje {extension} 
 preview_note_no_picture_unknown = "Mirujoča slika: Windows ne more dekodirati tega videoposnetka"
 preview_note_no_sound = "Brez zvoka: Windows ne podpira {codec}"
 preview_note_no_sound_unknown = "Brez zvoka: Windows ne more dekodirati tega zvoka"
+
+chk_preview_upload = "Dovoli nalaganje iz predogleda"
+tip_preview_upload = "Gumb Naloži v predogledu shrani datoteko na brezplačno javno spletno mesto in kopira povezavo do nje, tako da jo lahko odpre vsak, ki ima povezavo. Privzeto je izklopljeno, da en napačen klik ne more deliti zasebne datoteke. Ko je vklopljeno, pred vsakim nalaganjem še vedno vpraša."
+preview_upload_off_body = "Nalaganje iz predogleda je izklopljeno.\n\nGumb Naloži shrani datoteko na brezplačno javno spletno mesto in kopira povezavo do nje, tako da jo lahko odpre vsak, ki ima povezavo. Privzeto je izklopljeno, da en napačen klik ne more deliti zasebne datoteke. Vklopite ga lahko v nastavitvah Hitrega predogleda."
+preview_upload_off_open = "Odpri nastavitve"
+preview_upload_confirm_body = "Naložim »{name}«?\n\nDatoteka bo shranjena na brezplačno javno spletno mesto, povezava do nje pa kopirana v vaše odložišče. Vsak, ki ima povezavo, jo lahko odpre."
+preview_upload_confirm_yes = "Naloži"

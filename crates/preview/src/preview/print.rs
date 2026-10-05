@@ -65,8 +65,9 @@ pub(super) unsafe fn do_print(hwnd: HWND, st: &ViewerState, path: Option<String>
 }
 
 /// Drop/restore the owner's always-on-top so the modal Print dialog can't land behind a pinned
-/// viewer. Only called while `pinned`, so this is never churn on the common unpinned path.
-unsafe fn set_topmost(hwnd: HWND, topmost: bool) {
+/// viewer. Only called while `pinned`, so this is never churn on the common unpinned path. The
+/// Upload button's questions (`window/command.rs`) borrow it for the same reason.
+pub(super) unsafe fn set_topmost(hwnd: HWND, topmost: bool) {
     let z = if topmost {
         HWND_TOPMOST
     } else {

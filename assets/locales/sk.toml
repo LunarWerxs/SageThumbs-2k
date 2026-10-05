@@ -759,3 +759,10 @@ preview_note_no_picture_store = "Statická snímka: {codec} vyžaduje {extension
 preview_note_no_picture_unknown = "Statická snímka: Windows nedokáže dekódovať toto video"
 preview_note_no_sound = "Bez zvuku: {codec} nie je podporovaný systémom Windows"
 preview_note_no_sound_unknown = "Bez zvuku: Windows nedokáže dekódovať tento zvuk"
+
+chk_preview_upload = "Povoliť nahrávanie z náhľadu"
+tip_preview_upload = "Tlačidlo Nahrať v náhľade umiestni súbor na bezplatnú verejnú webovú stránku a skopíruje odkaz naň, takže ho môže otvoriť ktokoľvek s odkazom. Predvolene je vypnuté, aby jedno nechcené kliknutie nemohlo zdieľať súkromný súbor. Ak je zapnuté, pred každým nahraním sa ešte opýta."
+preview_upload_off_body = "Nahrávanie z náhľadu je vypnuté.\n\nTlačidlo Nahrať umiestni súbor na bezplatnú verejnú webovú stránku a skopíruje odkaz naň, takže ho môže otvoriť ktokoľvek s odkazom. Predvolene je vypnuté, aby jedno nechcené kliknutie nemohlo zdieľať súkromný súbor. Môžete ho zapnúť v nastaveniach Rýchleho náhľadu."
+preview_upload_off_open = "Otvoriť nastavenia"
+preview_upload_confirm_body = "Nahrať „{name}“?\n\nBude umiestnený na bezplatnú verejnú webovú stránku a odkaz naň sa skopíruje do schránky. Môže ho otvoriť ktokoľvek s odkazom."
+preview_upload_confirm_yes = "Nahrať"

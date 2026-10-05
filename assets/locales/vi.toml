@@ -764,3 +764,10 @@ preview_note_no_picture_store = "Ảnh tĩnh: {codec} cần {extension} từ Mic
 preview_note_no_picture_unknown = "Ảnh tĩnh: Windows không giải mã được video này"
 preview_note_no_sound = "Không có âm thanh: Windows không hỗ trợ {codec}"
 preview_note_no_sound_unknown = "Không có âm thanh: Windows không giải mã được âm thanh này"
+
+chk_preview_upload = "Cho phép tải lên từ bản xem trước"
+tip_preview_upload = "Nút Tải lên của bản xem trước đưa tệp lên một trang web công khai miễn phí và sao chép liên kết tới tệp, nên bất kỳ ai có liên kết đều có thể mở. Tính năng này mặc định tắt để chỉ một cú nhấp lỡ cũng không thể chia sẻ tệp riêng tư. Khi bật, vẫn hỏi trước mỗi lần tải lên."
+preview_upload_off_body = "Tải lên từ bản xem trước đang bị tắt.\n\nNút Tải lên đưa tệp lên một trang web công khai miễn phí và sao chép liên kết tới tệp, nên bất kỳ ai có liên kết đều có thể mở. Tính năng này mặc định tắt để chỉ một cú nhấp lỡ cũng không thể chia sẻ tệp riêng tư. Bạn có thể bật trong Cài đặt xem trước nhanh."
+preview_upload_off_open = "Mở cài đặt"
+preview_upload_confirm_body = "Tải lên “{name}”?\n\nTệp sẽ được đưa lên một trang web công khai miễn phí và liên kết tới tệp sẽ được sao chép vào khay nhớ tạm. Bất kỳ ai có liên kết đều có thể mở."
+preview_upload_confirm_yes = "Tải lên"

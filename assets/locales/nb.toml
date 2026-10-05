@@ -767,3 +767,10 @@ preview_note_no_picture_store = "Stillbilde: {codec} trenger {extension} fra Mic
 preview_note_no_picture_unknown = "Stillbilde: Windows kan ikke dekode denne videoen"
 preview_note_no_sound = "Ingen lyd: {codec} støttes ikke av Windows"
 preview_note_no_sound_unknown = "Ingen lyd: Windows kan ikke dekode denne lyden"
+
+chk_preview_upload = "Tillat opplasting fra forhåndsvisningen"
+tip_preview_upload = "Opplastingsknappen i forhåndsvisningen legger filen på et gratis offentlig nettsted og kopierer en lenke til den, slik at alle med lenken kan åpne den. Av som standard, slik at ett feilklikk ikke deler en privat fil. Når den er på, spør den fortsatt før hver opplasting."
+preview_upload_off_body = "Opplasting fra forhåndsvisningen er slått av.\n\nOpplastingsknappen legger filen på et gratis offentlig nettsted og kopierer en lenke til den, slik at alle med lenken kan åpne den. Den er av som standard, slik at ett feilklikk ikke deler en privat fil. Du kan slå den på i Hurtigvisningsinnstillinger."
+preview_upload_off_open = "Åpne innstillinger"
+preview_upload_confirm_body = "Last opp «{name}»?\n\nDen blir lagt på et gratis offentlig nettsted, og en lenke til den kopieres til utklippstavlen din. Alle med lenken kan åpne den."
+preview_upload_confirm_yes = "Last opp"

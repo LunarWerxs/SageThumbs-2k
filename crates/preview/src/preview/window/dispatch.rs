@@ -144,7 +144,7 @@ pub(super) unsafe fn on_key_and_lifecycle_msg(
     lparam: LPARAM,
 ) -> Option<LRESULT> {
     Some(match msg {
-        WM_ACTIVATE => on_activate(hwnd, wparam),
+        WM_ACTIVATE => on_activate(hwnd, wparam, lparam),
         WM_KEYDOWN => on_keydown(hwnd, wparam, lparam),
         WM_CHAR => {
             // Only the find bar consumes typed characters; everything else falls through so
@@ -295,17 +295,38 @@ pub(super) unsafe fn on_app_switch(hwnd: HWND, lparam: LPARAM) -> LRESULT {
 }
 
 /// `WM_ACTIVATE`: close-on-focus-loss (opt-in setting; never when pinned; not during the
-/// open grace so a just-shown, never-activated window can't self-close).
-pub(super) unsafe fn on_activate(hwnd: HWND, wparam: WPARAM) -> LRESULT {
+/// open grace so a just-shown, never-activated window can't self-close; never when focus went to
+/// a dialog this viewer opened, see [`owned_by`]).
+pub(super) unsafe fn on_activate(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let st = &*state(hwnd);
     if (wparam.0 & 0xFFFF) as u32 == WA_INACTIVE
         && !st.pinned.get()
         && GetTickCount64().saturating_sub(st.born.get()) >= SETTLE_CLOSE_MS
+        && !owned_by(HWND(lparam.0 as *mut _), hwnd)
         && st2k_base::settings::preview_close_on_focus_loss()
     {
         request_close(hwnd);
     }
     LRESULT(0)
+}
+
+/// Whether `win` (the window taking activation, which Windows may pass as null) is one of
+/// `hwnd`'s own dialogs, directly or through a dialog that dialog opened. Focus moving into the
+/// Upload question, the Save picker or the Print dialog is not the user clicking away: closing
+/// then destroyed the dialog with the window it belongs to, before it could be answered.
+unsafe fn owned_by(win: HWND, hwnd: HWND) -> bool {
+    let mut w = win;
+    // A real owner chain is two or three deep; the bound only stops a pathological cycle.
+    for _ in 0..8 {
+        if w.is_invalid() {
+            return false;
+        }
+        if w == hwnd {
+            return true;
+        }
+        w = GetWindow(w, GW_OWNER).unwrap_or_default();
+    }
+    false
 }
 
 /// `WM_DESTROY`: tear down GDI+, the tooltip control, the back buffer, and free `ViewerState`.

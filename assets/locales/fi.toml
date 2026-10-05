@@ -757,3 +757,10 @@ preview_note_no_picture_store = "Pysäytyskuva: {codec} vaatii Microsoft Storest
 preview_note_no_picture_unknown = "Pysäytyskuva: Windows ei pysty purkamaan tätä videota"
 preview_note_no_sound = "Ei ääntä: Windows ei tue koodekkia {codec}"
 preview_note_no_sound_unknown = "Ei ääntä: Windows ei pysty purkamaan tätä ääniraitaa"
+
+chk_preview_upload = "Salli lataaminen esikatselusta"
+tip_preview_upload = "Esikatselun Lataa-painike vie tiedoston ilmaiselle julkiselle verkkosivustolle ja kopioi siihen linkin, joten kuka tahansa, jolla on linkki, voi avata sen. Oletuksena pois päältä, joten yksi harhalyönti ei voi jakaa yksityistä tiedostoa. Päällä ollessaan se kysyy silti ennen jokaista latausta."
+preview_upload_off_body = "Lataaminen esikatselusta on pois päältä.\n\nLataa-painike vie tiedoston ilmaiselle julkiselle verkkosivustolle ja kopioi siihen linkin, joten kuka tahansa, jolla on linkki, voi avata sen. Se on oletuksena pois päältä, jotta yksi harhalyönti ei jaa yksityistä tiedostoa. Voit ottaa sen käyttöön pikakatselun asetuksissa."
+preview_upload_off_open = "Avaa asetukset"
+preview_upload_confirm_body = "Ladataanko ”{name}”?\n\nSe viedään ilmaiselle julkiselle verkkosivustolle ja linkki siihen kopioidaan leikepöydällesi. Kuka tahansa, jolla on linkki, voi avata sen."
+preview_upload_confirm_yes = "Lataa palvelimelle"

@@ -761,3 +761,10 @@ preview_note_no_picture_store = "Nehybný snímek: {codec} vyžaduje {extension}
 preview_note_no_picture_unknown = "Nehybný snímek: toto video nelze v systému Windows dekódovat"
 preview_note_no_sound = "Bez zvuku: {codec} není v systému Windows podporován"
 preview_note_no_sound_unknown = "Bez zvuku: tento zvuk nelze v systému Windows dekódovat"
+
+chk_preview_upload = "Povolit nahrávání z náhledu"
+tip_preview_upload = "Tlačítko Nahrát v náhledu umístí soubor na bezplatný veřejný web a zkopíruje odkaz na něj, takže ho může otevřít kdokoli s tímto odkazem. Ve výchozím nastavení je vypnuté, takže jedno náhodné kliknutí nemůže sdílet soukromý soubor. Když je zapnuté, přesto se před každým nahráním zeptá."
+preview_upload_off_body = "Nahrávání z náhledu je vypnuté.\n\nTlačítko Nahrát umístí soubor na bezplatný veřejný web a zkopíruje odkaz na něj, takže ho může otevřít kdokoli s tímto odkazem. Ve výchozím nastavení je vypnuté, aby jedno náhodné kliknutí nemohlo sdílet soukromý soubor. Zapnout jej můžete v nastavení Rychlého náhledu."
+preview_upload_off_open = "Otevřít nastavení"
+preview_upload_confirm_body = "Nahrát „{name}“?\n\nBude umístěn na bezplatný veřejný web a odkaz na něj se zkopíruje do vaší schránky. Kdokoli s odkazem jej může otevřít."
+preview_upload_confirm_yes = "Nahrát"

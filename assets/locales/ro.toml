@@ -762,3 +762,10 @@ preview_note_no_picture_store = "Cadru fix: {codec} are nevoie de {extension} di
 preview_note_no_picture_unknown = "Cadru fix: Windows nu poate decoda acest videoclip"
 preview_note_no_sound = "Fără sunet: {codec} nu este suportat de Windows"
 preview_note_no_sound_unknown = "Fără sunet: Windows nu poate decoda acest audio"
+
+chk_preview_upload = "Permite încărcarea din previzualizare"
+tip_preview_upload = "Butonul Încarcă din previzualizare pune fișierul pe un site public gratuit și copiază un link către el, așa că oricine are linkul îl poate deschide. Dezactivat implicit, ca un clic accidental să nu partajeze un fișier privat. Când e activat, întreabă totuși înainte de fiecare încărcare."
+preview_upload_off_body = "Încărcarea din previzualizare este dezactivată.\n\nButonul Încarcă pune fișierul pe un site public gratuit și copiază un link către el, așa că oricine are linkul îl poate deschide. Este dezactivat implicit pentru ca un clic accidental să nu partajeze un fișier privat. Îl poți activa în setările Previzualizare rapidă."
+preview_upload_off_open = "Deschide setările"
+preview_upload_confirm_body = "Încarci „{name}”?\n\nVa fi pus pe un site public gratuit, iar un link către el va fi copiat în clipboard. Oricine are linkul îl poate deschide."
+preview_upload_confirm_yes = "Încarcă"

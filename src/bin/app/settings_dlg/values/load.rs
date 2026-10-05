@@ -79,6 +79,7 @@ pub(in super::super) unsafe fn load_values(hwnd: HWND) {
         settings::preview_close_on_focus_loss(),
     );
     check(hwnd, ID_PREVIEW_TOPMOST, settings::preview_open_front());
+    check(hwnd, ID_PREVIEW_UPLOAD, settings::preview_upload());
     // Round-trips exactly what the user typed (unparsed) — see `preview_blocked_exts_raw`'s
     // doc for why parsing happens only on read, never here.
     if let Ok(c) = GetDlgItem(Some(hwnd), ID_PREVIEW_BLOCKED_EXTS) {
@@ -174,6 +175,7 @@ pub(in super::super) unsafe fn load_defaults(hwnd: HWND) {
     check(hwnd, ID_PREVIEW_HOLD_PEEK, true);
     check(hwnd, ID_PREVIEW_CLOSE_FOCUS, false);
     check(hwnd, ID_PREVIEW_TOPMOST, true); // "Open in front" — default ON
+    check(hwnd, ID_PREVIEW_UPLOAD, false); // see settings::preview_upload — default OFF
     if let Ok(c) = GetDlgItem(Some(hwnd), ID_PREVIEW_BLOCKED_EXTS) {
         let empty = wide(""); // empty by default — see settings::preview_blocked_exts_raw
         let _ = SetWindowTextW(c, PCWSTR(empty.as_ptr()));

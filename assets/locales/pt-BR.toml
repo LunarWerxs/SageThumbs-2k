@@ -767,3 +767,10 @@ preview_note_no_picture_store = "Quadro estático: {codec} precisa do {extension
 preview_note_no_picture_unknown = "Quadro estático: o Windows não consegue decodificar este vídeo"
 preview_note_no_sound = "Sem som: {codec} não é compatível com o Windows"
 preview_note_no_sound_unknown = "Sem som: o Windows não consegue decodificar este áudio"
+
+chk_preview_upload = "Permitir envio pela visualização"
+tip_preview_upload = "O botão Enviar da visualização coloca o arquivo em um site público gratuito e copia um link para ele, então qualquer pessoa com o link pode abri-lo. Desativado por padrão, para que um clique acidental não compartilhe um arquivo privado. Quando ativado, ele ainda pergunta antes de cada envio."
+preview_upload_off_body = "O envio pela visualização está desativado.\n\nO botão Enviar coloca o arquivo em um site público gratuito e copia um link para ele, então qualquer pessoa com o link pode abri-lo. Fica desativado por padrão para que um clique acidental não compartilhe um arquivo privado. Você pode ativá-lo nas Configurações da visualização rápida."
+preview_upload_off_open = "Abrir configurações"
+preview_upload_confirm_body = "Enviar “{name}”?\n\nEle será colocado em um site público gratuito e um link para ele será copiado para a área de transferência. Qualquer pessoa com o link pode abri-lo."
+preview_upload_confirm_yes = "Enviar"

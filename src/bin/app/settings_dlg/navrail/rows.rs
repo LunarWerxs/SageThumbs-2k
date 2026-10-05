@@ -257,6 +257,7 @@ pub(in super::super) fn cat_rows(ci: usize) -> &'static [Row] {
             Switch(ID_PREVIEW_HOLD_PEEK),
             Switch(ID_PREVIEW_CLOSE_FOCUS),
             Switch(ID_PREVIEW_TOPMOST),
+            Switch(ID_PREVIEW_UPLOAD),
             // Light/dark for SageThumbs' own windows. Sits with preview BEHAVIOUR rather than
             // under "Also preview" below, which is a list of content-type opt-ins.
             Pair(ID_LBL_APP_THEME, ID_APP_THEME, 156, 200),

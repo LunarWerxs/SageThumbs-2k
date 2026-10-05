@@ -767,3 +767,10 @@ preview_note_no_picture_store = "Fotogramma: {codec} richiede {extension} dal Mi
 preview_note_no_picture_unknown = "Fotogramma: Windows non riesce a decodificare questo video"
 preview_note_no_sound = "Senza audio: {codec} non è supportato da Windows"
 preview_note_no_sound_unknown = "Senza audio: Windows non riesce a decodificare questo audio"
+
+chk_preview_upload = "Consenti il caricamento dall'anteprima"
+tip_preview_upload = "Il pulsante Carica dell'anteprima mette il file su un sito pubblico gratuito e ne copia un link, così chiunque abbia il link può aprirlo. Disattivato per impostazione predefinita, così un clic accidentale non può condividere un file privato. Se attivato, chiede comunque conferma prima di ogni caricamento."
+preview_upload_off_body = "Il caricamento dall'anteprima è disattivato.\n\nIl pulsante Carica mette il file su un sito pubblico gratuito e ne copia un link, così chiunque abbia il link può aprirlo. È disattivato per impostazione predefinita, così un clic accidentale non può condividere un file privato. Puoi attivarlo nelle Impostazioni, nella pagina Anteprima rapida."
+preview_upload_off_open = "Apri Impostazioni"
+preview_upload_confirm_body = "Caricare «{name}»?\n\nIl file sarà messo su un sito pubblico gratuito e un link sarà copiato negli appunti. Chiunque abbia il link può aprirlo."
+preview_upload_confirm_yes = "Carica"

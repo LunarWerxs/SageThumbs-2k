@@ -761,3 +761,10 @@ preview_note_no_picture_store = "Stillbild: {codec} kräver {extension} från Mi
 preview_note_no_picture_unknown = "Stillbild: Windows kan inte avkoda den här videon"
 preview_note_no_sound = "Inget ljud: {codec} stöds inte av Windows"
 preview_note_no_sound_unknown = "Inget ljud: Windows kan inte avkoda det här ljudet"
+
+chk_preview_upload = "Tillåt uppladdning från förhandsvisningen"
+tip_preview_upload = "Förhandsvisningens Ladda upp-knapp lägger filen på en gratis offentlig webbplats och kopierar en länk till den, så att alla med länken kan öppna den. Avstängd som standard, så att ett enda felklick inte råkar dela en privat fil. När den är på frågar den ändå före varje uppladdning."
+preview_upload_off_body = "Uppladdning från förhandsvisningen är avstängd.\n\nLadda upp-knappen lägger filen på en gratis offentlig webbplats och kopierar en länk till den, så att alla med länken kan öppna den. Den är avstängd som standard så att ett enda felklick inte kan dela en privat fil. Du kan slå på den i inställningarna för snabb förhandsvisning."
+preview_upload_off_open = "Öppna inställningar"
+preview_upload_confirm_body = "Ladda upp ”{name}”?\n\nDen läggs på en gratis offentlig webbplats och en länk till den kopieras till Urklipp. Alla med länken kan öppna den."
+preview_upload_confirm_yes = "Ladda upp"

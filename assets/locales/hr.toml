@@ -766,3 +766,10 @@ preview_note_no_picture_store = "Statična slika: {codec} zahtijeva {extension} 
 preview_note_no_picture_unknown = "Statična slika: Windows ne može dekodirati ovaj video"
 preview_note_no_sound = "Bez zvuka: Windows ne podržava {codec}"
 preview_note_no_sound_unknown = "Bez zvuka: Windows ne može dekodirati ovaj zvuk"
+
+chk_preview_upload = "Dopusti učitavanje iz pretpregleda"
+tip_preview_upload = "Gumb Učitaj u pretpregledu postavlja datoteku na besplatno javno web-mjesto i kopira vezu na nju, pa je svatko s vezom može otvoriti. Prema zadanim postavkama isključeno je, pa jedan slučajni klik ne može podijeliti privatnu datoteku. Kada je uključeno, i dalje pita prije svakog učitavanja."
+preview_upload_off_body = "Učitavanje iz pretpregleda je isključeno.\n\nGumb Učitaj postavlja datoteku na besplatno javno web-mjesto i kopira vezu na nju, pa je svatko s vezom može otvoriti. Prema zadanim postavkama je isključeno kako jedan slučajni klik ne bi podijelio privatnu datoteku. Možete ga uključiti u postavkama brzog pretpregleda."
+preview_upload_off_open = "Otvori postavke"
+preview_upload_confirm_body = "Učitati „{name}“?\n\nDatoteka će biti postavljena na besplatno javno web-mjesto, a veza na nju kopirana u vaš međuspremnik. Svatko s vezom može je otvoriti."
+preview_upload_confirm_yes = "Učitaj"

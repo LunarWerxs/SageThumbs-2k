@@ -371,7 +371,9 @@ unsafe fn hide(hwnd: HWND) {
 /// is the same colour in both themes and the background is not, so one expression gives a panel
 /// that reads as "faintly accented" on a dark page and on a light one. A saturated fill would read
 /// as an error state, which this is the opposite of.
-fn tint() -> COLORREF {
+///
+/// Also what the banner's buttons paint behind their rounded corners (`restyle::backdrop`).
+pub(super) fn tint() -> COLORREF {
     let weight = if is_dark() { 22 } else { 12 };
     navrail::blend(ACCENT(), DARK_BG(), weight)
 }

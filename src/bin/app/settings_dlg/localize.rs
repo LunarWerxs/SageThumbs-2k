@@ -172,6 +172,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_PREVIEW_HOLD_PEEK, "chk_preview_hold_peek"),
         (ID_PREVIEW_CLOSE_FOCUS, "chk_preview_close_focus"),
         (ID_PREVIEW_TOPMOST, "chk_preview_topmost"),
+        (ID_PREVIEW_UPLOAD, "chk_preview_upload"),
         (ID_PREVIEW_TEXT, "chk_preview_text"),
         (ID_PREVIEW_MARKDOWN, "chk_preview_markdown"),
         (ID_LBL_DIAG, "grp_diagnostics"),

@@ -505,6 +505,10 @@ plus these viewer-only extras:
   light.
 - **A settings button** that opens Settings straight on its **Quick preview** page, instead of
   making you find the window and then the page inside it.
+- **Upload & copy link is opt-in and always asks.** One click would otherwise put the file on a
+  public website, so the button stays off until you turn on **Allow uploading from the preview**
+  (a click while it is off says so and offers that page), and once on it names the file and asks
+  before every upload.
 - **Copy text (OCR)** right from the toolbar: click it and the words in the picture you're
   looking at land on your clipboard, and open in a small editable window so you can fix anything
   the scan misread. It works on **every format SageThumbs can decode**, not just the few Windows

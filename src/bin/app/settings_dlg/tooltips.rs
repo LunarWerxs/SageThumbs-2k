@@ -60,6 +60,7 @@ pub(super) const TOOLTIPS: &[(i32, &str)] = &[
     (ID_PREVIEW_HOLD_PEEK, "tip_preview_hold_peek"),
     (ID_PREVIEW_CLOSE_FOCUS, "tip_preview_close_focus"),
     (ID_PREVIEW_TOPMOST, "tip_preview_topmost"),
+    (ID_PREVIEW_UPLOAD, "tip_preview_upload"),
     (ID_PREVIEW_TEXT, "tip_preview_text"),
     (ID_PREVIEW_MARKDOWN, "tip_preview_markdown"),
     (ID_SHOT_ACTION, "tip_custom_action"),

@@ -757,3 +757,10 @@ preview_note_no_picture_store = "Fotograma fijo: {codec} necesita {extension} de
 preview_note_no_picture_unknown = "Fotograma fijo: Windows no puede decodificar este vídeo"
 preview_note_no_sound = "Sin sonido: {codec} no es compatible con Windows"
 preview_note_no_sound_unknown = "Sin sonido: Windows no puede decodificar este audio"
+
+chk_preview_upload = "Permitir subir desde la vista previa"
+tip_preview_upload = "El botón Subir de la vista previa pone el archivo en un sitio web público y gratuito y copia un enlace a él, así que cualquiera con el enlace puede abrirlo. Desactivado de forma predeterminada, para que un clic accidental no comparta un archivo privado. Cuando está activado, sigue preguntando antes de cada subida."
+preview_upload_off_body = "Subir desde la vista previa está desactivado.\n\nEl botón Subir pone el archivo en un sitio web público y gratuito y copia un enlace a él, así que cualquiera con el enlace puede abrirlo. Está desactivado de forma predeterminada para que un clic accidental no comparta un archivo privado. Puedes activarlo en la Configuración de vista previa rápida."
+preview_upload_off_open = "Abrir configuración"
+preview_upload_confirm_body = "¿Subir \"{name}\"?\n\nSe pondrá en un sitio web público y gratuito y se copiará un enlace a tu portapapeles. Cualquiera con el enlace puede abrirlo."
+preview_upload_confirm_yes = "Subir"

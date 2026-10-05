@@ -761,3 +761,10 @@ preview_note_no_picture_store = "Standbild: {codec} benötigt die {extension} au
 preview_note_no_picture_unknown = "Standbild: Windows kann dieses Video nicht decodieren"
 preview_note_no_sound = "Kein Ton: {codec} wird von Windows nicht unterstützt"
 preview_note_no_sound_unknown = "Kein Ton: Windows kann diesen Ton nicht decodieren"
+
+chk_preview_upload = "Hochladen aus der Vorschau erlauben"
+tip_preview_upload = "Die Schaltfläche „Hochladen“ der Vorschau legt die Datei auf einer kostenlosen öffentlichen Website ab und kopiert einen Link darauf, sodass jeder mit dem Link sie öffnen kann. Standardmäßig aus, damit ein versehentlicher Klick keine private Datei teilt. Wenn eingeschaltet, wird vor jedem Hochladen trotzdem gefragt."
+preview_upload_off_body = "Hochladen aus der Vorschau ist ausgeschaltet.\n\nDie Schaltfläche „Hochladen“ legt die Datei auf einer kostenlosen öffentlichen Website ab und kopiert einen Link darauf, sodass jeder mit dem Link sie öffnen kann. Sie ist standardmäßig aus, damit ein versehentlicher Klick keine private Datei teilt. Sie können sie in den Einstellungen der Schnellvorschau einschalten."
+preview_upload_off_open = "Einstellungen öffnen"
+preview_upload_confirm_body = "„{name}“ hochladen?\n\nDie Datei wird auf einer kostenlosen öffentlichen Website abgelegt und ein Link darauf in die Zwischenablage kopiert. Jeder mit dem Link kann sie öffnen."
+preview_upload_confirm_yes = "Hochladen"

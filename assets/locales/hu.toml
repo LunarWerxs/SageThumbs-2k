@@ -768,3 +768,10 @@ preview_note_no_picture_store = "Állókép: a(z) {codec} kodekhez a(z) {extensi
 preview_note_no_picture_unknown = "Állókép: a Windows nem tudja dekódolni ezt a videót"
 preview_note_no_sound = "Nincs hang: a Windows nem támogatja a(z) {codec} kodeket"
 preview_note_no_sound_unknown = "Nincs hang: a Windows nem tudja dekódolni ezt a hangot"
+
+chk_preview_upload = "Feltöltés engedélyezése az előnézetből"
+tip_preview_upload = "Az előnézet Feltöltés gombja egy ingyenes nyilvános webhelyre tölti fel a fájlt, és egy linket másol hozzá, így bárki megnyithatja, aki ismeri a linket. Alapértelmezés szerint ki van kapcsolva, így egy véletlen kattintás sem tehet közzé privát fájlt. Bekapcsolt állapotban minden feltöltés előtt rákérdez."
+preview_upload_off_body = "A feltöltés az előnézetből ki van kapcsolva.\n\nA Feltöltés gomb egy ingyenes nyilvános webhelyre teszi fel a fájlt, és egy linket másol hozzá, így bárki megnyithatja, aki ismeri a linket. Alapértelmezés szerint ki van kapcsolva, hogy egy véletlen kattintás se tegyen közzé privát fájlt. A Gyors előnézet beállításai között kapcsolhatja be."
+preview_upload_off_open = "Beállítások megnyitása"
+preview_upload_confirm_body = "Feltölti a(z) „{name}” fájlt?\n\nA fájl egy ingyenes nyilvános webhelyre kerül, és a rá mutató link a vágólapjára másolódik. Bárki megnyithatja, aki ismeri a linket."
+preview_upload_confirm_yes = "Feltöltés"

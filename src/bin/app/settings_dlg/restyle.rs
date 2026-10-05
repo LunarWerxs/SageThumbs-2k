@@ -369,6 +369,18 @@ fn pushbutton_colors(
     }
 }
 
+/// What a push button sits on, painted outside its rounded corners (and the 1px inset strip on
+/// its right and bottom). The page background for every button but the ones on the sign-in and
+/// licence strips: those sit on a tinted card, and painting the PAGE colour there left a
+/// page-coloured notch at each corner of every button on it.
+fn backdrop(id: i32) -> COLORREF {
+    match id {
+        ID_NUDGE_ACTION | ID_NUDGE_LATER | ID_NUDGE_MONTH | ID_NUDGE_DISCORD => nudge::tint(),
+        ID_BIZNAG_ACTION | ID_BIZNAG_BUY => biznag::tint(),
+        _ => DARK_BG(),
+    }
+}
+
 /// A rounded push button: solid accent for the primary actions (Select all /
 /// Save), an outlined dark face for the rest, with hover/press shading.
 unsafe fn draw_pushbutton(hwnd: HWND, nmcd: *const NMCUSTOMDRAW) -> isize {
@@ -388,7 +400,7 @@ unsafe fn draw_pushbutton(hwnd: HWND, nmcd: *const NMCUSTOMDRAW) -> isize {
         || id == ID_NUDGE_ACTION
         || (id == ID_LICENCE_BUY && licence_ui::buy_is_primary());
 
-    fill(hdc, &rc, DARK_BG());
+    fill(hdc, &rc, backdrop(id));
 
     let (face, border, text) = pushbutton_colors(disabled, accent, pressed, hot, focus);
     let rad = s(hwnd, 8);

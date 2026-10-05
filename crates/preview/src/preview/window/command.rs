@@ -76,7 +76,7 @@ pub(in crate::preview) unsafe fn do_action(hwnd: HWND, btn: Btn) {
         Btn::SavePage => on_btn_save_page(hwnd, st, path),
         Btn::Ocr => on_btn_ocr(st, path),
         Btn::Info => on_btn_info(path),
-        Btn::Upload => on_btn_upload(path),
+        Btn::Upload => on_btn_upload(hwnd, st, path),
         Btn::Open => on_btn_open(hwnd, path),
         Btn::OpenWith => on_btn_open_with(hwnd, path),
         Btn::Print => crate::preview::print::do_print(hwnd, st, path),
@@ -241,15 +241,71 @@ fn on_btn_info(path: Option<String>) {
     }
 }
 
+/// The Upload button. **Opt-in, and it asks every time** (owner, 2026-10-05, after a user report
+/// that one click uploaded with no confirmation): a single click puts the file on a public
+/// website, and the button sits among Copy / Info / Open in a bar people click without reading.
+///
+/// Off (`settings::preview_upload`, the default) the click still does something: it says why
+/// nothing happened and offers the Settings page that turns it on, rather than a greyed button
+/// nobody could learn the purpose of. On, it names the file and asks, Cancel being the default.
+unsafe fn on_btn_upload(hwnd: HWND, st: &ViewerState, path: Option<String>) {
+    let Some(p) = path else { return };
+    let t = st2k_appkit::win::t;
+    if !st2k_base::settings::preview_upload() {
+        if ask(
+            hwnd,
+            st,
+            t("preview_upload_off_body"),
+            t("preview_upload_off_open"),
+            t("btn_not_now"),
+        ) {
+            on_btn_settings();
+        }
+        return;
+    }
+    let name = std::path::Path::new(&p)
+        .file_name()
+        .map_or_else(|| p.clone(), |n| n.to_string_lossy().into_owned());
+    let body = t("preview_upload_confirm_body").replace("{name}", &name);
+    if ask(
+        hwnd,
+        st,
+        &body,
+        t("preview_upload_confirm_yes"),
+        t("btn_cancel"),
+    ) {
+        upload(&p);
+    }
+}
+
+/// A two-verb question over this viewer (`win::confirm_verbs`: the second verb, Escape and the
+/// close box all answer no). A pinned viewer is topmost, and a dialog can open BEHIND a topmost
+/// owner and look like a freeze, so the pin is dropped while it is up — the guard `print.rs`
+/// uses for the Print dialog.
+///
+/// `st` is read only BEFORE the dialog: it pumps messages, and a close that arrives meanwhile
+/// (Space pressed again in Explorer) destroys the window and frees the state.
+unsafe fn ask(hwnd: HWND, st: &ViewerState, body: &str, yes: &str, no: &str) -> bool {
+    let pinned = st.pinned.get();
+    if pinned {
+        crate::preview::print::set_topmost(hwnd, false);
+    }
+    let caption = st2k_appkit::win::t("up_caption_file");
+    let answer = st2k_appkit::win::confirm_verbs(hwnd, caption, body, yes, no);
+    if pinned && IsWindow(Some(hwnd)).as_bool() {
+        crate::preview::print::set_topmost(hwnd, true);
+    }
+    answer
+}
+
 /// Reuse the shipped keyless-host upload chain (same as the screenshot Upload button + the DLL
 /// "Upload (copy link)" verb): write the path to a temp list, spawn `--upload-keep` which
 /// uploads, copies the link, and toasts the result. KEEPS the original (unlike `--upload`). No
 /// new deps / EXE weight.
-fn on_btn_upload(path: Option<String>) {
-    let Some(p) = path else { return };
+fn upload(p: &str) {
     let mut lf = std::env::temp_dir();
     lf.push(format!("st2k_preview_upload_{}.lst", std::process::id()));
-    if std::fs::write(&lf, &p).is_ok() {
+    if std::fs::write(&lf, p).is_ok() {
         if let Some(s) = lf.to_str() {
             crate::preview::spawn_self(&["--upload-keep", s]);
         }

@@ -767,3 +767,10 @@ preview_note_no_picture_store = "Bingkai diam: {codec} memerlukan {extension} da
 preview_note_no_picture_unknown = "Bingkai diam: Windows tidak dapat mendekode video ini"
 preview_note_no_sound = "Tanpa suara: {codec} tidak didukung oleh Windows"
 preview_note_no_sound_unknown = "Tanpa suara: Windows tidak dapat mendekode audio ini"
+
+chk_preview_upload = "Izinkan unggah dari pratinjau"
+tip_preview_upload = "Tombol Unggah di pratinjau menaruh file di situs web publik gratis dan menyalin tautannya, sehingga siapa pun yang punya tautan bisa membukanya. Nonaktif secara bawaan, jadi satu klik yang salah tidak akan membagikan file pribadi. Saat aktif, tetap ada konfirmasi sebelum setiap unggahan."
+preview_upload_off_body = "Pengunggahan dari pratinjau dinonaktifkan.\n\nTombol Unggah menaruh file di situs web publik gratis dan menyalin tautannya, sehingga siapa pun yang punya tautan bisa membukanya. Nonaktif secara bawaan agar satu klik yang salah tidak membagikan file pribadi. Anda dapat mengaktifkannya di Pengaturan Pratinjau cepat."
+preview_upload_off_open = "Buka Pengaturan"
+preview_upload_confirm_body = "Unggah “{name}”?\n\nFile akan ditaruh di situs web publik gratis dan tautannya disalin ke clipboard Anda. Siapa pun yang punya tautan bisa membukanya."
+preview_upload_confirm_yes = "Unggah"

@@ -430,6 +430,10 @@ pub(super) unsafe fn apply_quick_preview_and_screenshot_enable(hwnd: HWND) {
         hwnd,
         ID_PREVIEW_TOPMOST,
     )));
+    let _ = note(settings::set_preview_upload(checked(
+        hwnd,
+        ID_PREVIEW_UPLOAD,
+    )));
     let _ = note(settings::set_preview_blocked_exts(&blocked_exts_text(hwnd)));
     let _ = note(settings::set_preview_text(checked(hwnd, ID_PREVIEW_TEXT)));
     let _ = note(settings::set_preview_markdown(checked(

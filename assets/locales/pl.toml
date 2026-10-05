@@ -767,3 +767,10 @@ preview_note_no_picture_store = "Klatka statyczna: {codec} wymaga {extension} z 
 preview_note_no_picture_unknown = "Klatka statyczna: Windows nie może zdekodować tego wideo"
 preview_note_no_sound = "Brak dźwięku: {codec} nie jest obsługiwany przez Windows"
 preview_note_no_sound_unknown = "Brak dźwięku: Windows nie może zdekodować tego dźwięku"
+
+chk_preview_upload = "Zezwalaj na przesyłanie z podglądu"
+tip_preview_upload = "Przycisk \"Prześlij\" w podglądzie umieszcza plik na darmowej publicznej stronie i kopiuje link do niego, więc każdy, kto ma ten link, może go otworzyć. Domyślnie wyłączone, żeby jedno przypadkowe kliknięcie nie udostępniło prywatnego pliku. Po włączeniu nadal pyta przed każdym przesłaniem."
+preview_upload_off_body = "Przesyłanie z podglądu jest wyłączone.\n\nPrzycisk \"Prześlij\" umieszcza plik na darmowej publicznej stronie i kopiuje link do niego, więc każdy, kto ma ten link, może go otworzyć. Jest domyślnie wyłączone, żeby jedno przypadkowe kliknięcie nie udostępniło prywatnego pliku. Możesz je włączyć w Ustawieniach, na stronie szybkiego podglądu."
+preview_upload_off_open = "Otwórz ustawienia"
+preview_upload_confirm_body = "Przesłać „{name}”?\n\nPlik zostanie umieszczony na darmowej publicznej stronie, a link do niego skopiowany do schowka. Każdy, kto ma ten link, może go otworzyć."
+preview_upload_confirm_yes = "Prześlij"

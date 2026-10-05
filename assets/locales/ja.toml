@@ -767,3 +767,10 @@ preview_note_no_picture_store = "静止画: {codec} には Microsoft Store の {
 preview_note_no_picture_unknown = "静止画: この動画は Windows でデコードできません"
 preview_note_no_sound = "音声なし: {codec} は Windows でサポートされていません"
 preview_note_no_sound_unknown = "音声なし: この音声は Windows でデコードできません"
+
+chk_preview_upload = "プレビューからのアップロードを許可"
+tip_preview_upload = "プレビューの「アップロード」ボタンは、ファイルを無料の公開サイトに置き、そのリンクをコピーします。リンクを知っている人は誰でも開けます。初期設定ではオフなので、誤ってクリックしても個人ファイルが共有されることはありません。オンにしても、アップロードのたびに確認します。"
+preview_upload_off_body = "プレビューからのアップロードはオフになっています。\n\n「アップロード」ボタンは、ファイルを無料の公開サイトに置き、そのリンクをコピーします。リンクを知っている人は誰でも開けます。誤ってクリックしても個人ファイルが共有されないよう、初期設定ではオフです。クイックプレビューの設定でオンにできます。"
+preview_upload_off_open = "設定を開く"
+preview_upload_confirm_body = "「{name}」をアップロードしますか？\n\nファイルは無料の公開サイトに置かれ、そのリンクがクリップボードにコピーされます。リンクを知っている人は誰でも開けます。"
+preview_upload_confirm_yes = "アップロード"

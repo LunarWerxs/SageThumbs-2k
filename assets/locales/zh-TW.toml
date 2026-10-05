@@ -764,3 +764,10 @@ preview_note_no_picture_store = "靜態畫面：{codec} 需要從 Microsoft Stor
 preview_note_no_picture_unknown = "靜態畫面：Windows 無法解碼這段影片"
 preview_note_no_sound = "無聲：Windows 不支援 {codec}"
 preview_note_no_sound_unknown = "無聲：Windows 無法解碼這段音訊"
+
+chk_preview_upload = "允許從預覽上傳"
+tip_preview_upload = "預覽的「上傳」按鈕會將檔案放到免費的公開網站，並複製其連結，因此任何取得連結的人都能開啟。預設為關閉，這樣就不會因為誤按而分享私人檔案。開啟後，每次上傳前仍會先詢問。"
+preview_upload_off_body = "已關閉從預覽上傳。\n\n「上傳」按鈕會將檔案放到免費的公開網站，並複製其連結，因此任何取得連結的人都能開啟。預設為關閉，這樣就不會因為誤按而分享私人檔案。您可以在「設定」的快速預覽頁面中將它開啟。"
+preview_upload_off_open = "開啟設定"
+preview_upload_confirm_body = "要上傳「{name}」嗎？\n\n它會被放到免費的公開網站，並將其連結複製到您的剪貼簿。任何取得連結的人都能開啟。"
+preview_upload_confirm_yes = "上傳"

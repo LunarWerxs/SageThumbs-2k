@@ -765,3 +765,10 @@ preview_note_no_picture_store = "Bingkai pegun: {codec} memerlukan {extension} d
 preview_note_no_picture_unknown = "Bingkai pegun: Windows tidak dapat menyahkod video ini"
 preview_note_no_sound = "Tiada bunyi: {codec} tidak disokong oleh Windows"
 preview_note_no_sound_unknown = "Tiada bunyi: Windows tidak dapat menyahkod audio ini"
+
+chk_preview_upload = "Benarkan muat naik dari pratonton"
+tip_preview_upload = "Butang Muat Naik dalam pratonton meletakkan fail di tapak web awam percuma dan menyalin pautan kepadanya, jadi sesiapa yang mempunyai pautan itu boleh membukanya. Dimatikan secara lalai, supaya satu klik tersasar tidak boleh berkongsi fail peribadi. Apabila dihidupkan, ia masih bertanya sebelum setiap muat naik."
+preview_upload_off_body = "Muat naik dari pratonton dimatikan.\n\nButang Muat Naik meletakkan fail di tapak web awam percuma dan menyalin pautan kepadanya, jadi sesiapa yang mempunyai pautan itu boleh membukanya. Ia dimatikan secara lalai supaya satu klik tersasar tidak boleh berkongsi fail peribadi. Anda boleh menghidupkannya dalam tetapan Pratonton pantas."
+preview_upload_off_open = "Buka tetapan"
+preview_upload_confirm_body = "Muat naik “{name}”?\n\nIa akan diletakkan di tapak web awam percuma dan pautan kepadanya akan disalin ke papan keratan anda. Sesiapa yang mempunyai pautan itu boleh membukanya."
+preview_upload_confirm_yes = "Muat naik"
