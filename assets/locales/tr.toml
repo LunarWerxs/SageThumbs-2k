@@ -774,3 +774,11 @@ preview_upload_confirm_yes = "Yükle"
 
 tip_preview_enabled = "Gezginde veya Masaüstünde Boşluk tuşuna basarak seçili dosyanın önizlemesini açın, kapatmak için Esc veya Boşluk tuşuna basın. Başka bir Boşluk tuşu önizleyicisi (QuickLook veya Seer gibi) önceden kurulu değilse varsayılan olarak açıktır. Küçük bir arka plan yardımcısı çalıştırır (kısayol tuşlarının kullandığıyla aynı). Everything arama sonuçlarında da çalışır."
 fr_intro = "SageThumbs Gezgin'e zaten küçük resimler ekliyor. Buradan açıp kapatabileceğiniz iki ek özellik:"
+
+lbl_tray_dblclick = "Bildirim alanı simgesine çift tıklama:"
+tray_dbl_capture = "Ekran görüntüsü al"
+tray_dbl_settings = "Seçenekleri aç"
+tray_dbl_nothing = "Hiçbir şey yapma"
+tip_tray_dblclick = "Bildirim alanındaki SageThumbs simgesine çift tıklamanın ne yapacağını belirler. Varsayılan olarak ekran görüntüsü alınır; simgenin çoğu kişinin beklediği gibi uygulamayı açmasını istiyorsanız Seçenekleri aç seçeneğini, yanlışlıkla ekran görüntüsü alınmasını durdurmak istiyorsanız Hiçbir şey yapma seçeneğini seçin. Sağ tıklama yine menüyü açar."
+
+grp_app_look = "SageThumbs pencereleri"

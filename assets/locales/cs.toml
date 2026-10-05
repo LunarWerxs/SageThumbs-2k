@@ -769,3 +769,11 @@ preview_upload_confirm_yes = "Nahrát"
 
 tip_preview_enabled = "Stisknutím mezerníku v Průzkumníkovi nebo na ploše zobrazíte náhled vybraného souboru, zavřete ho klávesou Esc nebo mezerníkem. Ve výchozím nastavení je zapnuto, pokud již nebyl nainstalován jiný prohlížeč náhledů na mezerník (například QuickLook nebo Seer). Spouští malého pomocníka na pozadí (stejného, jaký používají klávesové zkratky). Funguje také ve výsledcích vyhledávání Everything."
 fr_intro = "SageThumbs už přidává miniatury do Průzkumníka. Dvě další funkce tady můžete zapnout nebo vypnout:"
+
+lbl_tray_dblclick = "Dvojklik na ikonu v oznamovací oblasti:"
+tray_dbl_capture = "Pořídit snímek obrazovky"
+tray_dbl_settings = "Otevřít Možnosti"
+tray_dbl_nothing = "Nedělat nic"
+tip_tray_dblclick = "Co dělá dvojklik na ikonu SageThumbs v oznamovací oblasti. Výchozí je pořízení snímku obrazovky; zvolte Otevřít Možnosti, pokud očekáváte, že ikona otevře aplikaci, jak to dělá většina programů, nebo Nedělat nic, abyste zabránili nechtěnému zachycení. Kliknutí pravým tlačítkem myši přesto otevře nabídku."
+
+grp_app_look = "Okna aplikace SageThumbs"

@@ -775,3 +775,11 @@ preview_upload_confirm_yes = "업로드"
 
 tip_preview_enabled = "탐색기나 바탕 화면에서 Space를 누르면 선택한 파일의 미리보기가 나타나고, Esc 또는 Space를 누르면 닫힙니다. 다른 Space 키 미리보기 프로그램(QuickLook, Seer 등)이 이미 설치되어 있지 않다면 기본적으로 켜져 있습니다. 작은 백그라운드 도우미(단축키에 쓰는 것과 같은 것)를 실행합니다. Everything 검색 결과에서도 작동합니다."
 fr_intro = "SageThumbs가 이미 탐색기에 썸네일을 추가하고 있습니다. 여기서 켜거나 끌 수 있는 추가 기능이 두 가지 있습니다:"
+
+lbl_tray_dblclick = "트레이 아이콘 두 번 클릭:"
+tray_dbl_capture = "스크린샷 찍기"
+tray_dbl_settings = "옵션 열기"
+tray_dbl_nothing = "아무것도 안 함"
+tip_tray_dblclick = "알림 영역에서 SageThumbs 아이콘을 두 번 클릭할 때의 동작입니다. 기본값은 스크린샷 찍기이며, 대부분의 프로그램처럼 아이콘을 클릭하면 앱이 열리길 원하면 \"옵션 열기\"를, 실수로 캡처되는 것을 막으려면 \"아무것도 안 함\"을 선택하세요. 마우스 오른쪽 버튼 클릭은 여전히 메뉴를 엽니다."
+
+grp_app_look = "SageThumbs 창"

@@ -772,3 +772,11 @@ preview_upload_confirm_yes = "上传"
 
 tip_preview_enabled = "在资源管理器或桌面中按空格键，即可弹出所选文件的预览，再按 Esc 或空格键关闭。默认开启，除非已安装其他空格键预览工具（如 QuickLook 或 Seer）。它会运行一个小型后台辅助程序（与热键使用的是同一个）。在 Everything 搜索结果中也可使用。"
 fr_intro = "SageThumbs 已在为资源管理器添加缩略图。你可以在这里开启或关闭两项附加功能："
+
+lbl_tray_dblclick = "双击托盘图标："
+tray_dbl_capture = "截图"
+tray_dbl_settings = "打开选项"
+tray_dbl_nothing = "什么都不做"
+tip_tray_dblclick = "双击通知区域中的 SageThumbs 图标时执行的操作。默认为截图；如果你希望像大多数程序那样双击图标即打开应用，请选择“打开选项”；选择“什么都不做”可避免误触截图。右键单击仍会打开菜单。"
+
+grp_app_look = "SageThumbs 窗口"

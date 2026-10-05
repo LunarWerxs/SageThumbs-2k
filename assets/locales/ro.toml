@@ -770,3 +770,11 @@ preview_upload_confirm_yes = "Încarcă"
 
 tip_preview_enabled = "Apasă Space în Explorer sau pe Desktop ca să deschizi o previzualizare a fișierului selectat, apoi Esc sau Space ca să o închizi. Activat implicit, cu excepția cazului în care era deja instalat un alt program de previzualizare cu Space (cum ar fi QuickLook sau Seer). Rulează un mic utilitar în fundal (același pe care îl folosesc tastele rapide). Funcționează și în rezultatele căutării Everything."
 fr_intro = "SageThumbs adaugă deja miniaturi în Explorer. Două funcții suplimentare pe care le poți activa sau dezactiva aici:"
+
+lbl_tray_dblclick = "Dublu-clic pe pictograma din zona de notificare:"
+tray_dbl_capture = "Fă o captură de ecran"
+tray_dbl_settings = "Deschide Setări"
+tray_dbl_nothing = "Nu face nimic"
+tip_tray_dblclick = "Ce face dublu-clicul pe pictograma SageThumbs din zona de notificare. Captura de ecran este implicită; alege Deschide Setări dacă te aștepți ca pictograma să deschidă aplicația, cum fac majoritatea, sau Nu face nimic pentru a opri capturile accidentale. Clicul dreapta deschide în continuare meniul."
+
+grp_app_look = "Ferestre SageThumbs"

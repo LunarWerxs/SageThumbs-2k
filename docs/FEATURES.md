@@ -681,7 +681,8 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   button that restores every option to its factory default.
 - **Hotkey service:** a live status line (Running / Stopped / Off) and a **Restart** button
   for the small background helper that powers the screenshot & custom-action hotkeys, plus
-  Quick preview and the **Hide tray icon** toggle (the hotkeys still fire when it's hidden).
+  Quick preview, the **Hide tray icon** toggle (the hotkeys still fire when it's hidden), and
+  **Double-click tray icon**: take a screenshot (the default), open Settings, or do nothing.
   There is one resident helper, not a separate watchdog. Opening Settings, installing an
   update, or the next logon brings it back after a crash or manual termination. The hotkeys
   also **survive the things Windows silently breaks them with**: sleep/resume, locking your

@@ -55,6 +55,7 @@ pub(super) const TOOLTIPS: &[(i32, &str)] = &[
     (ID_UPLOAD_HISTORY, "tip_recent_uploads"),
     (ID_SHOT_RESTART, "tip_shot_restart"),
     (ID_SHOT_HIDE_TRAY, "tip_hide_tray"),
+    (ID_TRAY_DBLCLICK, "tip_tray_dblclick"),
     (ID_CUSTOM_ACTION_ENABLE, "tip_custom_action_enable"),
     (ID_PREVIEW_ENABLED, "tip_preview_enabled"),
     (ID_PREVIEW_HOLD_PEEK, "tip_preview_hold_peek"),

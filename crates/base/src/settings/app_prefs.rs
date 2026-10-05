@@ -231,6 +231,34 @@ pub fn screenshot_hide_tray() -> bool {
     get_dword("ScreenshotHideTray", 0) != 0
 }
 
+/// What double-clicking the tray icon does (issue #58), stored as `TrayDoubleClick`. Taking a
+/// screenshot is the default, as it always was; most tray icons open their program instead, so
+/// a user who reaches for it that way can choose Settings, or nothing at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrayDoubleClick {
+    Capture,
+    Settings,
+    Nothing,
+}
+
+impl TrayDoubleClick {
+    /// The Settings dropdown's order, which is also the stored value.
+    pub const ALL: [Self; 3] = [Self::Capture, Self::Settings, Self::Nothing];
+}
+
+/// See [`TrayDoubleClick`]. A value past the list reads as the default.
+pub fn tray_double_click() -> TrayDoubleClick {
+    let stored = get_dword("TrayDoubleClick", 0) as usize;
+    TrayDoubleClick::ALL
+        .get(stored)
+        .copied()
+        .unwrap_or(TrayDoubleClick::Capture)
+}
+
+pub fn set_tray_double_click(action: TrayDoubleClick) -> windows_registry::Result<()> {
+    set_dword("TrayDoubleClick", action as u32)
+}
+
 // ---- Screenshot save destination (Ctrl+S in the capture overlay) --------
 
 /// The eyedropper's clipboard format: 0 hex `#RRGGBB` (the default and the historical

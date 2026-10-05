@@ -769,3 +769,11 @@ preview_upload_confirm_yes = "Naloži"
 
 tip_preview_enabled = "Pritisnite preslednico v Raziskovalcu ali na namizju, da se prikaže predogled izbrane datoteke, nato ga zaprite z Esc ali preslednico. Privzeto je vklopljeno, razen če je bil že nameščen drug predoglednik s preslednico (na primer QuickLook ali Seer). Deluje z majhnim pomočnikom v ozadju (istim, ki ga uporabljajo bližnjične tipke). Deluje tudi v rezultatih iskanja Everything."
 fr_intro = "SageThumbs že dodaja sličice v Raziskovalec. Dva dodatka, ki ju lahko tukaj vklopite ali izklopite:"
+
+lbl_tray_dblclick = "Dvojni klik na ikono v območju za obvestila:"
+tray_dbl_capture = "Naredi posnetek zaslona"
+tray_dbl_settings = "Odpri možnosti"
+tray_dbl_nothing = "Ne naredi ničesar"
+tip_tray_dblclick = "Kaj se zgodi ob dvojnem kliku na ikono SageThumbs v območju za obvestila. Privzeto se naredi posnetek zaslona; izberite Odpri možnosti, če pričakujete, da bo ikona odprla program, kot to počne večina, ali Ne naredi ničesar, da preprečite naključne zajeme. Desni klik še vedno odpre meni."
+
+grp_app_look = "Okna SageThumbs"

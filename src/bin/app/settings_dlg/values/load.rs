@@ -243,6 +243,10 @@ pub(in super::super) unsafe fn load_defaults(hwnd: HWND) {
     }
     update_quick_enabled(hwnd);
     check(hwnd, ID_SHOT_HIDE_TRAY, false);
+    if let Ok(c) = GetDlgItem(Some(hwnd), ID_TRAY_DBLCLICK) {
+        let capture = settings::TrayDoubleClick::Capture as usize;
+        SendMessageW(c, CB_SETCURSEL, Some(WPARAM(capture)), None);
+    }
     // Factory reset of the Ctrl+S destination: toggle off + clear the folder (which
     // restores the Desktop default). Clearing the stored dir is written immediately
     // here (like reset_formats), since the folder isn't part of the Save-button apply.
@@ -422,6 +426,10 @@ pub(in super::super) unsafe fn seed_combo_selections(hwnd: HWND) {
     if let Ok(c) = GetDlgItem(Some(hwnd), ID_SHOT_TOOL) {
         let sel = shot_tool_combo_index(settings::screenshot_default_tool());
         SendMessageW(c, CB_SETCURSEL, Some(WPARAM(sel as usize)), None);
+    }
+    if let Ok(c) = GetDlgItem(Some(hwnd), ID_TRAY_DBLCLICK) {
+        let sel = settings::tray_double_click() as usize;
+        SendMessageW(c, CB_SETCURSEL, Some(WPARAM(sel)), None);
     }
     if let Ok(c) = GetDlgItem(Some(hwnd), ID_SHOT_HOTKEY) {
         let (m, v) = settings::screenshot_hotkey();

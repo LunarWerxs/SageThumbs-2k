@@ -773,3 +773,11 @@ preview_upload_confirm_yes = "Muat naik"
 
 tip_preview_enabled = "Tekan Space dalam Explorer atau pada Desktop untuk memaparkan pratonton fail yang dipilih, kemudian tekan Esc atau Space untuk menutupnya. Dihidupkan secara lalai, kecuali jika pempratonton bar Space lain (seperti QuickLook atau Seer) sudah dipasang. Ia menjalankan pembantu latar belakang yang kecil (yang sama digunakan oleh kekunci pintas). Juga berfungsi dalam hasil carian Everything."
 fr_intro = "SageThumbs sudah menambah thumbnail ke dalam Explorer. Dua tambahan yang boleh anda hidupkan atau matikan di sini:"
+
+lbl_tray_dblclick = "Klik dua kali ikon dulang:"
+tray_dbl_capture = "Ambil tangkapan skrin"
+tray_dbl_settings = "Buka Tetapan"
+tray_dbl_nothing = "Jangan buat apa-apa"
+tip_tray_dblclick = "Apa yang berlaku apabila anda klik dua kali ikon SageThumbs dalam kawasan pemberitahuan. Ambil tangkapan skrin ialah tetapan lalai; pilih Buka Tetapan jika anda menjangka ikon itu membuka aplikasi, seperti kebanyakan aplikasi, atau Jangan buat apa-apa untuk menghentikan tangkapan tidak sengaja. Klik kanan masih membuka menu."
+
+grp_app_look = "Tetingkap SageThumbs"

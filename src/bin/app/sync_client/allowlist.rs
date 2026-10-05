@@ -57,6 +57,7 @@ pub(super) const ALLOW: &[(&str, Kind)] = &[
     ("CustomAction", Kind::Dword),
     ("CustomActionHotkey", Kind::Dword),
     ("ScreenshotHideTray", Kind::Dword),
+    ("TrayDoubleClick", Kind::Dword),
     ("ShotUseSaveDir", Kind::Dword),
     ("UpdateAutoCheck", Kind::Dword),
     ("Lang", Kind::Str),

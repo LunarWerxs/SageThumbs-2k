@@ -774,3 +774,11 @@ preview_upload_confirm_yes = "Učitaj"
 
 tip_preview_enabled = "Pritisnite razmaknicu u Exploreru ili na radnoj površini da biste otvorili pretpregled odabrane datoteke, a zatim Esc ili razmaknicu da ga zatvorite. Prema zadanim postavkama uključeno, osim ako je već instaliran drugi alat za pretpregled razmaknicom (poput QuickLooka ili Seera). Pokreće mali pomoćni program u pozadini (isti koji koriste i tipkovnički prečaci). Radi i u rezultatima pretraživanja programa Everything."
 fr_intro = "SageThumbs već dodaje sličice u Explorer. Ovdje možete uključiti ili isključiti dva dodatka:"
+
+lbl_tray_dblclick = "Dvostruki klik na ikonu u području obavijesti:"
+tray_dbl_capture = "Snimi snimku zaslona"
+tray_dbl_settings = "Otvori Postavke"
+tray_dbl_nothing = "Ne radi ništa"
+tip_tray_dblclick = "Određuje što radi dvostruki klik na ikonu programa SageThumbs u području obavijesti. Snimanje snimke zaslona zadano je ponašanje; odaberite Otvori Postavke ako očekujete da će ikona otvoriti aplikaciju, kao što većina i očekuje, ili Ne radi ništa kako biste spriječili slučajna snimanja. Desni klik i dalje otvara izbornik."
+
+grp_app_look = "Prozori programa SageThumbs"

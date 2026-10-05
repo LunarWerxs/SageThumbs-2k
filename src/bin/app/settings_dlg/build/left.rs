@@ -164,6 +164,7 @@ pub(super) unsafe fn build_general(lc: &mut LeftCol, sty: &Styles) {
     dark_theme_combo(badge_size);
     restyle::dark_combo_subclass(badge_size, ID_BADGE_SIZE);
 
+    lc.header(t("grp_app_look"), sty.hdr, ID_LBL_APP_LOOK, false);
     let theme = lc.combo(t("lbl_app_theme"), ID_LBL_APP_THEME, 160, ID_APP_THEME);
     for key in ["theme_system", "theme_light", "theme_dark"] {
         let w = wide(t(key));
@@ -309,6 +310,23 @@ pub(super) unsafe fn build_screenshots(hwnd: HWND, lc: &mut LeftCol, sty: &Style
     // DROPDOWNS together below. The instant-screenshot checkbox gates the Quick-save
     // combo further down (that combo greys out while this is unchecked).
     lc.checkbox(t("chk_hide_tray"), sty.cb, 300, ID_SHOT_HIDE_TRAY);
+    // What double-clicking the tray icon does (issue #58), shown under "Hide tray icon" on
+    // Advanced. The option order is `TrayDoubleClick::ALL`, which is also the stored value.
+    let dbl = lc.combo(
+        t("lbl_tray_dblclick"),
+        ID_LBL_TRAY_DBLCLICK,
+        200,
+        ID_TRAY_DBLCLICK,
+    );
+    for key in TRAY_DBLCLICK_KEYS {
+        let w = wide(t(key));
+        SendMessageW(dbl, CB_ADDSTRING, None, Some(LPARAM(w.as_ptr() as isize)));
+    }
+    let dbl_sel = settings::tray_double_click() as usize;
+    SendMessageW(dbl, CB_SETCURSEL, Some(WPARAM(dbl_sel)), None);
+    SendMessageW(dbl, CB_SETDROPPEDWIDTH, Some(WPARAM(230)), None);
+    dark_theme_combo(dbl);
+    restyle::dark_combo_subclass(dbl, ID_TRAY_DBLCLICK);
     lc.checkbox(
         t("chk_instant_screenshot"),
         sty.cb,

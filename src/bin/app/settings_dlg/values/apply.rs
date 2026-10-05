@@ -364,6 +364,12 @@ pub(super) unsafe fn apply_screenshot_hotkeys(hwnd: HWND) {
         "ScreenshotHideTray",
         checked(hwnd, ID_SHOT_HIDE_TRAY) as u32,
     ));
+    if let Ok(c) = GetDlgItem(Some(hwnd), ID_TRAY_DBLCLICK) {
+        let sel = SendMessageW(c, CB_GETCURSEL, None, None).0.max(0) as usize;
+        let all = settings::TrayDoubleClick::ALL;
+        let action = all.get(sel).copied().unwrap_or(all[0]);
+        let _ = note(settings::set_tray_double_click(action));
+    }
     let _ = note(settings::set_screenshot_use_save_dir(checked(
         hwnd,
         ID_SHOT_USE_DIR,

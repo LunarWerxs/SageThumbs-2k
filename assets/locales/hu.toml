@@ -776,3 +776,11 @@ preview_upload_confirm_yes = "Feltöltés"
 
 tip_preview_enabled = "Nyomja meg a Szóközt a Fájlkezelőben vagy az Asztalon a kijelölt fájl előnézetéhez, majd az Esc vagy a Szóköz billentyűvel zárhatja be. Alapértelmezés szerint be van kapcsolva, kivéve, ha már telepítve volt másik szóközbillentyűs előnézeti program (például QuickLook vagy Seer). Egy kis háttérsegédet futtat (ugyanazt, amelyet a gyorsbillentyűk is használnak). Az Everything keresési találataiban is működik."
 fr_intro = "A SageThumbs már bélyegképeket ad a Fájlkezelőhöz. Két extra, amelyet itt kapcsolhat be vagy ki:"
+
+lbl_tray_dblclick = "Tálcaikon dupla kattintásakor:"
+tray_dbl_capture = "Képernyőkép készítése"
+tray_dbl_settings = "Beállítások megnyitása"
+tray_dbl_nothing = "Nincs művelet"
+tip_tray_dblclick = "Azt szabályozza, mi történik, ha duplán kattint a SageThumbs ikonjára az értesítési területen. Alapértelmezésben képernyőképet készít; válassza a \"Beállítások megnyitása\" lehetőséget, ha azt várja, hogy az ikon megnyissa az alkalmazást, ahogy a legtöbb program teszi, vagy a \"Nincs művelet\" lehetőséget, hogy elkerülje a véletlen felvételeket. Jobb kattintással továbbra is megnyílik a menü."
+
+grp_app_look = "SageThumbs ablakai"

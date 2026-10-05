@@ -775,3 +775,11 @@ preview_upload_confirm_yes = "Prześlij"
 
 tip_preview_enabled = "Naciśnij Spację w Eksploratorze lub na Pulpicie, aby wyświetlić podgląd zaznaczonego pliku, a potem Esc lub Spację, aby go zamknąć. Domyślnie włączone, chyba że był już zainstalowany inny program do podglądu pod Spacją (np. QuickLook lub Seer). Działa dzięki małemu programowi pomocniczemu w tle (temu samemu, którego używają skróty klawiszowe). Działa też w wynikach wyszukiwania Everything."
 fr_intro = "SageThumbs już dodaje miniatury w Eksploratorze. Tutaj możesz włączyć lub wyłączyć dwie dodatkowe funkcje:"
+
+lbl_tray_dblclick = "Dwukrotne kliknięcie ikony w zasobniku:"
+tray_dbl_capture = "Zrób zrzut ekranu"
+tray_dbl_settings = "Otwórz Opcje"
+tray_dbl_nothing = "Nic nie rób"
+tip_tray_dblclick = "Co robi dwukrotne kliknięcie ikony SageThumbs w zasobniku systemowym. Domyślnie wykonywany jest zrzut ekranu; wybierz Otwórz Opcje, jeśli oczekujesz, że ikona otworzy aplikację, jak większość, albo Nic nie rób, aby zapobiec przypadkowym zrzutom. Kliknięcie prawym przyciskiem nadal otwiera menu."
+
+grp_app_look = "Okna SageThumbs"

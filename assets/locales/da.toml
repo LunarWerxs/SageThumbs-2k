@@ -767,3 +767,11 @@ preview_upload_confirm_yes = "Upload"
 
 tip_preview_enabled = "Tryk på mellemrumstasten i Stifinder eller på skrivebordet for at få vist et eksempel af den valgte fil, og tryk derefter på Esc eller mellemrumstasten for at lukke. Slået til som standard, medmindre en anden eksempelvisning med mellemrumstasten (f.eks. QuickLook eller Seer) allerede var installeret. Den kører en lille hjælper i baggrunden (den samme som genvejstasterne bruger). Virker også i søgeresultater i Everything."
 fr_intro = "SageThumbs tilføjer allerede miniaturer til Stifinder. To ekstra funktioner, du kan slå til eller fra her:"
+
+lbl_tray_dblclick = "Dobbeltklik på ikonet i meddelelsesområdet:"
+tray_dbl_capture = "Tag et skærmbillede"
+tray_dbl_settings = "Åbn Indstillinger"
+tray_dbl_nothing = "Gør ingenting"
+tip_tray_dblclick = "Hvad der sker, når du dobbeltklikker på SageThumbs-ikonet i meddelelsesområdet. Det er standard at tage et skærmbillede; vælg Åbn Indstillinger, hvis du forventer, at ikonet åbner programmet, som de fleste gør, eller Gør ingenting for at undgå utilsigtede skærmbilleder. Højreklik åbner stadig menuen."
+
+grp_app_look = "SageThumbs-vinduer"

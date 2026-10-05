@@ -144,7 +144,9 @@ pub(super) fn decode_preview_thumbnail(bytes: &[u8], cx: u32) -> Result<DynamicI
     // two reasons in `psd_composite_wanted`.
     let cx = cx.max(1);
     if bytes.starts_with(b"8BPS") && psd_composite_wanted(bytes, cx) {
-        match decode_psd_composite(bytes, Fidelity::Tile) {
+        // Twice the tile, not the document's size (issue #55): our reader keeps one row in
+        // every band it shrinks, and the extra rows are what the caller's filter smooths.
+        match decode_psd_composite(bytes, Fidelity::Tile, cx.saturating_mul(2)) {
             Ok(img) => match composite_beats_baked_preview(img, bytes) {
                 CompositeVerdict::UseComposite(img) => return Ok(img),
                 // Reuse the decode `composite_beats_baked_preview` already did to answer

@@ -775,3 +775,11 @@ preview_upload_confirm_yes = "Carica"
 
 tip_preview_enabled = "Premi Spazio in Esplora file o sul Desktop per aprire un'anteprima del file selezionato, poi Esc o Spazio per chiuderla. Attiva per impostazione predefinita, a meno che non fosse già installato un altro programma di anteprima con la barra spaziatrice (come QuickLook o Seer). Esegue un piccolo programma di supporto in background (lo stesso usato dalle scorciatoie da tastiera). Funziona anche nei risultati di ricerca di Everything."
 fr_intro = "SageThumbs sta già aggiungendo le miniature a Esplora file. Due extra che puoi attivare o disattivare qui:"
+
+lbl_tray_dblclick = "Doppio clic sull'icona nell'area di notifica:"
+tray_dbl_capture = "Cattura uno screenshot"
+tray_dbl_settings = "Apri Opzioni"
+tray_dbl_nothing = "Non fare nulla"
+tip_tray_dblclick = "Cosa fa il doppio clic sull'icona di SageThumbs nell'area di notifica. Catturare uno screenshot è l'impostazione predefinita; scegli Apri Opzioni se ti aspetti che l'icona apra l'app, come fanno quasi tutte, oppure Non fare nulla per evitare catture accidentali. Il clic con il tasto destro apre comunque il menu."
+
+grp_app_look = "Finestre di SageThumbs"

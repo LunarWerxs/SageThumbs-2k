@@ -201,6 +201,10 @@ $env:ST2K_CORPUS_TOUCH_LOG = $corpusTouchLog
 # nothing after it had run). A green run is identical either way.
 if (-not $failed) { Step 'unit + integration tests, debug profile (mirrors CI)' { cargo test --locked --tests --no-fail-fast } }
 Remove-Item Env:\ST2K_CORPUS_TOUCH_LOG -ErrorAction SilentlyContinue
+# The app's own tests again WITH html-preview, the feature the shipped EXE has: its two
+# Quick preview rows exist only then, so the run above never laid that page out as users see
+# it. 2026-10-05: one more switch pushed it 18 px into the footer and every gate stayed green.
+if (-not $failed) { Step 'app tests with the shipped html-preview rows' { cargo test --locked -p sagethumbs2k --bin SageThumbs2K --features html-preview } }
 
 # THE CORPUS-ABSENT PASS (2026-09-19). CI has no `..\test-corpus` (it is a sibling of the repo,
 # never in git), this machine does, so a test that reads a sample and unwraps the read passes

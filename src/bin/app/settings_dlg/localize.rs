@@ -57,6 +57,11 @@ pub(super) unsafe fn on_lang_change(hwnd: HWND) {
 /// build.rs's creation loop that first populates it (the stored setting is a plain index
 /// into this order), so the two lists must stay in lockstep or a live language switch would
 /// silently relabel the combo out from under the index the user already picked.
+/// Locale keys for the tray double-click combo (`ID_TRAY_DBLCLICK`), in
+/// `settings::TrayDoubleClick::ALL` order: the stored value is the index.
+pub(super) const TRAY_DBLCLICK_KEYS: [&str; 3] =
+    ["tray_dbl_capture", "tray_dbl_settings", "tray_dbl_nothing"];
+
 const SHOT_TOOL_KEYS: [&str; 10] = [
     "tool_arrow",
     "tool_rect",
@@ -119,12 +124,14 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_LBL_PREVIEW, "lbl_menu_preview"),
         (ID_LBL_SHOT_TOOL, "lbl_shot_tool"),
         (ID_LBL_SHOT_DELAY, "lbl_shot_delay"),
+        (ID_LBL_TRAY_DBLCLICK, "lbl_tray_dblclick"),
         (ID_MENU_QUICK, "chk_menu_quick"),
         (ID_MENU_CHECKER, "chk_menu_checker"),
         (ID_LBL_APP_THEME, "lbl_app_theme"),
         (ID_FOLDER_PREBUILD, "chk_folder_prebuild"),
         (ID_LBL_LIMITS, "grp_limits"),
         (ID_LBL_TILE_LOOK, "grp_tile_look"),
+        (ID_LBL_APP_LOOK, "grp_app_look"),
         (ID_LBL_MENU_LOOK, "grp_menu_look"),
         (ID_LBL_QUICKACTION, "grp_quickaction"),
         (ID_LBL_PREVIEW_BEHAVIOR, "grp_preview_behavior"),
@@ -248,6 +255,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
     // The screenshot-tool combo holds translated items (same fixed order as build.rs's
     // creation loop, which the stored index is keyed to): rebuild, keep selection.
     rebuild_combo(hwnd, ID_SHOT_TOOL, SHOT_TOOL_KEYS.map(t));
+    rebuild_combo(hwnd, ID_TRAY_DBLCLICK, TRAY_DBLCLICK_KEYS.map(t));
     // The corner-mark, app-theme, and capture-delay combos also hold translated items
     // (same fixed orders as their build.rs creation loops): rebuild, keep selection. These
     // three used to be skipped here, so a live language switch left them showing the old

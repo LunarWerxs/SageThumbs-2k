@@ -354,7 +354,7 @@ pub(crate) fn try_pdf_tier(
     raw_preview: RawPreviewOrder,
     wic_thumbnail_cx: Option<u32>,
 ) -> Option<Result<DynamicImage>> {
-    if !bytes.starts_with(b"%PDF-") {
+    if !crate::pdf::looks_like_pdf(bytes) {
         return None;
     }
     let edge = pdf_raster_edge(wic_thumbnail_cx);
@@ -480,6 +480,20 @@ mod illustrator_tests {
             "{}",
             err.message()
         );
+    }
+
+    /// A PDF may carry bytes ahead of its `%PDF-` header, anywhere in the first 1024; every
+    /// viewer opens one, and so does Windows' engine (issue #59).
+    #[test]
+    fn a_pdf_with_bytes_ahead_of_its_header_still_renders() {
+        let Some(pdf) = corpus("sample.pdf") else {
+            return;
+        };
+        let mut bytes = b"Received from a mail gateway\r\n".repeat(20);
+        bytes.extend_from_slice(&pdf);
+        try_pdf_tier(&bytes, RawPreviewOrder::AfterExternal, Some(256))
+            .expect("read as a PDF")
+            .expect("page one rendered");
     }
 
     #[test]

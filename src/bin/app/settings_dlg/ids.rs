@@ -71,6 +71,11 @@ pub(super) const ID_SHOT_STATUS: i32 = 1139;
 pub(super) const ID_SHOT_RESTART: i32 = 1140;
 // Settings checkbox: hide the daemon's notification-area (tray) icon.
 pub(super) const ID_SHOT_HIDE_TRAY: i32 = 1141;
+// What double-clicking the tray icon does (combo + its label), issue #58.
+pub(super) const ID_LBL_TRAY_DBLCLICK: i32 = 1272;
+pub(super) const ID_TRAY_DBLCLICK: i32 = 1273;
+// "SageThumbs windows" header over the Theme row on Appearance.
+pub(super) const ID_LBL_APP_LOOK: i32 = 1274;
 // Optional second "quick-save" hotkey (full-screen → clipboard+PNG, no editor):
 // an enable checkbox that gates the hotkey-picker combo.
 pub(super) const ID_SHOT_QUICK_ENABLE: i32 = 1144;

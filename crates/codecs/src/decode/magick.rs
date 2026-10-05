@@ -12,6 +12,7 @@ use sniff::*;
 mod budget;
 use budget::*;
 mod child;
+mod scratch;
 pub(super) use budget::add_magick_limits;
 pub(crate) use budget::Fidelity;
 pub(crate) use child::await_magick_output;
@@ -24,6 +25,8 @@ pub(crate) use named::is_raw_coder_ext;
 pub(super) use named::{
     decode_named_extension, decode_named_extension_native, has_name_selected_coder,
 };
+pub use scratch::sweep_stale_magick_temp;
+use scratch::MagickScratch;
 pub(crate) use sniff::looks_like_metafile;
 pub(super) use sniff::metafile_min_density;
 
@@ -236,10 +239,12 @@ fn is_image_sequence(bytes: &[u8]) -> bool {
         && matches!(bytes.get(8..12), Some(b"msf1" | b"hevs" | b"avis"))
 }
 
-/// The PSD/PSB composite at full resolution. Frame `[0]` of a PSD in ImageMagick
-/// is the flattened composite (the file format's mandatory precomposed image-data
-/// section), not a layer. Capped at MAX_DIM (bomb guard, shrink-only `>`) instead
-/// of the thumbnail tier's 4096 — the whole point is keeping the real pixels.
+/// The PSD/PSB composite, at most `edge` on its long side (shrink-only `>`). Frame `[0]` of a
+/// PSD in ImageMagick is the flattened composite (the file format's mandatory precomposed
+/// image-data section), not a layer. The full-fidelity verbs ask for MAX_DIM, the whole point
+/// being the real pixels; a thumbnail asks for its own size (issue #55: asked for MAX_DIM, a
+/// big layered document spent the tile's 20 s budget flattening pixels the tile then threw
+/// away, and got no thumbnail, while the Quick preview's larger budget drew it).
 ///
 /// The re-decode of magick's PNG runs with [`limits::FULL_FIDELITY_MAX_ALLOC`]
 /// (not the default 512 MiB): the resize cap is MAX_DIM, so a near-square
@@ -255,12 +260,16 @@ fn is_image_sequence(bytes: &[u8]) -> bool {
 /// 2026-09-23). It also gets right what ImageMagick does not: a 32-bit document's linear light
 /// (ImageMagick writes it without the sRGB curve) and Photoshop's D50 Lab. ImageMagick stays the
 /// fallback for what it declines (Multichannel, a ZIP composite).
-pub(super) fn decode_psd_composite(bytes: &[u8], fidelity: Fidelity) -> Result<DynamicImage> {
-    let edge = limits::MAX_DIM;
+pub(super) fn decode_psd_composite(
+    bytes: &[u8],
+    fidelity: Fidelity,
+    edge: u32,
+) -> Result<DynamicImage> {
+    let edge = edge.clamp(1, limits::MAX_DIM);
     if let Some(img) = crate::container::psd_merged_from_reader(std::io::Cursor::new(bytes), edge) {
         return Ok(img);
     }
-    decode_psd_composite_magick(bytes, fidelity)
+    decode_psd_composite_magick(bytes, fidelity, edge)
 }
 
 /// [`decode_psd_composite`]'s ImageMagick half on its own: the fallback, and the independent
@@ -268,13 +277,14 @@ pub(super) fn decode_psd_composite(bytes: &[u8], fidelity: Fidelity) -> Result<D
 pub(crate) fn decode_psd_composite_magick(
     bytes: &[u8],
     fidelity: Fidelity,
+    edge: u32,
 ) -> Result<DynamicImage> {
     decode_via_magick_spec_alloc(
         bytes,
         &[],
         "-[0]",
         &[],
-        limits::FULL_FIDELITY_EDGE,
+        &format!("{edge}x{edge}>"),
         FULL_FIDELITY_CAPS,
         fidelity,
         false, // PSD is never a metafile
@@ -403,6 +413,9 @@ fn decode_via_magick_spec_alloc(
     // Bound concurrent magick children (memory) across in-process + st2k fan-out.
     // Held until this function returns (after the child is reaped).
     let _permit = magick_gate::acquire_for(fidelity);
+    // Declared before the child so it drops after the reap: issue #56.
+    let scratch = MagickScratch::new();
+    scratch.apply(&mut cmd);
     // Every failure below is LOGGED, not just returned. This tier is the one we route AVIF
     // to precisely because the fallback (WIC) gets those files wrong, so a silent Err here
     // reappears as a wrong-coloured thumbnail with nothing in the log to explain it — which

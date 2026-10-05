@@ -775,3 +775,11 @@ preview_upload_confirm_yes = "Unggah"
 
 tip_preview_enabled = "Tekan Spasi di Explorer atau di Desktop untuk menampilkan pratinjau file yang dipilih, lalu tekan Esc atau Spasi untuk menutup. Aktif secara default, kecuali aplikasi pratinjau tombol Spasi lain (seperti QuickLook atau Seer) sudah terpasang. Fitur ini menjalankan helper kecil di latar belakang (yang sama dengan yang dipakai pintasan keyboard). Juga berfungsi di hasil pencarian Everything."
 fr_intro = "SageThumbs sudah menambahkan thumbnail ke Explorer. Dua fitur tambahan yang bisa Anda aktifkan atau nonaktifkan di sini:"
+
+lbl_tray_dblclick = "Klik ganda ikon baki:"
+tray_dbl_capture = "Ambil tangkapan layar"
+tray_dbl_settings = "Buka Opsi"
+tray_dbl_nothing = "Jangan lakukan apa pun"
+tip_tray_dblclick = "Apa yang terjadi saat Anda mengklik ganda ikon SageThumbs di area notifikasi. Mengambil tangkapan layar adalah bawaan; pilih Buka Opsi jika Anda berharap ikon membuka aplikasi, seperti kebanyakan orang, atau Jangan lakukan apa pun untuk mencegah tangkapan yang tidak disengaja. Klik kanan tetap membuka menu."
+
+grp_app_look = "Jendela SageThumbs"

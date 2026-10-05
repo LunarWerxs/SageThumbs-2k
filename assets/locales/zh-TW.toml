@@ -772,3 +772,11 @@ preview_upload_confirm_yes = "上傳"
 
 tip_preview_enabled = "在檔案總管或桌面上按空白鍵，即可彈出所選檔案的預覽，再按 Esc 或空白鍵關閉。預設為開啟，除非已安裝其他空白鍵預覽工具（例如 QuickLook 或 Seer）。它會執行一個小型背景輔助程式（與快速鍵使用的是同一個）。在 Everything 搜尋結果中也能使用。"
 fr_intro = "SageThumbs 已經在為檔案總管加入縮圖。您可以在這裡開啟或關閉兩項額外功能："
+
+lbl_tray_dblclick = "按兩下系統匣圖示："
+tray_dbl_capture = "擷取螢幕畫面"
+tray_dbl_settings = "開啟選項"
+tray_dbl_nothing = "不執行任何動作"
+tip_tray_dblclick = "按兩下通知區域中的 SageThumbs 圖示時會執行的動作。預設會擷取螢幕畫面；如果您希望圖示能像大多數程式一樣開啟應用程式，請選擇「開啟選項」；若想避免不小心擷取畫面，請選擇「不執行任何動作」。按一下滑鼠右鍵仍會開啟功能表。"
+
+grp_app_look = "SageThumbs 視窗"

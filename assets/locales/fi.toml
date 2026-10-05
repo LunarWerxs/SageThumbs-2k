@@ -765,3 +765,11 @@ preview_upload_confirm_yes = "Lataa palvelimelle"
 
 tip_preview_enabled = "Paina välilyöntiä Resurssienhallinnassa tai työpöydällä, niin valitun tiedoston esikatselu avautuu. Sulje se Esc- tai välilyöntinäppäimellä. Päällä oletuksena, ellei toista välilyöntiesikatselijaa (kuten QuickLook tai Seer) ollut jo asennettu. Se käyttää pientä taustaapuohjelmaa (samaa kuin pikanäppäimet). Toimii myös Everything-haun tuloksissa."
 fr_intro = "SageThumbs lisää jo pienoiskuvia Resurssienhallintaan. Kaksi lisäominaisuutta, jotka voit ottaa käyttöön tai poistaa käytöstä tässä:"
+
+lbl_tray_dblclick = "Kaksoisnapsautus ilmaisinalueen kuvakkeeseen:"
+tray_dbl_capture = "Ota kuvakaappaus"
+tray_dbl_settings = "Avaa asetukset"
+tray_dbl_nothing = "Älä tee mitään"
+tip_tray_dblclick = "Mitä SageThumbs-kuvakkeen kaksoisnapsautus ilmaisinalueella tekee. Kuvakaappauksen ottaminen on oletus; valitse Avaa asetukset, jos odotat kuvakkeen avaavan sovelluksen, kuten useimmat tekevät, tai Älä tee mitään estääksesi vahingossa tapahtuvat kaappaukset. Hiiren oikealla napsautuksella valikko avautuu edelleen."
+
+grp_app_look = "SageThumbs-ikkunat"

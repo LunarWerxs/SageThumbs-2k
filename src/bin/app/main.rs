@@ -157,6 +157,8 @@ fn heal_after_install() {
     } else {
         crate::first_run::seed_fresh_defaults();
         st2k_screenshot::screenshot::heal_if_wanted();
+        // The ImageMagick temp files older versions left behind (issue #56).
+        st2k_codecs::decode::sweep_stale_magick_temp();
     }
 }
 

@@ -75,6 +75,19 @@ pub fn render_page_counted_path(
     render_page_counted_from(Source::Path(path.to_string()), page_index, max_dim)
 }
 
+/// How far into a file its `%PDF-` header may start: the first 1024 bytes, the rule Acrobat and
+/// PDF.js apply. Windows' engine opens such a file too (measured 2026-10-05: 102 bytes of junk
+/// ahead of the header, page one rendered); requiring the header at byte 0 left every one of
+/// them without a thumbnail (issue #59).
+const HEADER_WINDOW: usize = 1024;
+
+/// Is this the start of a PDF? `head` is the file's first bytes, at least [`HEADER_WINDOW`] of
+/// them when the file has that many.
+pub(crate) fn looks_like_pdf(head: &[u8]) -> bool {
+    let window = &head[..head.len().min(HEADER_WINDOW + 4)];
+    window.windows(5).any(|w| w == b"%PDF-")
+}
+
 /// The biggest document handed to Windows' PDF engine. Past 2 GiB `Windows.Data.Pdf` takes the
 /// whole PROCESS down with an access violation - measured 2026-09-23 on a 2.2 GB PDF, loaded by
 /// `PdfDocument::LoadFromFileAsync` from plain PowerShell with none of our code involved - and

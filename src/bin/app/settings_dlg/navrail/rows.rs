@@ -72,7 +72,7 @@ pub(super) const GENERAL_INSTALLED: [Row; 11] = {
 /// (Settings sync + Backup moved to their own "Data & Backup" tab.) Unlike GENERAL, this
 /// list is NOT sliced for installed builds — `cat_rows`' `7 => &ADVANCED` arm is
 /// unconditional, and ADVANCED[0] is the Diagnostics header, not a portable-only row.
-pub(super) const ADVANCED: [Row; 11] = {
+pub(super) const ADVANCED: [Row; 12] = {
     use Row::*;
     [
         Head(ID_LBL_DIAG),
@@ -88,6 +88,7 @@ pub(super) const ADVANCED: [Row; 11] = {
         // what stays here is the one genuinely system-level preference it owns.
         Head(ID_LBL_HOTKEY_SVC),
         Switch(ID_SHOT_HIDE_TRAY),
+        Pair(ID_LBL_TRAY_DBLCLICK, ID_TRAY_DBLCLICK, 156, 200),
     ]
 };
 
@@ -170,6 +171,11 @@ pub(in super::super) fn cat_rows(ci: usize) -> &'static [Row] {
             // here is which one." General could not take it (that page is already within a
             // row of its footer), and this is where it belongs by topic anyway.
             Pair(ID_LBL_VIDEO_OFFSET, ID_VIDEO_OFFSET, 84, 18),
+            // Light/dark for SageThumbs' own windows. It sat on Quick preview until that page
+            // ran into its footer (the Upload switch, 2026-10-05); every window it themes is
+            // an appearance, not a preview behaviour.
+            Head(ID_LBL_APP_LOOK),
+            Pair(ID_LBL_APP_THEME, ID_APP_THEME, 156, 200),
         ],
         2 => &[
             // File types: purely "which formats", with the appearance strays gone.
@@ -258,9 +264,6 @@ pub(in super::super) fn cat_rows(ci: usize) -> &'static [Row] {
             Switch(ID_PREVIEW_CLOSE_FOCUS),
             Switch(ID_PREVIEW_TOPMOST),
             Switch(ID_PREVIEW_UPLOAD),
-            // Light/dark for SageThumbs' own windows. Sits with preview BEHAVIOUR rather than
-            // under "Also preview" below, which is a list of content-type opt-ins.
-            Pair(ID_LBL_APP_THEME, ID_APP_THEME, 156, 200),
             // Per-extension blocklist — behavior (what Quick preview refuses to try),
             // not a content-type opt-in, so it sits above the "Also preview" split.
             Pair(

@@ -733,7 +733,7 @@ unsafe fn last_rescues(
         // resort, the largest JPEG inside it, and in a big one that can sit anywhere.
         return embedded_jpeg(stream, who);
     }
-    if head.bytes().starts_with(b"%PDF-") {
+    if crate::pdf::looks_like_pdf(head.bytes()) {
         // A PDF is its page renderer's alone: no head window or codec reads one, and a file the
         // renderer declines (an Illustrator placeholder, a document past 2 GiB) has no picture.
         return pdf_page(stream, head, target_edge, who);

@@ -497,12 +497,19 @@ unsafe fn on_reload(hwnd: HWND) {
     }
 }
 
-/// `WM_TRAY` - the notify-icon callback: double-click captures, right-click/context menu
-/// opens the tray menu, and a balloon click routes on which balloon we last raised.
+/// `WM_TRAY` - the notify-icon callback: double-click does what Settings chose (a capture by
+/// default, issue #58), right-click/context menu opens the tray menu, and a balloon click
+/// routes on which balloon we last raised.
 unsafe fn on_tray(hwnd: HWND, lparam: LPARAM) {
+    use st2k_base::settings::TrayDoubleClick;
     let ev = (lparam.0 & 0xffff) as u32;
     if ev == WM_LBUTTONDBLCLK {
-        spawn(Some("--screenshot"));
+        // Read at the click, so a change in Settings needs no restart of this helper.
+        match st2k_base::settings::tray_double_click() {
+            TrayDoubleClick::Capture => spawn(Some("--screenshot")),
+            TrayDoubleClick::Settings => spawn(None),
+            TrayDoubleClick::Nothing => {}
+        }
     } else if ev == WM_RBUTTONUP || ev == WM_CONTEXTMENU {
         show_tray_menu(hwnd);
     } else if ev == NIN_BALLOONUSERCLICK {

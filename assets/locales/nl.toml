@@ -775,3 +775,11 @@ preview_upload_confirm_yes = "Uploaden"
 
 tip_preview_enabled = "Druk op Spatie in Verkenner of op het bureaublad om een voorvertoning van het geselecteerde bestand te openen; druk daarna op Esc of Spatie om die te sluiten. Staat standaard aan, tenzij er al een andere voorvertoner met de spatiebalk (zoals QuickLook of Seer) was geïnstalleerd. Er draait een klein hulpprogramma op de achtergrond (hetzelfde dat de sneltoetsen gebruiken). Werkt ook in de zoekresultaten van Everything."
 fr_intro = "SageThumbs voegt al miniaturen toe aan Verkenner. Hier kun je twee extra's aan- of uitzetten:"
+
+lbl_tray_dblclick = "Dubbelklik op het pictogram in het systeemvak:"
+tray_dbl_capture = "Een schermafbeelding maken"
+tray_dbl_settings = "Opties openen"
+tray_dbl_nothing = "Niets doen"
+tip_tray_dblclick = "Wat er gebeurt als je dubbelklikt op het SageThumbs-pictogram in het systeemvak. Een schermafbeelding maken is de standaard; kies Opties openen als je verwacht dat het pictogram de app opent, zoals de meeste doen, of Niets doen om onbedoelde opnamen te voorkomen. Met rechtsklikken open je nog steeds het menu."
+
+grp_app_look = "SageThumbs-vensters"

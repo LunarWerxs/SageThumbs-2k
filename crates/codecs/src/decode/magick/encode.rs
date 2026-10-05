@@ -156,12 +156,16 @@ pub(super) fn magick_encode_args(output_spec: String, quality: Option<u8>) -> Ve
 }
 
 /// Spawn ImageMagick with `args`, bound by the shared magick concurrency gate (memory)
-/// across in-process + st2k fan-out. The returned permit must be held by the caller
-/// until the child has been waited on.
+/// across in-process + st2k fan-out. The returned permit and temp folder must be held by
+/// the caller until the child has been waited on.
 pub(super) fn spawn_magick_child(
     exe: &std::path::Path,
     args: &[String],
-) -> Result<(std::process::Child, Option<magick_gate::Permit>)> {
+) -> Result<(
+    std::process::Child,
+    Option<magick_gate::Permit>,
+    MagickScratch,
+)> {
     let mut cmd = Command::new(exe);
     // The ENCODE path's own watchdog is `FULL_FIDELITY_MAGICK_TIMEOUT` (see
     // `wait_for_magick_child`), so the child's self-limit is derived from the same figure.
@@ -175,8 +179,10 @@ pub(super) fn spawn_magick_child(
     // The ENCODE path writes what the user asked for, so it queues like any other
     // full-fidelity worker rather than slipping past the cap after five seconds.
     let permit = magick_gate::acquire_for(Fidelity::Full);
+    let scratch = MagickScratch::new();
+    scratch.apply(&mut cmd);
     let child = cmd.spawn().map_err(|_| Error::from(E_FAIL))?;
-    Ok((child, permit))
+    Ok((child, permit, scratch))
 }
 
 /// Wire up the child's stdin/stdout/stderr pipes: a writer thread feeds `png` in (drop
@@ -368,7 +374,7 @@ pub fn encode_via_magick_png(
     let args = magick_encode_args(output_spec, quality);
 
     // Bound concurrent magick children (memory) across in-process + st2k fan-out.
-    let (mut child, _permit) = spawn_magick_child(exe, &args)?;
+    let (mut child, _permit, _scratch) = spawn_magick_child(exe, &args)?;
     let (writer, reader, rx, errdrain) = pipe_magick_encode(&mut child, png)?;
 
     // Never join the writer until the child has exited or been killed, or a full

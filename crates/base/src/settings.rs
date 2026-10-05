@@ -368,9 +368,9 @@ pub use app_prefs::{
     set_preview_volume, set_preview_window_pos, set_preview_window_size,
     set_screenshot_default_tool, set_screenshot_delay_sec, set_screenshot_hotkey,
     set_screenshot_quick_hotkey, set_screenshot_save_dir, set_screenshot_use_save_dir,
-    set_update_auto_check, update_auto_check, verbose_logging, PdfPage, A4_PT,
-    DEFAULT_CUSTOM_ACTION, DEFAULT_SHOT_HOTKEY, DEFAULT_SHOT_TOOL, LETTER_PT, SHOT_DELAY_STEPS,
-    SHOT_TOOL_COUNT,
+    set_tray_double_click, set_update_auto_check, tray_double_click, update_auto_check,
+    verbose_logging, PdfPage, TrayDoubleClick, A4_PT, DEFAULT_CUSTOM_ACTION, DEFAULT_SHOT_HOTKEY,
+    DEFAULT_SHOT_TOOL, LETTER_PT, SHOT_DELAY_STEPS, SHOT_TOOL_COUNT,
 };
 
 pub use thumbs::{

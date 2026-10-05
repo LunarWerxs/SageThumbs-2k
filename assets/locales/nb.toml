@@ -775,3 +775,11 @@ preview_upload_confirm_yes = "Last opp"
 
 tip_preview_enabled = "Trykk mellomrom i Utforsker eller på skrivebordet for å vise en forhåndsvisning av den valgte filen, og trykk Esc eller mellomrom for å lukke den. Slått på som standard, med mindre et annet forhåndsvisningsprogram for mellomromstasten (for eksempel QuickLook eller Seer) allerede var installert. Det kjører en liten hjelper i bakgrunnen (den samme som hurtigtastene bruker). Fungerer også i søkeresultater i Everything."
 fr_intro = "SageThumbs legger allerede til miniatyrbilder i Utforsker. To tillegg du kan slå på eller av her:"
+
+lbl_tray_dblclick = "Dobbeltklikk på ikonet i varselområdet:"
+tray_dbl_capture = "Ta et skjermbilde"
+tray_dbl_settings = "Åpne Alternativer"
+tray_dbl_nothing = "Gjør ingenting"
+tip_tray_dblclick = "Hva som skjer når du dobbeltklikker på SageThumbs-ikonet i varselområdet. Å ta et skjermbilde er standard; velg Åpne Alternativer hvis du forventer at ikonet åpner programmet, slik de fleste gjør, eller Gjør ingenting for å hindre utilsiktede skjermbilder. Høyreklikk åpner fortsatt menyen."
+
+grp_app_look = "SageThumbs-vinduer"

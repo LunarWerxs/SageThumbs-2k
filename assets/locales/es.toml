@@ -765,3 +765,11 @@ preview_upload_confirm_yes = "Subir"
 
 tip_preview_enabled = "Pulsa Espacio en el Explorador o en el Escritorio para ver una vista previa del archivo seleccionado y luego Esc o Espacio para cerrarla. Activada por defecto, salvo que ya hubiera instalado otro visor con la barra espaciadora (como QuickLook o Seer). Usa un pequeño asistente en segundo plano (el mismo que usan los atajos de teclado). También funciona en los resultados de búsqueda de Everything."
 fr_intro = "SageThumbs ya está añadiendo miniaturas al Explorador. Dos extras que puedes activar o desactivar aquí:"
+
+lbl_tray_dblclick = "Doble clic en el icono de la bandeja:"
+tray_dbl_capture = "Hacer una captura"
+tray_dbl_settings = "Abrir Opciones"
+tray_dbl_nothing = "No hacer nada"
+tip_tray_dblclick = "Lo que hace el doble clic en el icono de SageThumbs del área de notificación. Hacer una captura es lo predeterminado; elige Abrir Opciones si esperas que el icono abra la aplicación, como hace la mayoría, o No hacer nada para evitar capturas accidentales. El clic derecho sigue abriendo el menú."
+
+grp_app_look = "Ventanas de SageThumbs"

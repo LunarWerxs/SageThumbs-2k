@@ -9,6 +9,22 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+- **Photoshop thumbnails no longer fill your temp folder** (fixes #56). Every PSD thumbnail
+  could leave a copy of the file in `%TEMP%`, sometimes with hundreds of MB more beside it;
+  one user's reached 100 GB. Each ImageMagick run now gets its own temp folder, deleted the
+  moment the run ends. The files earlier versions left behind (ImageMagick's `magick-...`
+  files over an hour old that nothing has open) are cleaned up after you install this
+  version, and again whenever a thumbnail next needs ImageMagick.
+- **Big Photoshop files get their thumbnails** (fixes #55). A thumbnail asked for the whole
+  document at full size, so a large layered file could run out of time and show nothing,
+  while Space, which allows longer, previewed it fine. A thumbnail now reads the picture at
+  the size it shows.
+- **PDFs with a few bytes before their header get thumbnails** (fixes #59). Some systems put
+  bytes in front of a PDF's `%PDF-` header; every PDF reader opens such a file, Windows' own
+  included, but SageThumbs looked for the header only at the very first byte.
+- **You choose what double-clicking the tray icon does** (fixes #58): Settings > Advanced >
+  **Double-click tray icon** takes a screenshot (still the default), opens Settings, or does
+  nothing.
 - **Press Space to preview now works straight after installing.** Quick preview used to start
   off, so most people never found it. A new install turns it on, unless another Space-bar
   previewer (QuickLook or Seer) is already there, since two would fight over every press of

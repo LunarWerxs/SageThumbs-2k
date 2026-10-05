@@ -32,6 +32,7 @@ pub(super) fn appearance_page_has_non_defaults() -> bool {
         || s::thumb_checker()
         || s::prefer_cover_art()
         || s::video_offset_pct() != s::DEFAULT_VIDEO_OFFSET_PCT
+        || s::app_theme() != 0
 }
 
 // File types: every extension defaults to enabled (`s::format_enabled`'s own doc comment —
@@ -66,10 +67,13 @@ pub(super) fn menu_page_has_non_defaults() -> bool {
         || !s::keep_metadata_on_convert()
 }
 
-// Advanced: auto-update check defaults ON, and the "hide from tray" toggle defaults off.
+// Advanced: auto-update check defaults ON, the "hide from tray" toggle defaults off, and a
+// tray double-click takes a screenshot.
 pub(super) fn advanced_page_has_non_defaults() -> bool {
     use st2k_base::settings as s;
-    !s::update_auto_check() || s::screenshot_hide_tray()
+    !s::update_auto_check()
+        || s::screenshot_hide_tray()
+        || s::tray_double_click() != s::TrayDoubleClick::Capture
 }
 
 /// Does this settings page hold any value the user has CHANGED from its default?

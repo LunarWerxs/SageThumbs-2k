@@ -772,3 +772,11 @@ preview_upload_confirm_yes = "Tải lên"
 
 tip_preview_enabled = "Nhấn Space trong Explorer hoặc trên màn hình nền để hiện bản xem trước của tệp đã chọn, rồi nhấn Esc hoặc Space để đóng. Mặc định được bật, trừ khi đã cài sẵn một trình xem trước dùng phím Space khác (như QuickLook hoặc Seer). Tính năng này chạy một trình hỗ trợ nhỏ ở nền (cùng trình mà các phím tắt sử dụng). Cũng hoạt động trong kết quả tìm kiếm của Everything."
 fr_intro = "SageThumbs đã thêm hình thu nhỏ vào Explorer. Hai tính năng bổ sung bạn có thể bật hoặc tắt tại đây:"
+
+lbl_tray_dblclick = "Nhấp đúp biểu tượng khay:"
+tray_dbl_capture = "Chụp ảnh màn hình"
+tray_dbl_settings = "Mở Tùy chọn"
+tray_dbl_nothing = "Không làm gì"
+tip_tray_dblclick = "Điều xảy ra khi bạn nhấp đúp biểu tượng SageThumbs trong khay hệ thống. Chụp ảnh màn hình là mặc định; chọn Mở Tùy chọn nếu bạn muốn biểu tượng mở ứng dụng như hầu hết các ứng dụng khác, hoặc Không làm gì để tránh chụp ảnh ngoài ý muốn. Nhấp chuột phải vẫn mở menu."
+
+grp_app_look = "Cửa sổ SageThumbs"

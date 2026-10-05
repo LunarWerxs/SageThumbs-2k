@@ -765,3 +765,11 @@ preview_upload_confirm_yes = "I-upload"
 
 tip_preview_enabled = "Pindutin ang Space sa Explorer o sa Desktop para magpakita ng preview ng napiling file, tapos Esc o Space para isara. Naka-on bilang default, maliban kung may naka-install nang ibang Space-bar previewer (gaya ng QuickLook o Seer). Nagpapatakbo ito ng maliit na background helper (ang parehong ginagamit ng mga hotkey). Gumagana rin ito sa mga resulta ng paghahanap sa Everything."
 fr_intro = "Nagdaragdag na ang SageThumbs ng mga thumbnail sa Explorer. Dalawang extra na puwede mong i-on o i-off dito:"
+
+lbl_tray_dblclick = "I-double-click ang icon sa tray:"
+tray_dbl_capture = "Kumuha ng screenshot"
+tray_dbl_settings = "Buksan ang Mga Setting"
+tray_dbl_nothing = "Walang gagawin"
+tip_tray_dblclick = "Ang ginagawa kapag nag-double-click ka sa icon ng SageThumbs sa notification area. Ang pagkuha ng screenshot ang default; piliin ang Buksan ang Mga Setting kung inaasahan mong bubuksan ng icon ang app, tulad ng ginagawa ng karamihan, o ang Walang gagawin para maiwasan ang aksidenteng pag-capture. Binubuksan pa rin ng right-click ang menu."
+
+grp_app_look = "Mga window ng SageThumbs"

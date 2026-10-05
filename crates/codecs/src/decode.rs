@@ -154,11 +154,11 @@ use magick::{decode_psd_composite, decode_via_magick_capped};
 /// `container::psdmerged`'s tests compare against.
 #[cfg(test)]
 pub(crate) fn psd_composite_via_magick(bytes: &[u8]) -> Result<DynamicImage> {
-    magick::decode_psd_composite_magick(bytes, Fidelity::Full)
+    magick::decode_psd_composite_magick(bytes, Fidelity::Full, limits::MAX_DIM)
 }
 pub use magick::{
     encode_via_magick, encode_via_magick_png, magick_available, magick_output_extensions,
-    magick_output_supported, magick_png_bytes,
+    magick_output_supported, magick_png_bytes, sweep_stale_magick_temp,
 };
 mod mesh;
 pub(crate) mod pdf_tier;
@@ -267,7 +267,7 @@ pub fn os_codec_available(codec: st2k_base::formats::OsCodec) -> bool {
 /// install); fall back to the preview path when magick is missing or fails.
 pub fn decode_full(bytes: &[u8]) -> Result<DynamicImage> {
     if bytes.starts_with(b"8BPS") {
-        match decode_psd_composite(bytes, Fidelity::Full) {
+        match decode_psd_composite(bytes, Fidelity::Full, limits::MAX_DIM) {
             Ok(img) => return Ok(img),
             // Fall back to the preview path (the 160px baked-in thumbnail) — note
             // it so a surprising "my big PSD converted tiny" is diagnosable.
@@ -309,7 +309,7 @@ pub fn decode_preview(bytes: &[u8]) -> Result<DynamicImage> {
     // composite attempt before falling back here, so this lives on the preview entry
     // only — never double-running magick.)
     if bytes.starts_with(b"8BPS") && crate::container::psd_has_alpha(bytes) {
-        match decode_psd_composite(bytes, Fidelity::Tile) {
+        match decode_psd_composite(bytes, Fidelity::Tile, limits::MAX_DIM) {
             Ok(img) => return Ok(img),
             Err(e) => st2k_base::safety::log_debugf!(
                 "transparent PSD composite failed ({e}); using baked preview"

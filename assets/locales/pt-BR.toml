@@ -775,3 +775,11 @@ preview_upload_confirm_yes = "Enviar"
 
 tip_preview_enabled = "Pressione Espaço no Explorador ou na Área de Trabalho para abrir uma visualização do arquivo selecionado; depois, pressione Esc ou Espaço para fechar. Ativado por padrão, a menos que outro visualizador da tecla Espaço (como QuickLook ou Seer) já estivesse instalado. Ele executa um pequeno auxiliar em segundo plano (o mesmo usado pelas teclas de atalho). Também funciona nos resultados de pesquisa do Everything."
 fr_intro = "O SageThumbs já está adicionando miniaturas ao Explorador. Dois extras que você pode ativar ou desativar aqui:"
+
+lbl_tray_dblclick = "Duplo clique no ícone da área de notificação:"
+tray_dbl_capture = "Fazer uma captura de tela"
+tray_dbl_settings = "Abrir Opções"
+tray_dbl_nothing = "Não fazer nada"
+tip_tray_dblclick = "O que acontece ao dar duplo clique no ícone do SageThumbs na área de notificação. Fazer uma captura de tela é o padrão; escolha Abrir Opções se espera que o ícone abra o programa, como a maioria faz, ou Não fazer nada para evitar capturas acidentais. O clique com o botão direito ainda abre o menu."
+
+grp_app_look = "Janelas do SageThumbs"
