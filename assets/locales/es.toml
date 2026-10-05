@@ -297,7 +297,6 @@ preview_tip_loop_off = "Dejar de repetir"
 preview_tip_speed = "Velocidad de reproducción"
 chk_preview_html = "Representar archivos HTML locales (WebView2, sin scripts, sin red)"
 chk_preview_url_live = "Cargar accesos directos .url en vivo (abre la página web real)"
-tip_preview_enabled = "Pulsa Espacio en el Explorador o en el Escritorio para mostrar una vista previa del archivo seleccionado, y Esc o Espacio para cerrarla. Desactivado por defecto. Al activarla se ejecuta un pequeño ayudante en segundo plano (el mismo que usan los atajos). También funciona en los resultados de búsqueda de Everything."
 tip_preview_hold_peek = "Mantén pulsado Espacio un momento en lugar de darle un toque, y la vista previa se cierra en cuanto lo sueltas. Una forma rápida de echar un vistazo sin pulsar una segunda tecla."
 tip_preview_close_focus = "Cierra la vista previa automáticamente cuando haces clic fuera de ella (salvo que esté anclada por encima)."
 tip_preview_topmost = "Muestra la vista previa en primer plano al abrirse, por encima de las demás ventanas. Aun así, puede quedar cubierta si haces clic en otro lugar. Usa el botón de fijar de la vista previa para mantenerla siempre visible."
@@ -450,7 +449,6 @@ fb_failed = "No se pudo conectar con el servidor, así que el mensaje no se envi
 
 # First-run welcome window (first_run.rs).
 fr_title = "Te damos la bienvenida a SageThumbs 2K"
-fr_intro = "SageThumbs ya está añadiendo miniaturas al Explorador. Hay dos extras desactivados hasta que tú decidas:"
 fr_intro_portable = "Esta es la copia portátil, así que todavía no hay nada activado. Elige lo que quieras:"
 fr_thumbs = "Mostrar miniaturas en el Explorador"
 fr_thumbs_sub = "Añade los tipos de archivo solo a tu cuenta de usuario. Sin permisos de administrador, sin cambios para todo el equipo, y puedes desactivarlo de nuevo desde Configuración."
@@ -764,3 +762,6 @@ preview_upload_off_body = "Subir desde la vista previa está desactivado.\n\nEl 
 preview_upload_off_open = "Abrir configuración"
 preview_upload_confirm_body = "¿Subir \"{name}\"?\n\nSe pondrá en un sitio web público y gratuito y se copiará un enlace a tu portapapeles. Cualquiera con el enlace puede abrirlo."
 preview_upload_confirm_yes = "Subir"
+
+tip_preview_enabled = "Pulsa Espacio en el Explorador o en el Escritorio para ver una vista previa del archivo seleccionado y luego Esc o Espacio para cerrarla. Activada por defecto, salvo que ya hubiera instalado otro visor con la barra espaciadora (como QuickLook o Seer). Usa un pequeño asistente en segundo plano (el mismo que usan los atajos de teclado). También funciona en los resultados de búsqueda de Everything."
+fr_intro = "SageThumbs ya está añadiendo miniaturas al Explorador. Dos extras que puedes activar o desactivar aquí:"

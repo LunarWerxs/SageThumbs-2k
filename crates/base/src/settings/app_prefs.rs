@@ -357,15 +357,17 @@ pub fn set_update_auto_check(on: bool) -> windows_registry::Result<()> {
 }
 
 // ---- Quick preview (QuickLook-style "press Space, see the file") --------
-// The opt-in Space-to-preview popup. All EXE-side; the DLL never reads these.
+// The Space-to-preview popup. All EXE-side; the DLL never reads these.
 // `PreviewEnabled` is the master switch and ALSO drives the resident daemon's
 // residency (the app's `screenshot::enable::daemon_wanted` consults it), so a
 // bound Quick preview keeps that shared tray daemon alive exactly like a bound
 // custom hotkey does. The rest are viewer behavior prefs read by the viewer
 // window. DWORD 0/1; getters default to the plan's §6 defaults.
 
-/// Master switch for Quick preview. OFF by default (nothing hooks the keyboard
-/// until the user opts in); also drives daemon residency.
+/// Master switch for Quick preview; also drives daemon residency. An ABSENT value reads
+/// OFF, so nothing hooks the keyboard for a user who never had it on: a new user's ON is
+/// written once, by the app's first-run seeding (on unless another Space-bar previewer,
+/// QuickLook or Seer, is installed), never by this getter.
 pub fn preview_enabled() -> bool {
     get_dword("PreviewEnabled", 0) != 0
 }

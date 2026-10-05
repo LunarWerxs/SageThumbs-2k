@@ -302,7 +302,6 @@ preview_tip_loop_off = "Tắt lặp lại"
 preview_tip_speed = "Tốc độ phát"
 chk_preview_html = "Hiển thị tệp HTML cục bộ (WebView2, tắt script, không mạng)"
 chk_preview_url_live = "Tải trực tiếp lối tắt .url (mở trang web thực)"
-tip_preview_enabled = "Nhấn phím cách trong Explorer hoặc trên Desktop để bật cửa sổ xem trước tệp đã chọn, rồi nhấn Esc hoặc phím cách để đóng. Mặc định tắt. Bật lên sẽ chạy một trợ giúp nền nhỏ (giống trợ giúp mà các phím tắt khác dùng). Cũng hoạt động trong kết quả tìm kiếm của Everything."
 tip_preview_hold_peek = "Giữ phím cách một chút thay vì nhấn nhanh, và cửa sổ xem trước sẽ đóng ngay khi bạn thả ra. Cách nhanh để xem lướt mà không cần nhấn phím lần nữa."
 tip_preview_close_focus = "Tự động đóng cửa sổ xem trước khi bạn bấm ra chỗ khác (trừ khi đang ghim lên trên cùng)."
 tip_preview_topmost = "Đưa cửa sổ xem trước lên trên cùng khi mở, phía trên các cửa sổ khác. Cửa sổ vẫn có thể bị che khi bạn nhấp vào chỗ khác. Dùng nút ghim của cửa sổ xem trước để luôn giữ nó ở trên cùng."
@@ -457,7 +456,6 @@ fb_failed = "Không thể kết nối đến máy chủ, nên tin nhắn chưa �
 
 # First-run welcome window (first_run.rs).
 fr_title = "Chào mừng bạn đến với SageThumbs 2K"
-fr_intro = "SageThumbs đã hiển thị ảnh thu nhỏ trong Explorer. Hai tính năng bổ sung vẫn tắt cho đến khi bạn đồng ý:"
 fr_intro_portable = "Đây là bản di động, nên chưa có gì được bật. Hãy chọn những gì bạn muốn:"
 fr_thumbs = "Hiển thị ảnh thu nhỏ trong Explorer"
 fr_thumbs_sub = "Chỉ thêm các loại tệp cho tài khoản người dùng của bạn. Không cần quyền quản trị, không thay đổi gì trên toàn hệ thống, và bạn có thể tắt lại trong Cài đặt."
@@ -771,3 +769,6 @@ preview_upload_off_body = "Tải lên từ bản xem trước đang bị tắt.\
 preview_upload_off_open = "Mở cài đặt"
 preview_upload_confirm_body = "Tải lên “{name}”?\n\nTệp sẽ được đưa lên một trang web công khai miễn phí và liên kết tới tệp sẽ được sao chép vào khay nhớ tạm. Bất kỳ ai có liên kết đều có thể mở."
 preview_upload_confirm_yes = "Tải lên"
+
+tip_preview_enabled = "Nhấn Space trong Explorer hoặc trên màn hình nền để hiện bản xem trước của tệp đã chọn, rồi nhấn Esc hoặc Space để đóng. Mặc định được bật, trừ khi đã cài sẵn một trình xem trước dùng phím Space khác (như QuickLook hoặc Seer). Tính năng này chạy một trình hỗ trợ nhỏ ở nền (cùng trình mà các phím tắt sử dụng). Cũng hoạt động trong kết quả tìm kiếm của Everything."
+fr_intro = "SageThumbs đã thêm hình thu nhỏ vào Explorer. Hai tính năng bổ sung bạn có thể bật hoặc tắt tại đây:"

@@ -297,7 +297,6 @@ preview_tip_loop_off = "Poista silmukka"
 preview_tip_speed = "Toistonopeus"
 chk_preview_html = "Näytä paikalliset HTML-tiedostot (WebView2, ei komentosarjoja, ei verkkoyhteyttä)"
 chk_preview_url_live = "Lataa .url-pikakuvakkeet suorina (avaa oikean verkkosivun)"
-tip_preview_enabled = "Paina välilyöntiä Resurssienhallinnassa tai työpöydällä avataksesi esikatselun valitusta tiedostosta, ja Esc tai välilyönti sulkee sen. Oletuksena pois päältä. Käyttöönotto käynnistää pienen taustaprosessin (saman, jota pikanäppäimet käyttävät). Toimii myös Everything-haun tuloksissa."
 tip_preview_hold_peek = "Pidä välilyöntiä hetken pohjassa napautuksen sijaan, niin esikatselu sulkeutuu heti, kun vapautat sen. Nopea tapa vilkaista ilman toista näppäinpainallusta."
 tip_preview_close_focus = "Sulkee esikatselun automaattisesti, kun napsautat sen ulkopuolelle (ellei se ole kiinnitetty päälle)."
 tip_preview_topmost = "Tuo esikatselu etualalle muiden ikkunoiden yläpuolelle, kun se avautuu. Se voi silti peittyä, kun napsautat muualla. Voit pitää sen aina päällimmäisenä esikatselun kiinnityspainikkeella."
@@ -450,7 +449,6 @@ fb_failed = "Palvelimeen ei saatu yhteyttä, joten viestiä ei lähetetty.\n\nTe
 
 # First-run welcome window (first_run.rs).
 fr_title = "Tervetuloa, tämä on SageThumbs 2K"
-fr_intro = "SageThumbs lisää jo pikkukuvat Resurssienhallintaan. Kaksi lisäominaisuutta on pois päältä, kunnes sallit ne:"
 fr_intro_portable = "Tämä on kannettava versio, joten mikään ei ole vielä käytössä. Valitse, mitä haluat:"
 fr_thumbs = "Näytä pikkukuvat Resurssienhallinnassa"
 fr_thumbs_sub = "Lisää tiedostotyypit vain omalle käyttäjätilillesi. Ei vaadi valvojan oikeuksia, ei muutoksia koko koneelle, ja Asetuksista voit kytkeä sen taas pois."
@@ -764,3 +762,6 @@ preview_upload_off_body = "Lataaminen esikatselusta on pois päältä.\n\nLataa-
 preview_upload_off_open = "Avaa asetukset"
 preview_upload_confirm_body = "Ladataanko ”{name}”?\n\nSe viedään ilmaiselle julkiselle verkkosivustolle ja linkki siihen kopioidaan leikepöydällesi. Kuka tahansa, jolla on linkki, voi avata sen."
 preview_upload_confirm_yes = "Lataa palvelimelle"
+
+tip_preview_enabled = "Paina välilyöntiä Resurssienhallinnassa tai työpöydällä, niin valitun tiedoston esikatselu avautuu. Sulje se Esc- tai välilyöntinäppäimellä. Päällä oletuksena, ellei toista välilyöntiesikatselijaa (kuten QuickLook tai Seer) ollut jo asennettu. Se käyttää pientä taustaapuohjelmaa (samaa kuin pikanäppäimet). Toimii myös Everything-haun tuloksissa."
+fr_intro = "SageThumbs lisää jo pienoiskuvia Resurssienhallintaan. Kaksi lisäominaisuutta, jotka voit ottaa käyttöön tai poistaa käytöstä tässä:"

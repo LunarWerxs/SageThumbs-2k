@@ -297,7 +297,6 @@ preview_tip_loop_off = "Sluta upprepa"
 preview_tip_speed = "Uppspelningshastighet"
 chk_preview_html = "Rendera lokala HTML-filer (WebView2, inga skript, ingen nätverksåtkomst)"
 chk_preview_url_live = "Läs in .url-genvägar direkt (öppnar den riktiga webbsidan)"
-tip_preview_enabled = "Tryck på mellanslag i Utforskaren eller på skrivbordet för att visa en förhandsgranskning av den markerade filen, och Esc eller mellanslag för att stänga. Avstängd som standard. Om du aktiverar den körs en liten bakgrundshjälp (samma som genvägarna använder). Fungerar även i sökresultaten i Everything."
 tip_preview_hold_peek = "Håll ner mellanslag en stund istället för att trycka snabbt, så stängs förhandsgranskningen så fort du släpper. Ett snabbt sätt att kika utan ett andra knapptryck."
 tip_preview_close_focus = "Stäng förhandsgranskningen automatiskt när du klickar bort från den (såvida den inte är fäst överst)."
 tip_preview_topmost = "Öppnar förhandsgranskningen längst fram, ovanför dina andra fönster. Den kan ändå döljas om du klickar någon annanstans. Använd nålknappen i förhandsgranskningen för att hålla den alltid överst."
@@ -452,7 +451,6 @@ fb_failed = "Kunde inte nå servern, så meddelandet skickades inte.\n\nDin text
 
 # First-run welcome window (first_run.rs).
 fr_title = "Välkommen till SageThumbs 2K"
-fr_intro = "SageThumbs lägger redan till miniatyrer i Utforskaren. Två extrafunktioner är avstängda tills du säger till:"
 fr_intro_portable = "Det här är den portabla kopian, så inget är aktiverat än. Välj vad du vill ha:"
 fr_thumbs = "Visa miniatyrer i Utforskaren"
 fr_thumbs_sub = "Lägger till filtyperna enbart för ditt eget användarkonto. Inga administratörsrättigheter, inget systemomfattande, och i Inställningar kan du stänga av det igen."
@@ -768,3 +766,6 @@ preview_upload_off_body = "Uppladdning från förhandsvisningen är avstängd.\n
 preview_upload_off_open = "Öppna inställningar"
 preview_upload_confirm_body = "Ladda upp ”{name}”?\n\nDen läggs på en gratis offentlig webbplats och en länk till den kopieras till Urklipp. Alla med länken kan öppna den."
 preview_upload_confirm_yes = "Ladda upp"
+
+tip_preview_enabled = "Tryck på Mellanslag i Utforskaren eller på skrivbordet för att visa en förhandsvisning av den markerade filen, och tryck sedan på Esc eller Mellanslag för att stänga. På som standard, om inte en annan förhandsvisare som använder mellanslagstangenten (till exempel QuickLook eller Seer) redan var installerad. Den kör ett litet hjälpprogram i bakgrunden (samma som snabbtangenterna använder). Fungerar även i sökresultat i Everything."
+fr_intro = "SageThumbs lägger redan till miniatyrer i Utforskaren. Två extrafunktioner som du kan slå på eller av här:"

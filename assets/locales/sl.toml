@@ -297,7 +297,6 @@ preview_tip_loop_off = "Zaustavi ponavljanje"
 preview_tip_speed = "Hitrost predvajanja"
 chk_preview_html = "Upodobi lokalne datoteke HTML (WebView2, brez skriptov, brez omrežja)"
 chk_preview_url_live = "Neposredno naloži bližnjice .url (odpre pravo spletno stran)"
-tip_preview_enabled = "Pritisnite preslednico v Raziskovalcu ali na Namizju za prikaz predogleda izbrane datoteke, nato Esc ali preslednico za zaprtje. Privzeto izklopljeno. Vklop zažene mali pomožni program v ozadju (isti, ki ga uporabljajo bližnjice). Deluje tudi v zadetkih iskanja v Everythingu."
 tip_preview_hold_peek = "Pridržite preslednico trenutek namesto kratkega pritiska in predogled se zapre takoj, ko jo spustite. Hiter način za pokukanje brez drugega pritiska."
 tip_preview_close_focus = "Samodejno zapre predogled, ko kliknete izven njega (razen če je pripet na vrhu)."
 tip_preview_topmost = "Predogled ob odprtju postavi v ospredje, nad druga okna. Kljub temu ga lahko prekrijete, če kliknete drugam. Za stalno prikazovanje na vrhu uporabite gumb za pripenjanje v predogledu."
@@ -452,7 +451,6 @@ fb_failed = "Strežnika ni bilo mogoče doseči, zato sporočilo ni bilo poslano
 
 # First-run welcome window (first_run.rs).
 fr_title = "Dobrodošli v SageThumbs 2K"
-fr_intro = "SageThumbs že dodaja sličice v Raziskovalcu. Dve dodatni funkciji ostaneta izklopljeni, dokler ju ne dovolite:"
 fr_intro_portable = "To je prenosna različica, zato zaenkrat še nič ni vklopljeno. Izberite, kaj želite:"
 fr_thumbs = "Prikaži sličice v Raziskovalcu"
 fr_thumbs_sub = "Doda vrste datotek samo v vaš uporabniški račun. Brez skrbniških pravic, nič na ravni celotnega sistema, v Nastavitvah pa to lahko znova izklopite."
@@ -768,3 +766,6 @@ preview_upload_off_body = "Nalaganje iz predogleda je izklopljeno.\n\nGumb Nalo�
 preview_upload_off_open = "Odpri nastavitve"
 preview_upload_confirm_body = "Naložim »{name}«?\n\nDatoteka bo shranjena na brezplačno javno spletno mesto, povezava do nje pa kopirana v vaše odložišče. Vsak, ki ima povezavo, jo lahko odpre."
 preview_upload_confirm_yes = "Naloži"
+
+tip_preview_enabled = "Pritisnite preslednico v Raziskovalcu ali na namizju, da se prikaže predogled izbrane datoteke, nato ga zaprite z Esc ali preslednico. Privzeto je vklopljeno, razen če je bil že nameščen drug predoglednik s preslednico (na primer QuickLook ali Seer). Deluje z majhnim pomočnikom v ozadju (istim, ki ga uporabljajo bližnjične tipke). Deluje tudi v rezultatih iskanja Everything."
+fr_intro = "SageThumbs že dodaja sličice v Raziskovalec. Dva dodatka, ki ju lahko tukaj vklopite ali izklopite:"

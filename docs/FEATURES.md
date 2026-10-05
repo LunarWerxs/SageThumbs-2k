@@ -317,7 +317,8 @@ allow custom bitmap items.*
 
 ## 3. Quick preview (press Space, see the file)
 
-A QuickLook-style instant previewer, off by default (enable it in **Settings ▸ Quick preview**).
+A QuickLook-style instant previewer, on by default unless another Space-bar previewer (QuickLook,
+Seer) is already installed (switch it in **Settings ▸ Quick preview**).
 Tap **Space** in Explorer (or on the Desktop) and a borderless, dark/DPI-aware popup shows the
 selected file at full size, without stealing focus from Explorer; tap Space again (or Esc) to
 close, or hold Space and release to "peek". While it's open, arrow-clicking a different file in

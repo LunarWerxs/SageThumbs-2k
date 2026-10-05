@@ -308,7 +308,6 @@ preview_tip_loop_off = "Non ripetere"
 preview_tip_speed = "Velocità di riproduzione"
 chk_preview_html = "Visualizza i file HTML locali (WebView2, senza script, senza rete)"
 chk_preview_url_live = "Carica dal vivo i collegamenti .url (apre la pagina web reale)"
-tip_preview_enabled = "Premi Spazio in Esplora file o sul Desktop per aprire un'anteprima del file selezionato, poi Esc o Spazio per chiuderla. Disattivata per impostazione predefinita. Attivandola si avvia un piccolo helper in background (lo stesso usato dagli hotkey). Funziona anche nei risultati di ricerca di Everything."
 tip_preview_hold_peek = "Tieni premuto Spazio per un istante invece di premerlo una volta, e l'anteprima si chiude non appena lo rilasci. Un modo rapido per sbirciare senza una seconda pressione di tasto."
 tip_preview_close_focus = "Chiude automaticamente l'anteprima quando clicchi altrove (a meno che non sia fissata in primo piano)."
 tip_preview_topmost = "Porta l'anteprima in primo piano quando si apre, sopra le altre finestre. Può comunque essere coperta se fai clic altrove. Usa il pulsante a puntina dell'anteprima per mantenerla sempre in primo piano."
@@ -456,7 +455,6 @@ fb_failed = "Impossibile contattare il server, quindi il messaggio non è stato 
 
 # First-run welcome window (first_run.rs).
 fr_title = "Benvenuto in SageThumbs 2K"
-fr_intro = "SageThumbs sta già aggiungendo le miniature in Esplora file. Due extra restano disattivati finché non decidi tu:"
 fr_intro_portable = "Questa è la copia portatile, quindi per ora non è attivo nulla. Scegli cosa vuoi:"
 fr_thumbs = "Mostra le miniature in Esplora file"
 fr_thumbs_sub = "Aggiunge i tipi di file solo al tuo account utente. Nessun diritto da amministratore, niente a livello di sistema, e puoi disattivarlo di nuovo dalle Impostazioni."
@@ -774,3 +772,6 @@ preview_upload_off_body = "Il caricamento dall'anteprima è disattivato.\n\nIl p
 preview_upload_off_open = "Apri Impostazioni"
 preview_upload_confirm_body = "Caricare «{name}»?\n\nIl file sarà messo su un sito pubblico gratuito e un link sarà copiato negli appunti. Chiunque abbia il link può aprirlo."
 preview_upload_confirm_yes = "Carica"
+
+tip_preview_enabled = "Premi Spazio in Esplora file o sul Desktop per aprire un'anteprima del file selezionato, poi Esc o Spazio per chiuderla. Attiva per impostazione predefinita, a meno che non fosse già installato un altro programma di anteprima con la barra spaziatrice (come QuickLook o Seer). Esegue un piccolo programma di supporto in background (lo stesso usato dalle scorciatoie da tastiera). Funziona anche nei risultati di ricerca di Everything."
+fr_intro = "SageThumbs sta già aggiungendo le miniature a Esplora file. Due extra che puoi attivare o disattivare qui:"

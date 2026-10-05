@@ -301,7 +301,6 @@ preview_tip_loop_off = "Vypnout opakování"
 preview_tip_speed = "Rychlost přehrávání"
 chk_preview_html = "Vykreslovat místní soubory HTML (WebView2, bez skriptů, bez sítě)"
 chk_preview_url_live = "Načítat zástupce .url naživo (otevře skutečnou webovou stránku)"
-tip_preview_enabled = "Stiskněte mezerník v Průzkumníku nebo na Ploše a zobrazí se náhled vybraného souboru, poté Esc nebo mezerník pro zavření. Ve výchozím stavu vypnuto. Zapnutím se spustí malý pomocný program na pozadí (stejný, jaký používají klávesové zkratky). Funguje i ve výsledcích hledání v Everything."
 tip_preview_hold_peek = "Místo klepnutí podržte mezerník na okamžik a náhled se zavře, jakmile ho pustíte. Rychlý způsob, jak nakouknout bez druhého stisku klávesy."
 tip_preview_close_focus = "Automaticky zavře náhled, když od něj odkliknete (pokud není připnutý navrchu)."
 tip_preview_topmost = "Při otevření se náhled zobrazí v popředí, nad ostatními okny. Po kliknutí jinam jej mohou jiná okna překrýt. Chcete-li mít náhled trvale navrchu, použijte tlačítko připnutí v panelu náhledu."
@@ -454,7 +453,6 @@ fb_failed = "Server se nepodařilo kontaktovat, zpráva tedy nebyla odeslána.\n
 
 # First-run welcome window (first_run.rs).
 fr_title = "Vítejte v SageThumbs 2K"
-fr_intro = "SageThumbs už do Průzkumníka přidává náhledy. Dvě další funkce zůstávají vypnuté, dokud je nepovolíte:"
 fr_intro_portable = "Toto je přenosná verze, takže zatím nic není zapnuté. Vyberte, co chcete:"
 fr_thumbs = "Zobrazovat náhledy v Průzkumníku"
 fr_thumbs_sub = "Přidá typy souborů jen do vašeho uživatelského účtu. Bez práv správce, beze změn pro celý počítač, a v Nastavení to zase vypnete."
@@ -768,3 +766,6 @@ preview_upload_off_body = "Nahrávání z náhledu je vypnuté.\n\nTlačítko Na
 preview_upload_off_open = "Otevřít nastavení"
 preview_upload_confirm_body = "Nahrát „{name}“?\n\nBude umístěn na bezplatný veřejný web a odkaz na něj se zkopíruje do vaší schránky. Kdokoli s odkazem jej může otevřít."
 preview_upload_confirm_yes = "Nahrát"
+
+tip_preview_enabled = "Stisknutím mezerníku v Průzkumníkovi nebo na ploše zobrazíte náhled vybraného souboru, zavřete ho klávesou Esc nebo mezerníkem. Ve výchozím nastavení je zapnuto, pokud již nebyl nainstalován jiný prohlížeč náhledů na mezerník (například QuickLook nebo Seer). Spouští malého pomocníka na pozadí (stejného, jaký používají klávesové zkratky). Funguje také ve výsledcích vyhledávání Everything."
+fr_intro = "SageThumbs už přidává miniatury do Průzkumníka. Dvě další funkce tady můžete zapnout nebo vypnout:"

@@ -308,7 +308,6 @@ preview_tip_loop_off = "Slutt å gjenta"
 preview_tip_speed = "Avspillingshastighet"
 chk_preview_html = "Vis lokale HTML-filer (WebView2, uten skript, uten nettverk)"
 chk_preview_url_live = "Last inn .url-snarveier direkte (åpner den virkelige nettsiden)"
-tip_preview_enabled = "Trykk mellomrom i Utforsker eller på skrivebordet for å vise en forhåndsvisning av den valgte filen, deretter Esc eller mellomrom for å lukke. Av som standard. Å slå den på kjører en liten bakgrunnshjelper (den samme som hurtigtastene bruker). Fungerer også i søkeresultatene i Everything."
 tip_preview_hold_peek = "Hold mellomrom inne et øyeblikk i stedet for å trykke raskt, og forhåndsvisningen lukkes i samme øyeblikk du slipper. En rask måte å kikke på uten et ekstra tastetrykk."
 tip_preview_close_focus = "Lukk forhåndsvisningen automatisk når du klikker bort fra den (med mindre den er festet øverst)."
 tip_preview_topmost = "Viser forhåndsvisningen foran de andre vinduene dine når den åpnes. Den kan likevel bli skjult når du klikker et annet sted. Bruk festeknappen i forhåndsvisningen for å holde den alltid øverst."
@@ -456,7 +455,6 @@ fb_failed = "Fikk ikke kontakt med serveren, så meldingen ble ikke sendt.\n\nTe
 
 # First-run welcome window (first_run.rs).
 fr_title = "Velkommen til SageThumbs 2K"
-fr_intro = "SageThumbs legger allerede miniatyrbilder i Utforsker. To ekstrafunksjoner er av til du sier fra:"
 fr_intro_portable = "Dette er den bærbare utgaven, så ingenting er slått på ennå. Velg det du vil ha:"
 fr_thumbs = "Vis miniatyrbilder i Utforsker"
 fr_thumbs_sub = "Legger til filtypene bare på din egen brukerkonto. Ingen administratorrettigheter, ingenting maskinbredt, og Innstillinger slår det av igjen."
@@ -774,3 +772,6 @@ preview_upload_off_body = "Opplasting fra forhåndsvisningen er slått av.\n\nOp
 preview_upload_off_open = "Åpne innstillinger"
 preview_upload_confirm_body = "Last opp «{name}»?\n\nDen blir lagt på et gratis offentlig nettsted, og en lenke til den kopieres til utklippstavlen din. Alle med lenken kan åpne den."
 preview_upload_confirm_yes = "Last opp"
+
+tip_preview_enabled = "Trykk mellomrom i Utforsker eller på skrivebordet for å vise en forhåndsvisning av den valgte filen, og trykk Esc eller mellomrom for å lukke den. Slått på som standard, med mindre et annet forhåndsvisningsprogram for mellomromstasten (for eksempel QuickLook eller Seer) allerede var installert. Det kjører en liten hjelper i bakgrunnen (den samme som hurtigtastene bruker). Fungerer også i søkeresultater i Everything."
+fr_intro = "SageThumbs legger allerede til miniatyrbilder i Utforsker. To tillegg du kan slå på eller av her:"

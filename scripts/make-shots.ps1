@@ -71,7 +71,7 @@ New-Item -ItemType Directory -Force -Path $assets, $siteimg | Out-Null
 # script therefore silently edited the settings of whoever ran it - measured: a single
 # `--shot --window settings --tab 3` against an empty key left NavDotsSeen=9 behind.
 #
-# READS: the assets came out different on every machine. Quick preview is OFF by default, so
+# READS: the assets came out different on every machine. Quick preview reads OFF when unset, so
 # on a machine that never enabled it the walkthrough advertises the headline feature greyed
 # out; and any page differing from defaults grows an unacknowledged-change dot.
 #

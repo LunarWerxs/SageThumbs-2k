@@ -295,7 +295,6 @@ preview_tip_loop_off = "Vypnúť opakovanie"
 preview_tip_speed = "Rýchlosť prehrávania"
 chk_preview_html = "Vykresľovať lokálne súbory HTML (WebView2, bez skriptov, bez siete)"
 chk_preview_url_live = "Načítavať odkazy .url naživo (otvorí skutočnú webovú stránku)"
-tip_preview_enabled = "Stlačením medzerníka v Prieskumníkovi alebo na Ploche zobrazíte náhľad vybraného súboru, potom ho zatvoríte klávesou Esc alebo medzerníkom. Predvolene vypnuté. Zapnutím sa spustí malý pomocný program na pozadí (rovnaký, aký používajú klávesové skratky). Funguje aj vo výsledkoch hľadania v Everything."
 tip_preview_hold_peek = "Podržte medzerník chvíľu namiesto krátkeho stlačenia a náhľad sa zavrie hneď, ako ho pustíte. Rýchly spôsob, ako nakuknúť bez druhého stlačenia."
 tip_preview_close_focus = "Automaticky zavrie náhľad, keď kliknete mimo neho (pokiaľ nie je pripnutý navrchu)."
 tip_preview_topmost = "Pri otvorení presunie okno s náhľadom do popredia, nad ostatné okná. Napriek tomu ho môže prekryť iné okno, keď kliknete inde. Ak chcete, aby zostalo vždy navrchu, použite tlačidlo pripnutia v náhľade."
@@ -450,7 +449,6 @@ fb_failed = "Server sa nepodarilo kontaktovať, správa preto nebola odoslaná.\
 
 # First-run welcome window (first_run.rs).
 fr_title = "Vitajte v SageThumbs 2K"
-fr_intro = "SageThumbs už pridáva miniatúry v Prieskumníkovi. Dve doplnkové funkcie zostávajú vypnuté, kým ich nepovolíte:"
 fr_intro_portable = "Toto je prenosná verzia, takže zatiaľ nič nie je zapnuté. Vyberte, čo chcete:"
 fr_thumbs = "Zobrazovať miniatúry v Prieskumníkovi"
 fr_thumbs_sub = "Pridá typy súborov len pre váš používateľský účet. Bez práv správcu, nič v rámci celého systému, a v Nastaveniach to môžete znova vypnúť."
@@ -766,3 +764,6 @@ preview_upload_off_body = "Nahrávanie z náhľadu je vypnuté.\n\nTlačidlo Nah
 preview_upload_off_open = "Otvoriť nastavenia"
 preview_upload_confirm_body = "Nahrať „{name}“?\n\nBude umiestnený na bezplatnú verejnú webovú stránku a odkaz naň sa skopíruje do schránky. Môže ho otvoriť ktokoľvek s odkazom."
 preview_upload_confirm_yes = "Nahrať"
+
+tip_preview_enabled = "Stlačte medzerník v Prieskumníkovi alebo na pracovnej ploche a zobrazí sa náhľad vybraného súboru; zavriete ho klávesom Esc alebo medzerníkom. Predvolene zapnuté, ak už nebol nainštalovaný iný náhľad cez medzerník (napríklad QuickLook alebo Seer). Spúšťa malého pomocníka na pozadí (toho istého, ktorého používajú klávesové skratky). Funguje aj vo výsledkoch vyhľadávania Everything."
+fr_intro = "SageThumbs už pridáva miniatúry do Prieskumníka. Tu môžete zapnúť alebo vypnúť dve doplnkové funkcie:"

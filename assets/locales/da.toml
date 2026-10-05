@@ -299,7 +299,6 @@ preview_tip_loop_off = "Gentag ikke"
 preview_tip_speed = "Afspilningshastighed"
 chk_preview_html = "Vis lokale HTML-filer (WebView2, ingen scripts, ingen netværksadgang)"
 chk_preview_url_live = "Indlæs .url-genveje direkte (åbner den rigtige webside)"
-tip_preview_enabled = "Tryk på mellemrum i Stifinder eller på skrivebordet for at åbne en forhåndsvisning af den valgte fil, og Esc eller mellemrum for at lukke den. Slået fra som standard. Slår du det til, kører en lille baggrundshjælper (den samme, som genvejene bruger). Virker også i søgeresultater i Everything."
 tip_preview_hold_peek = "Hold mellemrum nede et øjeblik i stedet for at trykke kort, og forhåndsvisningen lukker, i det øjeblik du slipper. En hurtig måde at kigge på uden et ekstra tastetryk."
 tip_preview_close_focus = "Luk automatisk forhåndsvisningen, når du klikker væk fra den (medmindre den er fastgjort øverst)."
 tip_preview_topmost = "Bringer forhåndsvisningen forrest, foran dine andre vinduer, når den åbnes. Den kan stadig blive dækket, når du klikker et andet sted. Brug forhåndsvisningens fastgørelsesknap til at holde den altid øverst."
@@ -452,7 +451,6 @@ fb_failed = "Kunne ikke få forbindelse til serveren, så beskeden blev ikke sen
 
 # First-run welcome window (first_run.rs).
 fr_title = "Velkommen til SageThumbs 2K"
-fr_intro = "SageThumbs tilføjer allerede miniaturer i Stifinder. To ekstrafunktioner er slået fra, indtil du siger til:"
 fr_intro_portable = "Dette er den bærbare udgave, så intet er slået til endnu. Vælg, hvad du vil have:"
 fr_thumbs = "Vis miniaturer i Stifinder"
 fr_thumbs_sub = "Tilføjer filtyperne kun til din egen brugerkonto. Ingen administratorrettigheder, intet der gælder hele maskinen, og du kan slå det fra igen under Indstillinger."
@@ -766,3 +764,6 @@ preview_upload_off_body = "Upload fra eksempelvisningen er slået fra.\n\nUpload
 preview_upload_off_open = "Åbn indstillinger"
 preview_upload_confirm_body = "Upload »{name}«?\n\nDen bliver lagt på et gratis offentligt websted, og et link til den kopieres til din udklipsholder. Alle med linket kan åbne den."
 preview_upload_confirm_yes = "Upload"
+
+tip_preview_enabled = "Tryk på mellemrumstasten i Stifinder eller på skrivebordet for at få vist et eksempel af den valgte fil, og tryk derefter på Esc eller mellemrumstasten for at lukke. Slået til som standard, medmindre en anden eksempelvisning med mellemrumstasten (f.eks. QuickLook eller Seer) allerede var installeret. Den kører en lille hjælper i baggrunden (den samme som genvejstasterne bruger). Virker også i søgeresultater i Everything."
+fr_intro = "SageThumbs tilføjer allerede miniaturer til Stifinder. To ekstra funktioner, du kan slå til eller fra her:"

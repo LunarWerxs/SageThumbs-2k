@@ -155,8 +155,9 @@ pane, which run in their own isolated process where a slow or hostile file canno
 <details>
 <summary><b>Nothing happens when I press Space</b></summary>
 
-It is **off by default**. Turn it on in Settings, Quick preview. It runs a small background
-helper, the same one the hotkeys use.
+It may be switched off. It starts **on**, unless another Space-bar previewer (QuickLook,
+Seer) was already installed, because two of them fight over every press of Space. Turn it on
+in Settings, Quick preview. It runs a small background helper, the same one the hotkeys use.
 
 </details>
 

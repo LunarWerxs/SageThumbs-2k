@@ -298,7 +298,6 @@ preview_tip_loop_off = "Nu mai repeta"
 preview_tip_speed = "Viteză redare"
 chk_preview_html = "Randează fișiere HTML locale (WebView2, fără scripturi, fără rețea)"
 chk_preview_url_live = "Încarcă live comenzile rapide .url (deschide pagina web reală)"
-tip_preview_enabled = "Apasă Spațiu în Explorer sau pe Desktop pentru a afișa o previzualizare a fișierului selectat, apoi Esc sau Spațiu pentru a o închide. Dezactivată implicit. Activarea ei rulează un mic asistent de fundal (același folosit de hotkey-uri). Funcționează și în rezultatele căutării din Everything."
 tip_preview_hold_peek = "Ține apăsat Spațiu o clipă în loc să apeși scurt, iar previzualizarea se închide imediat ce eliberezi tasta. Un mod rapid de a arunca o privire fără o a doua apăsare."
 tip_preview_close_focus = "Închide automat previzualizarea când dai clic în afara ei (dacă nu e fixată deasupra)."
 tip_preview_topmost = "Aduce previzualizarea în prim-plan la deschidere, deasupra celorlalte ferestre. Poate fi acoperită în continuare dacă faceți clic în altă parte. Utilizați butonul de fixare din previzualizare pentru a o menține mereu deasupra."
@@ -453,7 +452,6 @@ fb_failed = "Nu s-a putut contacta serverul, așa că mesajul nu a fost trimis.\
 
 # First-run welcome window (first_run.rs).
 fr_title = "Bine ați venit în SageThumbs 2K"
-fr_intro = "SageThumbs adaugă deja miniaturi în Explorer. Două funcții suplimentare rămân oprite până când le permiteți:"
 fr_intro_portable = "Aceasta este copia portabilă, așa că nimic nu este activat încă. Alegeți ce doriți:"
 fr_thumbs = "Afișează miniaturi în Explorer"
 fr_thumbs_sub = "Adaugă tipurile de fișiere doar în contul dvs. de utilizator. Fără drepturi de administrator, nimic la nivel de sistem, iar din Setări o puteți opri oricând."
@@ -769,3 +767,6 @@ preview_upload_off_body = "Încărcarea din previzualizare este dezactivată.\n\
 preview_upload_off_open = "Deschide setările"
 preview_upload_confirm_body = "Încarci „{name}”?\n\nVa fi pus pe un site public gratuit, iar un link către el va fi copiat în clipboard. Oricine are linkul îl poate deschide."
 preview_upload_confirm_yes = "Încarcă"
+
+tip_preview_enabled = "Apasă Space în Explorer sau pe Desktop ca să deschizi o previzualizare a fișierului selectat, apoi Esc sau Space ca să o închizi. Activat implicit, cu excepția cazului în care era deja instalat un alt program de previzualizare cu Space (cum ar fi QuickLook sau Seer). Rulează un mic utilitar în fundal (același pe care îl folosesc tastele rapide). Funcționează și în rezultatele căutării Everything."
+fr_intro = "SageThumbs adaugă deja miniaturi în Explorer. Două funcții suplimentare pe care le poți activa sau dezactiva aici:"

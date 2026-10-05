@@ -295,7 +295,6 @@ preview_tip_loop_off = "Itigil ang pag-uulit"
 preview_tip_speed = "Bilis ng pag-playback"
 chk_preview_html = "I-render ang lokal na mga HTML file (WebView2, walang script, walang network)"
 chk_preview_url_live = "I-live-load ang mga .url shortcut (bubuksan ang tunay na web page)"
-tip_preview_enabled = "Pindutin ang Space sa Explorer o sa Desktop para lumitaw ang preview ng napiling file, tapos Esc o Space para isara. Naka-off bilang default. Ang pag-on nito ay nagpapatakbo ng maliit na background helper (yung parehong ginagamit ng mga hotkey). Gumagana rin sa mga resulta ng paghahanap sa Everything."
 tip_preview_hold_peek = "Hawakan ang Space sandali sa halip na pindutin lang ito, at agad na magsasara ang preview sa sandaling bitawan mo. Mabilis na paraan para sumilip nang walang pangalawang pindot."
 tip_preview_close_focus = "Awtomatikong isara ang preview kapag nag-click ka palayo rito (maliban kung naka-pin ito sa ibabaw)."
 tip_preview_topmost = "Ilalagay ang preview sa harap kapag ito ay bumukas, sa ibabaw ng iba pang mga window mo. Maaari pa rin itong matakpan kapag nag-click ka sa ibang lugar. Gamitin ang pin button sa preview para manatili itong laging nasa ibabaw."
@@ -450,7 +449,6 @@ fb_failed = "Hindi maabot ang server, kaya hindi naipadala ang mensahe.\n\nNakop
 
 # First-run welcome window (first_run.rs).
 fr_title = "Maligayang pagdating sa SageThumbs 2K"
-fr_intro = "Naglalagay na ang SageThumbs ng mga thumbnail sa Explorer. May dalawang dagdag na naka-off hanggang pumayag ka:"
 fr_intro_portable = "Ito ang portable na kopya, kaya wala pang naka-on. Piliin ang gusto mo:"
 fr_thumbs = "Ipakita ang mga thumbnail sa Explorer"
 fr_thumbs_sub = "Idinaragdag lang ang mga uri ng file sa sarili mong user account. Walang kailangang admin rights, walang babaguhin sa buong makina, at sa Mga Setting mo ito maaaring i-off ulit."
@@ -764,3 +762,6 @@ preview_upload_off_body = "Naka-off ang pag-upload mula sa preview.\n\nInilalaga
 preview_upload_off_open = "Buksan ang mga setting"
 preview_upload_confirm_body = "I-upload ang “{name}”?\n\nIlalagay ito sa isang libreng pampublikong website at kokopyahin ang link nito sa iyong clipboard. Kahit sino na may link ay makakabukas nito."
 preview_upload_confirm_yes = "I-upload"
+
+tip_preview_enabled = "Pindutin ang Space sa Explorer o sa Desktop para magpakita ng preview ng napiling file, tapos Esc o Space para isara. Naka-on bilang default, maliban kung may naka-install nang ibang Space-bar previewer (gaya ng QuickLook o Seer). Nagpapatakbo ito ng maliit na background helper (ang parehong ginagamit ng mga hotkey). Gumagana rin ito sa mga resulta ng paghahanap sa Everything."
+fr_intro = "Nagdaragdag na ang SageThumbs ng mga thumbnail sa Explorer. Dalawang extra na puwede mong i-on o i-off dito:"

@@ -376,7 +376,7 @@ pub(super) fn check_space_preview(r: &mut Report) {
         r.line(
             S::Info,
             "Quick preview",
-            "off — this feature is off by default; turn it on in Settings, Quick preview",
+            "off — turn it on in Settings, Quick preview",
         );
         return;
     }

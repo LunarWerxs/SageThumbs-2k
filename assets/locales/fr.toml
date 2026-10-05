@@ -301,7 +301,6 @@ preview_tip_loop_off = "Ne plus répéter"
 preview_tip_speed = "Vitesse de lecture"
 chk_preview_html = "Afficher les fichiers HTML locaux (WebView2, sans scripts, sans réseau)"
 chk_preview_url_live = "Charger les raccourcis .url en direct (ouvre la vraie page web)"
-tip_preview_enabled = "Appuyez sur Espace dans l'Explorateur ou sur le Bureau pour afficher un aperçu du fichier sélectionné, puis Échap ou Espace pour le fermer. Désactivé par défaut. L'activer exécute un petit assistant en arrière-plan (le même que celui utilisé par les raccourcis clavier). Fonctionne aussi dans les résultats de recherche d'Everything."
 tip_preview_hold_peek = "Maintenez Espace un instant au lieu d'appuyer brièvement, et l'aperçu se ferme dès que vous relâchez. Un moyen rapide de jeter un coup d'œil sans une seconde pression de touche."
 tip_preview_close_focus = "Ferme automatiquement l'aperçu lorsque vous cliquez ailleurs (sauf s'il est épinglé au premier plan)."
 tip_preview_topmost = "Affiche l'aperçu au premier plan lors de son ouverture, devant vos autres fenêtres. Il peut néanmoins être recouvert si vous cliquez ailleurs. Utilisez le bouton d'épinglage de l'aperçu pour le garder toujours visible."
@@ -456,7 +455,6 @@ fb_failed = "Impossible de joindre le serveur, le message n'a donc pas été env
 
 # First-run welcome window (first_run.rs).
 fr_title = "Bienvenue dans SageThumbs 2K"
-fr_intro = "SageThumbs ajoute déjà les miniatures dans l'Explorateur. Deux options restent désactivées tant que vous ne les autorisez pas :"
 fr_intro_portable = "Voici la copie portable : rien n'est encore activé. Choisissez ce que vous voulez :"
 fr_thumbs = "Afficher les miniatures dans l'Explorateur"
 fr_thumbs_sub = "Ajoute les types de fichiers uniquement à votre propre compte utilisateur. Aucun droit administrateur, rien à l'échelle de la machine, et vous pouvez le désactiver depuis les Paramètres."
@@ -770,3 +768,6 @@ preview_upload_off_body = "L'envoi depuis l'aperçu est désactivé.\n\nLe bouto
 preview_upload_off_open = "Ouvrir les paramètres"
 preview_upload_confirm_body = "Envoyer « {name} » ?\n\nIl sera placé sur un site public gratuit et un lien vers celui-ci sera copié dans votre presse-papiers. Toute personne disposant du lien pourra l'ouvrir."
 preview_upload_confirm_yes = "Envoyer"
+
+tip_preview_enabled = "Appuyez sur Espace dans l'Explorateur ou sur le Bureau pour afficher un aperçu du fichier sélectionné, puis sur Échap ou Espace pour le fermer. Activé par défaut, sauf si un autre outil d'aperçu avec la barre d'espace (comme QuickLook ou Seer) était déjà installé. Il lance un petit assistant en arrière-plan (le même que celui des raccourcis clavier). Fonctionne aussi dans les résultats de recherche d'Everything."
+fr_intro = "SageThumbs ajoute déjà des vignettes dans l'Explorateur. Deux options supplémentaires que vous pouvez activer ou désactiver ici :"

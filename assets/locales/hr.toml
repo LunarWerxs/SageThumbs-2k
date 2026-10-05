@@ -307,7 +307,6 @@ preview_tip_loop_off = "Zaustavi ponavljanje"
 preview_tip_speed = "Brzina reprodukcije"
 chk_preview_html = "Prikaz lokalnih HTML datoteka (WebView2, bez skripti, bez mreže)"
 chk_preview_url_live = "Izravno učitavanje .url prečaca (otvara stvarnu web-stranicu)"
-tip_preview_enabled = "Pritisnite razmaknicu u Exploreru ili na radnoj površini da se prikaže skočni pregled odabrane datoteke, a zatim Esc ili razmaknicu za zatvaranje. Zadano isključeno. Uključivanjem se pokreće mali pomoćni program u pozadini (isti koji koriste prečaci). Radi i u rezultatima pretraživanja u Everythingu."
 tip_preview_hold_peek = "Držite razmaknicu trenutak umjesto kratkog pritiska, a pregled se zatvara čim je otpustite. Brz način za bacanje pogleda bez dodatnog pritiska tipke."
 tip_preview_close_focus = "Automatski zatvori pregled kada kliknete izvan njega (osim ako je pripnut iznad svega)."
 tip_preview_topmost = "Dovodi prozor pregleda u prvi plan kad se otvori, iznad ostalih prozora. Ipak može biti prekriven kad kliknete drugdje. Upotrijebite gumb za pribadanje u alatnoj traci pregleda da ga zadržite uvijek na vrhu."
@@ -455,7 +454,6 @@ fb_failed = "Nije bilo moguće doći do poslužitelja, pa poruka nije poslana.\n
 
 # First-run welcome window (first_run.rs).
 fr_title = "Dobro došli u SageThumbs 2K"
-fr_intro = "SageThumbs već dodaje sličice u Explorer. Dva dodatka ostaju isključena dok ih ne dopustite:"
 fr_intro_portable = "Ovo je prijenosna kopija, stoga još ništa nije uključeno. Odaberite što želite:"
 fr_thumbs = "Prikaži sličice u Exploreru"
 fr_thumbs_sub = "Dodaje vrste datoteka samo na vaš korisnički račun. Bez administratorskih prava, ništa na razini cijelog računala, a Postavke to mogu ponovno isključiti."
@@ -773,3 +771,6 @@ preview_upload_off_body = "Učitavanje iz pretpregleda je isključeno.\n\nGumb U
 preview_upload_off_open = "Otvori postavke"
 preview_upload_confirm_body = "Učitati „{name}“?\n\nDatoteka će biti postavljena na besplatno javno web-mjesto, a veza na nju kopirana u vaš međuspremnik. Svatko s vezom može je otvoriti."
 preview_upload_confirm_yes = "Učitaj"
+
+tip_preview_enabled = "Pritisnite razmaknicu u Exploreru ili na radnoj površini da biste otvorili pretpregled odabrane datoteke, a zatim Esc ili razmaknicu da ga zatvorite. Prema zadanim postavkama uključeno, osim ako je već instaliran drugi alat za pretpregled razmaknicom (poput QuickLooka ili Seera). Pokreće mali pomoćni program u pozadini (isti koji koriste i tipkovnički prečaci). Radi i u rezultatima pretraživanja programa Everything."
+fr_intro = "SageThumbs već dodaje sličice u Explorer. Ovdje možete uključiti ili isključiti dva dodatka:"

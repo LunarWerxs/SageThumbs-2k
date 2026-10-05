@@ -9,6 +9,10 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+- **Press Space to preview now works straight after installing.** Quick preview used to start
+  off, so most people never found it. A new install turns it on, unless another Space-bar
+  previewer (QuickLook or Seer) is already there, since two would fight over every press of
+  Space. The welcome window still lets you switch it off, and an upgrade keeps your setting.
 - **The Quick preview's Upload button no longer uploads on one click.** It is off until you
   turn on **Allow uploading from the preview** (Settings ▸ Quick preview); until then a click
   says why nothing happened and offers to open that page. Once it is on, it names the file and

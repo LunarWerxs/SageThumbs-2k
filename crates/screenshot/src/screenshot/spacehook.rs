@@ -1,6 +1,6 @@
 //! The `WH_KEYBOARD_LL` "press Space to preview" hook (Quick preview, Phase 2).
 //!
-//! Installed by the daemon ONLY while `preview_enabled()` (off by default). Design rules,
+//! Installed by the daemon ONLY while `preview_enabled()`. Design rules,
 //! all load-bearing (see the plan §3) — do not relax them:
 //!
 //! - **Observe-only.** The callback NEVER swallows a key: it always falls through to

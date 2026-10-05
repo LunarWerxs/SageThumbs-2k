@@ -302,7 +302,6 @@ preview_tip_loop_off = "停止循環播放"
 preview_tip_speed = "播放速度"
 chk_preview_html = "算繪本機 HTML 檔案（WebView2，停用指令碼，無網路）"
 chk_preview_url_live = "即時載入 .url 捷徑（開啟真實網頁）"
-tip_preview_enabled = "在檔案總管或桌面上按空白鍵，即可彈出所選檔案的預覽，按 Esc 或空白鍵關閉。預設關閉。啟用後會執行一個小型背景協助程式（與快速鍵使用的是同一個）。在 Everything 的搜尋結果中同樣可用。"
 tip_preview_hold_peek = "按住空白鍵片刻而不是輕點一下，一放開預覽就會立即關閉。不必再按一次鍵即可快速瀏覽。"
 tip_preview_close_focus = "當你點選到別處時自動關閉預覽（釘選在最上層時除外）。"
 tip_preview_topmost = "開啟時，預覽視窗會顯示在最前面，位於其他視窗之上。但只要您點選其他視窗，此視窗仍可能被遮住。如要讓預覽視窗一律保持在最上層，請使用預覽視窗的釘選按鈕。"
@@ -457,7 +456,6 @@ fb_failed = "無法連上伺服器，訊息因此未能送出。\n\n您的文字
 
 # First-run welcome window (first_run.rs).
 fr_title = "歡迎使用 SageThumbs 2K"
-fr_intro = "SageThumbs 已經在檔案總管中顯示縮圖了。還有兩項功能在您同意之前保持關閉:"
 fr_intro_portable = "這是可攜式版本，目前尚未啟用任何功能。請選擇您需要的:"
 fr_thumbs = "在檔案總管中顯示縮圖"
 fr_thumbs_sub = "僅為您的使用者帳戶新增這些檔案類型。不需要系統管理員權限，不會影響整台電腦，隨時可在設定中關閉。"
@@ -771,3 +769,6 @@ preview_upload_off_body = "已關閉從預覽上傳。\n\n「上傳」按鈕會�
 preview_upload_off_open = "開啟設定"
 preview_upload_confirm_body = "要上傳「{name}」嗎？\n\n它會被放到免費的公開網站，並將其連結複製到您的剪貼簿。任何取得連結的人都能開啟。"
 preview_upload_confirm_yes = "上傳"
+
+tip_preview_enabled = "在檔案總管或桌面上按空白鍵，即可彈出所選檔案的預覽，再按 Esc 或空白鍵關閉。預設為開啟，除非已安裝其他空白鍵預覽工具（例如 QuickLook 或 Seer）。它會執行一個小型背景輔助程式（與快速鍵使用的是同一個）。在 Everything 搜尋結果中也能使用。"
+fr_intro = "SageThumbs 已經在為檔案總管加入縮圖。您可以在這裡開啟或關閉兩項額外功能："

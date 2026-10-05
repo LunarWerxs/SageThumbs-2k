@@ -308,7 +308,6 @@ preview_tip_loop_off = "Parar de repetir"
 preview_tip_speed = "Velocidade de reprodução"
 chk_preview_html = "Renderizar arquivos HTML locais (WebView2, sem scripts, sem rede)"
 chk_preview_url_live = "Carregar atalhos .url ao vivo (abre a página web real)"
-tip_preview_enabled = "Pressione Espaço no Explorer ou na Área de Trabalho para abrir uma visualização do arquivo selecionado, depois Esc ou Espaço para fechar. Desativado por padrão. Ativar isso executa um pequeno auxiliar de fundo (o mesmo usado pelos atalhos). Também funciona nos resultados de busca do Everything."
 tip_preview_hold_peek = "Segure Espaço por um instante em vez de apertar rapidamente, e a visualização fecha assim que você soltar. Uma forma rápida de espiar sem um segundo toque de tecla."
 tip_preview_close_focus = "Fecha a visualização automaticamente quando você clica fora dela (a menos que esteja fixada no topo)."
 tip_preview_topmost = "Traz a visualização para primeiro plano quando é aberta, à frente das outras janelas. Ela ainda pode ficar coberta se você clicar em outro lugar. Use o botão de fixar da visualização para mantê-la sempre visível."
@@ -456,7 +455,6 @@ fb_failed = "Não foi possível contatar o servidor, então a mensagem não foi 
 
 # First-run welcome window (first_run.rs).
 fr_title = "Boas-vindas ao SageThumbs 2K"
-fr_intro = "O SageThumbs já está adicionando miniaturas no Explorador. Dois extras ficam desligados até você permitir:"
 fr_intro_portable = "Esta é a cópia portátil, então nada está ativado ainda. Escolha o que você quer:"
 fr_thumbs = "Mostrar miniaturas no Explorador"
 fr_thumbs_sub = "Adiciona os tipos de arquivo somente à sua própria conta de usuário. Sem direitos de administrador, nada em todo o computador, e você pode desativar em Configurações quando quiser."
@@ -774,3 +772,6 @@ preview_upload_off_body = "O envio pela visualização está desativado.\n\nO bo
 preview_upload_off_open = "Abrir configurações"
 preview_upload_confirm_body = "Enviar “{name}”?\n\nEle será colocado em um site público gratuito e um link para ele será copiado para a área de transferência. Qualquer pessoa com o link pode abri-lo."
 preview_upload_confirm_yes = "Enviar"
+
+tip_preview_enabled = "Pressione Espaço no Explorador ou na Área de Trabalho para abrir uma visualização do arquivo selecionado; depois, pressione Esc ou Espaço para fechar. Ativado por padrão, a menos que outro visualizador da tecla Espaço (como QuickLook ou Seer) já estivesse instalado. Ele executa um pequeno auxiliar em segundo plano (o mesmo usado pelas teclas de atalho). Também funciona nos resultados de pesquisa do Everything."
+fr_intro = "O SageThumbs já está adicionando miniaturas ao Explorador. Dois extras que você pode ativar ou desativar aqui:"

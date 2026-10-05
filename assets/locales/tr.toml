@@ -302,7 +302,6 @@ preview_tip_loop_off = "Tekrarı kapat"
 preview_tip_speed = "Oynatma hızı"
 chk_preview_html = "Yerel HTML dosyalarını göster (WebView2, komut dosyası yok, ağ yok)"
 chk_preview_url_live = ".url kısayollarını canlı yükle (gerçek web sayfasını açar)"
-tip_preview_enabled = "Seçili dosyanın önizlemesini açmak için Gezgin'de veya Masaüstü'nde Boşluk tuşuna basın, kapatmak için Esc veya Boşluk tuşuna basın. Varsayılan olarak kapalıdır. Etkinleştirildiğinde küçük bir arka plan yardımcısı çalışır (kısayolların kullandığı ile aynısı). Everything arama sonuçlarında da çalışır."
 tip_preview_hold_peek = "Boşluk tuşuna kısaca basmak yerine bir süre basılı tutun; bıraktığınız anda önizleme kapanır. İkinci bir tuşa basmadan hızlıca göz atmanın bir yolu."
 tip_preview_close_focus = "Önizlemeden başka bir yere tıkladığınızda otomatik olarak kapat (sabitlenmiş değilse)."
 tip_preview_topmost = "Önizleme açıldığında diğer pencerelerinizin önüne gelir. Başka bir yere tıkladığınızda yine de arkada kalabilir. Her zaman en üstte kalmasını istiyorsanız önizlemedeki sabitleme düğmesini kullanın."
@@ -457,7 +456,6 @@ fb_failed = "Sunucuya ulaşılamadığı için mesaj gönderilemedi.\n\nHiçbir 
 
 # First-run welcome window (first_run.rs).
 fr_title = "SageThumbs 2K'ya hoş geldiniz"
-fr_intro = "SageThumbs zaten Dosya Gezgini'ne küçük resimler ekliyor. İki ek özellik siz izin verene kadar kapalı kalır:"
 fr_intro_portable = "Bu taşınabilir sürüm, bu yüzden henüz hiçbir şey açık değil. Ne istediğinizi seçin:"
 fr_thumbs = "Dosya Gezgini'nde küçük resimleri göster"
 fr_thumbs_sub = "Dosya türlerini yalnızca kendi kullanıcı hesabınıza ekler. Yönetici hakları gerekmez, sistem genelinde hiçbir şey değişmez ve Ayarlar'dan tekrar kapatabilirsiniz."
@@ -773,3 +771,6 @@ preview_upload_off_body = "Önizlemeden yükleme kapalı.\n\nYükle düğmesi do
 preview_upload_off_open = "Ayarları aç"
 preview_upload_confirm_body = "“{name}” yüklensin mi?\n\nÜcretsiz bir herkese açık siteye konulacak ve bağlantısı panonuza kopyalanacak. Bağlantıyı bilen herkes açabilir."
 preview_upload_confirm_yes = "Yükle"
+
+tip_preview_enabled = "Gezginde veya Masaüstünde Boşluk tuşuna basarak seçili dosyanın önizlemesini açın, kapatmak için Esc veya Boşluk tuşuna basın. Başka bir Boşluk tuşu önizleyicisi (QuickLook veya Seer gibi) önceden kurulu değilse varsayılan olarak açıktır. Küçük bir arka plan yardımcısı çalıştırır (kısayol tuşlarının kullandığıyla aynı). Everything arama sonuçlarında da çalışır."
+fr_intro = "SageThumbs Gezgin'e zaten küçük resimler ekliyor. Buradan açıp kapatabileceğiniz iki ek özellik:"

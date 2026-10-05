@@ -456,7 +456,10 @@ Filename: "{app}\{#AppExe}"; Parameters: "--updated {#AppVer}"; \
 ; it (PrepareToInstall / Restart Manager) to replace the EXE, and nothing else brings it
 ; back until the next logon - a user whose hotkeys are on would otherwise find them dead
 ; after any reinstall/upgrade. --heal-hotkeys is a silent, instant no-op when the feature
-; is off or the daemon is already back. Same runasoriginaluser rationale as above.
+; is off or the daemon is already back. On a brand-new install it first writes Quick
+; preview's default (on, unless another Space-bar previewer is installed), so Space works
+; before the user opens anything; an upgrade's --first-run-seen above has already run, so
+; it never touches an existing user's settings. Same runasoriginaluser rationale as above.
 Filename: "{app}\{#AppExe}"; Parameters: "--heal-hotkeys"; \
   Flags: nowait runasoriginaluser; Check: ConsoleUserStep('--heal-hotkeys')
 ; Register the per-user update-check Scheduled Task ("SageThumbs2K.exe --update-check",

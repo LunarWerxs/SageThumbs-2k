@@ -1,11 +1,11 @@
 //! The **first-run welcome** — one small window, shown once, that offers the two
-//! features a fresh install leaves switched OFF: Quick preview and the screenshot hotkey.
+//! extras beyond thumbnails: Quick preview and the screenshot hotkey.
 //!
-//! Both are deliberately opt-in, which is correct for a shell extension but meant most
-//! users never discovered them: nothing in Explorer hints that Space previews a file, and
-//! the capture hotkey is invisible until you go looking in Settings. Asking once, at the
-//! moment the app first opens, is the cheapest way to surface them without turning
-//! anything on behind the user's back.
+//! Nothing in Explorer hints that Space previews a file, and the capture hotkey is invisible
+//! until you go looking in Settings, so most users never discovered either. Quick preview
+//! therefore starts ON for a new user ([`seed_fresh_defaults`]), unless another Space-bar
+//! previewer is already installed; the hotkey stays off until the user says so. Asking once,
+//! at the moment the app first opens, surfaces both and lets either be switched off.
 //!
 //! One window rather than two sequential yes/no prompts: the PrtScn choice is a *dependent*
 //! of the screenshot answer, so it has to be able to grey out (it does — see `sync_prtscn`),
@@ -302,12 +302,44 @@ pub(crate) fn mark_shown() {
     let _ = st2k_base::settings::set_dword(FIRST_RUN_SHOWN, 1);
 }
 
+/// A brand-new user's defaults, written before anything reads them. Quick preview starts ON,
+/// because a Space-bar feature you must first find and switch on is one nobody uses, unless
+/// another Space-bar previewer (QuickLook, Seer) is already here: two at once fight over every
+/// press of Space ([`crate::rival_preview`]).
+///
+/// The screenshot answer is pinned first, to what it reads as right now: the helper Quick
+/// preview starts also writes the autostart entry, and an absent `ScreenshotEnabled` reads
+/// that entry as "screenshots on" (`screenshot::is_enabled`'s pre-flag migration).
+///
+/// Only while the welcome has never been shown, and only into absent values, so nothing a
+/// user chose is touched. An upgrade marks the welcome shown before this can run
+/// (`--first-run-seen`, installer.iss). Runs from both places a new user can arrive first:
+/// the install's `--heal-hotkeys` and the first visible launch.
+pub(crate) fn seed_fresh_defaults() {
+    use st2k_base::settings::{get_dword_opt, set_dword, set_preview_enabled};
+    if already_shown() {
+        return;
+    }
+    if get_dword_opt("ScreenshotEnabled").is_none() {
+        let _ = set_dword(
+            "ScreenshotEnabled",
+            u32::from(st2k_screenshot::screenshot::is_enabled()),
+        );
+    }
+    if get_dword_opt("PreviewEnabled").is_none() {
+        let _ = set_preview_enabled(!crate::rival_preview::installed());
+    }
+}
+
 /// Show the welcome window and block until it is dismissed. No-op if it has run before.
 /// Called just before the Settings window opens, which is what the installer launches.
 pub(crate) unsafe fn show_if_first_run() {
     if already_shown() {
         return;
     }
+    // A portable copy, or an install whose `--heal-hotkeys` has not run yet, arrives here
+    // first; the window's Quick preview box shows what this decided.
+    seed_fresh_defaults();
     // Mark it BEFORE showing. If anything below panics or the process is killed mid-window,
     // the user gets a working app that simply never asked again — far better than a welcome
     // screen that reappears at every launch.
@@ -556,10 +588,12 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     );
     y += prtscn_h;
 
-    // Both offers start ticked — this window exists because nobody was finding these
-    // features, and the button is an explicit confirmation either way. PrtScn does NOT:
-    // it overrides a Windows shortcut, so it stays an opt-in inside an opt-in.
-    check(hwnd, ID_PREVIEW, true);
+    // Quick preview shows its real state: `seed_fresh_defaults` turned it on unless another
+    // Space-bar previewer is installed, and on an install it is already running. The hotkey
+    // starts ticked — this window exists because nobody was finding it, and the button is an
+    // explicit confirmation either way. PrtScn does NOT: it overrides a Windows shortcut, so
+    // it stays an opt-in inside an opt-in.
+    check(hwnd, ID_PREVIEW, st2k_base::settings::preview_enabled());
     check(hwnd, ID_SHOT, true);
     // Ticked for the same reason as the other two, and unlike PrtScn it takes nothing away from
     // the user: it adds a handler under their own account and Settings undoes it. Leaving it
@@ -611,23 +645,18 @@ unsafe fn apply(hwnd: HWND) {
             }
         }
     }
-    if checked(hwnd, ID_PREVIEW) {
-        let _ = st2k_base::settings::set_preview_enabled(true);
+    // Written either way: an unticked box must switch off the Quick preview the install
+    // already turned on.
+    let _ = st2k_base::settings::set_preview_enabled(checked(hwnd, ID_PREVIEW));
+    if checked(hwnd, ID_SHOT) && checked(hwnd, ID_PRTSCN) {
+        let _ = st2k_base::settings::set_screenshot_hotkey(PRTSCN_ONLY);
+        release_windows_prtscn();
     }
-    if checked(hwnd, ID_SHOT) {
-        if checked(hwnd, ID_PRTSCN) {
-            let _ = st2k_base::settings::set_screenshot_hotkey(PRTSCN_ONLY);
-            release_windows_prtscn();
-        }
-        // Last: `set_enabled` reconciles the autostart entry AND starts the daemon, which
-        // reads the hotkey settings at startup — so the hotkey has to be persisted first
-        // or the fresh daemon would register Ctrl+PrtScn and ignore the choice above.
-        st2k_screenshot::screenshot::set_enabled(true);
-    } else if checked(hwnd, ID_PREVIEW) {
-        // Quick preview alone still needs the resident helper (it owns the Space hook);
-        // `heal_if_wanted` is what notices the feature is now wanted and brings it up.
-        st2k_screenshot::screenshot::heal_if_wanted();
-    }
+    // Last: `set_enabled` saves the hotkey answer and reconciles the helper against ALL the
+    // answers — starts it (a fresh one reads the hotkey above at startup, so that is saved
+    // first), nudges a running one to re-read its hotkeys and its Space hook, or stops the
+    // one the install started for Quick preview when both boxes were cleared.
+    st2k_screenshot::screenshot::set_enabled(checked(hwnd, ID_SHOT));
 }
 
 /// Hand the Print Screen key back to applications by clearing Windows' own

@@ -302,7 +302,6 @@ preview_tip_loop_off = "停止循环"
 preview_tip_speed = "播放速度"
 chk_preview_html = "渲染本地 HTML 文件（WebView2，禁用脚本，无网络）"
 chk_preview_url_live = "实时加载 .url 快捷方式（打开真实网页）"
-tip_preview_enabled = "在资源管理器或桌面上按空格键即可弹出所选文件的预览，按 Esc 或空格键关闭。默认关闭。启用后会运行一个小的后台助手（与热键使用的是同一个）。在 Everything 的搜索结果中同样可用。"
 tip_preview_hold_peek = "按住空格键片刻而不是轻点，一松手预览就会立即关闭。无需再按一次键即可快速查看。"
 tip_preview_close_focus = "当你点击到别处时自动关闭预览（固定在最上层时除外）。"
 tip_preview_topmost = "预览窗口打开时会显示在其他窗口前面，点击其他位置后仍可能被遮挡。如需让它始终保持在最前面，请使用预览窗口的固定按钮。"
@@ -457,7 +456,6 @@ fb_failed = "无法连接到服务器，消息未能发送。\n\n你的文本已
 
 # First-run welcome window (first_run.rs).
 fr_title = "欢迎使用 SageThumbs 2K"
-fr_intro = "SageThumbs 已经在资源管理器中显示缩略图了。还有两项功能在你同意之前保持关闭:"
 fr_intro_portable = "这是便携版，目前还没有启用任何功能。请选择你需要的:"
 fr_thumbs = "在资源管理器中显示缩略图"
 fr_thumbs_sub = "仅为你的用户账户添加这些文件类型。无需管理员权限，不影响整个系统，随时可在设置中关闭。"
@@ -771,3 +769,6 @@ preview_upload_off_body = "从预览上传已关闭。\n\n“上传”按钮会�
 preview_upload_off_open = "打开设置"
 preview_upload_confirm_body = "上传“{name}”？\n\n它会放到免费的公共网站上，并把链接复制到你的剪贴板。任何拿到链接的人都能打开它。"
 preview_upload_confirm_yes = "上传"
+
+tip_preview_enabled = "在资源管理器或桌面中按空格键，即可弹出所选文件的预览，再按 Esc 或空格键关闭。默认开启，除非已安装其他空格键预览工具（如 QuickLook 或 Seer）。它会运行一个小型后台辅助程序（与热键使用的是同一个）。在 Everything 搜索结果中也可使用。"
+fr_intro = "SageThumbs 已在为资源管理器添加缩略图。你可以在这里开启或关闭两项附加功能："

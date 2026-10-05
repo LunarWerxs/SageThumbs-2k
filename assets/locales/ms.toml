@@ -306,7 +306,6 @@ preview_tip_loop_off = "Berhenti mengulang"
 preview_tip_speed = "Kelajuan main balik"
 chk_preview_html = "Render fail HTML tempatan (WebView2, tiada skrip, tiada rangkaian)"
 chk_preview_url_live = "Muat langsung pintasan .url (membuka halaman web sebenar)"
-tip_preview_enabled = "Tekan Space dalam Explorer atau pada Desktop untuk memaparkan pratonton fail yang dipilih, kemudian Esc atau Space untuk menutup. Dimatikan secara default. Menghidupkannya menjalankan pembantu latar belakang kecil (sama seperti yang digunakan oleh pintasan). Turut berfungsi dalam hasil carian Everything."
 tip_preview_hold_peek = "Tahan Space seketika berbanding menekannya, dan pratonton akan terus tutup sebaik sahaja anda lepaskan. Cara pantas untuk mengintai tanpa tekanan kekunci kedua."
 tip_preview_close_focus = "Tutup pratonton secara automatik apabila anda klik keluar daripadanya (kecuali jika ia dipasak di atas)."
 tip_preview_topmost = "Bawa pratonton ke hadapan apabila ia dibuka, di atas tetingkap lain anda. Ia masih boleh ditutupi apabila anda mengklik di tempat lain. Gunakan butang pin pada pratonton untuk mengekalkannya sentiasa di atas."
@@ -454,7 +453,6 @@ fb_failed = "Tidak dapat menghubungi pelayan, jadi mesej tidak dihantar.\n\nTeks
 
 # First-run welcome window (first_run.rs).
 fr_title = "Selamat datang ke SageThumbs 2K"
-fr_intro = "SageThumbs sudah pun menambah lakaran kenit dalam Explorer. Dua tambahan kekal dimatikan sehingga anda benarkan:"
 fr_intro_portable = "Ini salinan mudah alih, jadi belum ada apa-apa yang dihidupkan. Pilih apa yang anda mahu:"
 fr_thumbs = "Papar lakaran kenit dalam Explorer"
 fr_thumbs_sub = "Menambah jenis fail ke akaun pengguna anda sahaja. Tiada hak pentadbir, tiada apa-apa di seluruh mesin, dan Tetapan boleh matikannya semula."
@@ -772,3 +770,6 @@ preview_upload_off_body = "Muat naik dari pratonton dimatikan.\n\nButang Muat Na
 preview_upload_off_open = "Buka tetapan"
 preview_upload_confirm_body = "Muat naik “{name}”?\n\nIa akan diletakkan di tapak web awam percuma dan pautan kepadanya akan disalin ke papan keratan anda. Sesiapa yang mempunyai pautan itu boleh membukanya."
 preview_upload_confirm_yes = "Muat naik"
+
+tip_preview_enabled = "Tekan Space dalam Explorer atau pada Desktop untuk memaparkan pratonton fail yang dipilih, kemudian tekan Esc atau Space untuk menutupnya. Dihidupkan secara lalai, kecuali jika pempratonton bar Space lain (seperti QuickLook atau Seer) sudah dipasang. Ia menjalankan pembantu latar belakang yang kecil (yang sama digunakan oleh kekunci pintas). Juga berfungsi dalam hasil carian Everything."
+fr_intro = "SageThumbs sudah menambah thumbnail ke dalam Explorer. Dua tambahan yang boleh anda hidupkan atau matikan di sini:"

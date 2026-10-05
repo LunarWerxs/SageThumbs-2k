@@ -308,7 +308,6 @@ preview_tip_loop_off = "Nie powtarzaj"
 preview_tip_speed = "Szybkość odtwarzania"
 chk_preview_html = "Renderuj lokalne pliki HTML (WebView2, bez skryptów, bez sieci)"
 chk_preview_url_live = "Wczytuj skróty .url na żywo (otwiera prawdziwą stronę internetową)"
-tip_preview_enabled = "Naciśnij spację w Eksploratorze lub na Pulpicie, aby wyświetlić podgląd zaznaczonego pliku, a Esc lub spację, aby go zamknąć. Domyślnie wyłączone. Włączenie uruchamia mały pomocniczy program w tle (ten sam, którego używają skróty klawiszowe). Działa też w wynikach wyszukiwania Everything."
 tip_preview_hold_peek = "Przytrzymaj spację przez chwilę zamiast ją nacisnąć, a podgląd zamknie się natychmiast po puszczeniu. Szybki sposób na zerknięcie bez drugiego naciśnięcia klawisza."
 tip_preview_close_focus = "Automatycznie zamyka podgląd, gdy klikniesz poza nim (chyba że jest przypięty na wierzchu)."
 tip_preview_topmost = "Po otwarciu podgląd pojawia się na pierwszym planie, nad innymi oknami. Nadal może zostać zasłonięty po kliknięciu w inne miejsce. Aby zawsze był na wierzchu, użyj przycisku przypinania w podglądzie."
@@ -456,7 +455,6 @@ fb_failed = "Nie udało się połączyć z serwerem, więc wiadomość nie zosta
 
 # First-run welcome window (first_run.rs).
 fr_title = "Witamy w SageThumbs 2K"
-fr_intro = "SageThumbs już dodaje miniatury w Eksploratorze. Dwa dodatki pozostają wyłączone, dopóki się nie zgodzisz:"
 fr_intro_portable = "To jest wersja przenośna, więc nic nie jest jeszcze włączone. Wybierz, czego chcesz:"
 fr_thumbs = "Pokazuj miniatury w Eksploratorze"
 fr_thumbs_sub = "Dodaje typy plików tylko do Twojego konta użytkownika. Bez uprawnień administratora, nic w skali całego komputera, a Ustawienia mogą to ponownie wyłączyć."
@@ -774,3 +772,6 @@ preview_upload_off_body = "Przesyłanie z podglądu jest wyłączone.\n\nPrzycis
 preview_upload_off_open = "Otwórz ustawienia"
 preview_upload_confirm_body = "Przesłać „{name}”?\n\nPlik zostanie umieszczony na darmowej publicznej stronie, a link do niego skopiowany do schowka. Każdy, kto ma ten link, może go otworzyć."
 preview_upload_confirm_yes = "Prześlij"
+
+tip_preview_enabled = "Naciśnij Spację w Eksploratorze lub na Pulpicie, aby wyświetlić podgląd zaznaczonego pliku, a potem Esc lub Spację, aby go zamknąć. Domyślnie włączone, chyba że był już zainstalowany inny program do podglądu pod Spacją (np. QuickLook lub Seer). Działa dzięki małemu programowi pomocniczemu w tle (temu samemu, którego używają skróty klawiszowe). Działa też w wynikach wyszukiwania Everything."
+fr_intro = "SageThumbs już dodaje miniatury w Eksploratorze. Tutaj możesz włączyć lub wyłączyć dwie dodatkowe funkcje:"

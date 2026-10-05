@@ -50,6 +50,7 @@ mod nudge_engine;
 mod oauth;
 mod prebuild_dlg;
 mod rename_dlg;
+mod rival_preview;
 mod settings_dlg;
 mod settings_io;
 mod sync_client;
@@ -147,11 +148,14 @@ fn schedule_unelevated_heal() {
 /// The install-time heal (`--heal-hotkeys` / `--updated`): restart the hotkey daemon the
 /// installer had to kill — WITHOUT letting it inherit an elevated token (see
 /// [`is_elevated`]). Elevated → reroute through the LIMITED scheduled task; normal → heal
-/// directly. No-op when the feature is off.
+/// directly. On a brand-new install this is also where Quick preview's default is first
+/// written (see [`first_run::seed_fresh_defaults`]), so Space works before the user has
+/// opened anything. No-op when nothing wants the helper.
 fn heal_after_install() {
     if unsafe { is_elevated() } {
         schedule_unelevated_heal();
     } else {
+        crate::first_run::seed_fresh_defaults();
         st2k_screenshot::screenshot::heal_if_wanted();
     }
 }
