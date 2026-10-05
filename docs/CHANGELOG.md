@@ -18,6 +18,9 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   away, which closed the window and its dialog together.
 - **The buttons on the "Keep these settings everywhere" banner have clean corners.** Each one
   showed a notch of the page colour at its corners against the banner's tint.
+- **Settings text that was cut off in other languages now fits.** The screenshot hotkey's
+  "Stopped" status on the Screenshots page was cut short in 12 languages, and a label too long
+  for a 220-pixel box dropped onto its own line even with room to spare beside its field.
 - **One more damaged JPEG XL file that could crash the thumbnail host no longer does.** A
   `.jxl` whose progressive passes leave part of the picture for no pass to decode stopped the
   JPEG XL decoder dead; it is now an ordinary decode error, so the file shows the normal icon

@@ -75,7 +75,7 @@ pub(super) fn place_pair_row(
     let label = if stack_h > 0 {
         place(lbl, PANE_X, y, PANE_W, stack_h)
     } else {
-        place(lbl, PANE_X, y + lbl_dy, 220, 18)
+        place(lbl, PANE_X, y + lbl_dy, pair_label_room(fw), 18)
     };
     placed.extend(label);
     let field_y = if stack_h > 0 { y + stack_h + 4 } else { y };
@@ -95,13 +95,20 @@ unsafe fn control_text(hwnd: HWND, id: i32) -> String {
     String::from_utf16_lossy(&buf[..n.max(0) as usize])
 }
 
+/// The width a `Row::Pair` label gets beside its `fw`-wide field: everything left of the field
+/// less the 12px gap the button-and-status rows keep. It was a fixed 220px, which stacked a
+/// translation that had 140px of empty pane beside it, and a stacked label on the fixed-height
+/// Quick preview page put its last row on the footer in 24 languages (2026-10-05).
+fn pair_label_room(fw: i32) -> i32 {
+    PANE_W - fw - 12
+}
+
 /// How much taller a `Row::Pair` gets when its label does not fit beside its `fw`-wide field:
-/// 0 when it fits (the 220px label box the row was designed with, less nothing), otherwise
-/// the label's wrapped height at full pane width plus the gap to the field under it.
+/// 0 when it fits in [`pair_label_room`], otherwise the label's wrapped height at full pane
+/// width plus the gap to the field under it.
 unsafe fn pair_stack_h(hwnd: HWND, lbl: i32, fw: i32) -> i32 {
     let text = control_text(hwnd, lbl);
-    let room = 220.min(PANE_W - fw - 8);
-    if st2k_appkit::win::text_width(hwnd, &text) <= room {
+    if st2k_appkit::win::text_width(hwnd, &text) <= pair_label_room(fw) {
         0
     } else {
         st2k_appkit::win::wrapped_text_h(hwnd, &text, PANE_W).max(18)
