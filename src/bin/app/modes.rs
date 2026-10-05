@@ -129,12 +129,8 @@ pub(super) unsafe fn run_shot_settings_window(
     out: &str,
     args: &[String],
 ) -> bool {
-    let tab = args
-        .iter()
-        .position(|a| a == "--tab")
-        .and_then(|p| args.get(p + 1))
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(0);
+    // By number or by nav key (`--tab nav_advanced`), as a normal launch takes it.
+    let tab = super::wanted_tab(args).unwrap_or(0);
     if let Some(needle) = args
         .iter()
         .position(|a| a == "--search")

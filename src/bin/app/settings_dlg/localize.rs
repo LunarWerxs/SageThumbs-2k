@@ -53,15 +53,15 @@ pub(super) unsafe fn on_lang_change(hwnd: HWND) {
     super::search::refresh_cue(hwnd);
 }
 
-/// Locale keys for the screenshot-tool combo (`ID_SHOT_TOOL`), in the SAME fixed order as
-/// build.rs's creation loop that first populates it (the stored setting is a plain index
-/// into this order), so the two lists must stay in lockstep or a live language switch would
-/// silently relabel the combo out from under the index the user already picked.
 /// Locale keys for the tray double-click combo (`ID_TRAY_DBLCLICK`), in
 /// `settings::TrayDoubleClick::ALL` order: the stored value is the index.
 pub(super) const TRAY_DBLCLICK_KEYS: [&str; 3] =
     ["tray_dbl_capture", "tray_dbl_settings", "tray_dbl_nothing"];
 
+/// Locale keys for the screenshot-tool combo (`ID_SHOT_TOOL`), in the SAME fixed order as
+/// build.rs's creation loop that first populates it (the stored setting is a plain index
+/// into this order), so the two lists must stay in lockstep or a live language switch would
+/// silently relabel the combo out from under the index the user already picked.
 const SHOT_TOOL_KEYS: [&str; 10] = [
     "tool_arrow",
     "tool_rect",

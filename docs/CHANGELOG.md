@@ -7,7 +7,19 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 3.6.0
+
+**TL;DR**
+
+- **Photoshop thumbnails no longer fill your temp folder**, and what older versions left there
+  is cleaned up (fixes #56)
+- **Big Photoshop files get their thumbnails** (fixes #55)
+- **PDFs with a few bytes before their header get thumbnails** (fixes #59)
+- **You choose what double-clicking the tray icon does** (fixes #58)
+- **Press Space to preview works straight after installing**
+- **The Quick preview's Upload button asks first**, and is off until you allow it
+
+**Everything in 3.6.0**
 
 - **Photoshop thumbnails no longer fill your temp folder** (fixes #56). Every PSD thumbnail
   could leave a copy of the file in `%TEMP%`, sometimes with hundreds of MB more beside it;
@@ -45,6 +57,8 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   `.jxl` whose progressive passes leave part of the picture for no pass to decode stopped the
   JPEG XL decoder dead; it is now an ordinary decode error, so the file shows the normal icon
   and the files around it keep their thumbnails.
+- **The Theme setting moved to Settings > Appearance**, under "SageThumbs windows". It was on
+  the Quick preview page, which had grown past the bottom of the window.
 
 ## 3.5.0
 

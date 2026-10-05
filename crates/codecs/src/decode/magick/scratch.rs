@@ -84,7 +84,8 @@ pub fn sweep_stale_magick_temp() {
 }
 
 /// Delete the leftovers in `temp` older than [`STALE_AFTER`]: our per-child folders whose owner
-/// died before removing them, our staged inputs (`st2k-coder-*`), and the loose
+/// died before removing them (a live owner's folder stays, however old: a PC that sleeps through
+/// a decode wakes with a child older than any budget), our staged inputs (`st2k-coder-*`), and the loose
 /// `magick-<32 chars>` files earlier versions left. A file still open is skipped, because
 /// Windows refuses to delete it, so a live ImageMagick run, ours or anyone's, keeps its files.
 fn sweep_stale_in(temp: &Path) {
@@ -99,7 +100,9 @@ fn sweep_stale_in(temp: &Path) {
     };
     if let Ok(children) = std::fs::read_dir(temp.join(ROOT)) {
         for e in children.flatten().filter(stale) {
-            let _ = std::fs::remove_dir_all(e.path());
+            if !owner_alive(&e.file_name().to_string_lossy()) {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
         }
     }
     if let Ok(entries) = std::fs::read_dir(temp) {
@@ -110,6 +113,33 @@ fn sweep_stale_in(temp: &Path) {
             }
         }
     }
+}
+
+/// Is the process that made the child folder `<pid>-<n>` still running? A name with no pid is
+/// nobody's. A process we may not query (an elevated one) counts as running: the folder waits.
+fn owner_alive(folder: &str) -> bool {
+    let Some(pid) = folder.split('-').next().and_then(|p| p.parse::<u32>().ok()) else {
+        return false;
+    };
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const STILL_ACTIVE: u32 = 259;
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return std::io::Error::last_os_error().raw_os_error() == Some(ERROR_ACCESS_DENIED);
+    }
+    let mut code = 0u32;
+    let read = unsafe { GetExitCodeProcess(process, &mut code) } != 0;
+    unsafe { CloseHandle(process) };
+    read && code == STILL_ACTIVE
+}
+
+// kernel32, always linked; declared here for three calls, as `magick.rs` does `GetProcessTimes`.
+#[link(name = "kernel32")]
+extern "system" {
+    fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
+    fn GetExitCodeProcess(process: *mut std::ffi::c_void, code: *mut u32) -> i32;
+    fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
 }
 
 /// ImageMagick's own temp name, `magick-` and exactly 32 characters of its file-name alphabet,
@@ -180,7 +210,10 @@ mod tests {
     fn the_stale_sweep_deletes_only_old_imagemagick_leftovers() {
         let temp = std::env::temp_dir().join(format!("st2k-sweep-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);
+        // pid 1 is never a process we can see; this test's own pid is alive.
+        let live = format!("{}-0", std::process::id());
         std::fs::create_dir_all(temp.join(ROOT).join("1-0")).unwrap();
+        std::fs::create_dir_all(temp.join(ROOT).join(&live)).unwrap();
         std::fs::write(temp.join(ROOT).join("1-0").join("magick-x"), b"x").unwrap();
         let im_name = format!("magick-{}", "aZ09_-".repeat(6).get(..32).unwrap());
         let fresh_name = format!("magick-{}", "Q".repeat(32));
@@ -209,6 +242,7 @@ mod tests {
             }
         }
         age(&temp.join(ROOT).join("1-0"));
+        age(&temp.join(ROOT).join(&live));
         std::fs::create_dir(temp.join(ROOT).join("1-1")).unwrap();
 
         sweep_stale_in(&temp);
@@ -220,9 +254,10 @@ mod tests {
             !temp.join(ROOT).join("1-0").exists(),
             "an old child folder goes"
         );
+        assert!(temp.join(ROOT).join("1-1").exists(), "a new folder stays");
         assert!(
-            temp.join(ROOT).join("1-1").exists(),
-            "a live child's folder stays"
+            temp.join(ROOT).join(&live).exists(),
+            "an old folder of a running process stays"
         );
         let _ = std::fs::remove_dir_all(&temp);
     }

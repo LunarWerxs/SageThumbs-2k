@@ -156,8 +156,8 @@ pub(super) const ID_PREVIEW_TOPMOST: i32 = 1206;
 /// "Allow uploading from the preview": the viewer's Upload button does nothing but explain itself
 /// until this is on. 1271: the next free id past `MENU_ITEM_TOGGLES`' 1270.
 pub(super) const ID_PREVIEW_UPLOAD: i32 = 1271;
-/// "Appearance:" on the Quick preview page: light/dark for SageThumbs' own windows, instead of
-/// following the Windows app-colour setting. Label + combo, like `ID_LBL_PREVIEW`/`ID_MENU_PREVIEW`.
+/// "Theme:" on the Appearance page, under `ID_LBL_APP_LOOK`: light/dark for SageThumbs' own
+/// windows, instead of following the Windows app-colour setting. Label + combo, like `ID_LBL_PREVIEW`/`ID_MENU_PREVIEW`.
 pub(super) const ID_LBL_APP_THEME: i32 = 1235;
 pub(super) const ID_APP_THEME: i32 = 1236;
 // Phase 3: preview text/code + render markdown.
