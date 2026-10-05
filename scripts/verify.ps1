@@ -515,7 +515,11 @@ exit `$code
         # (see _start-outside-job.ps1): under fairjob, a Start-Process'd shell and helper were
         # killed the moment verify exited, after every agent install (2026-10-05).
         . (Join-Path $PSScriptRoot '_start-outside-job.ps1')
-        $null = Start-OutsideJob 'explorer.exe'   # unelevated shell restart
+        Add-Type -Namespace St2k -Name Shell -MemberDefinition '[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindowW(string cls, string title);'
+        $shellUp = { [St2k.Shell]::FindWindowW('Shell_TrayWnd', [NullString]::Value) -ne [IntPtr]::Zero }
+        # Unelevated shell restart, unless Windows' own AutoRestartShell already brought the
+        # taskbar back: a second `explorer.exe` then opens a stray File Explorer window.
+        if (-not (& $shellUp)) { $null = Start-OutsideJob 'explorer.exe' }
         # Bring the resident helper back, exactly as installer.iss does after a real setup
         # (its `--heal-hotkeys` [Run] entry). The install killed it to replace the EXE, and
         # nothing else restarts it until the next logon.
@@ -535,8 +539,9 @@ exit `$code
         if (Test-Path $appExe) {
             $null = Start-OutsideJob "`"$appExe`" --heal-hotkeys"
         }
-        # Give the shell a moment to come up before reopening windows into it.
-        for ($i = 0; $i -lt 40 -and -not (Get-Process explorer -ErrorAction SilentlyContinue); $i++) { Start-Sleep -Milliseconds 250 }
+        # Reopen the folder windows only once the taskbar exists: an `explorer.exe <folder>`
+        # started while no shell is up can make itself the shell instead.
+        for ($i = 0; $i -lt 60 -and -not (& $shellUp); $i++) { Start-Sleep -Milliseconds 250 }
         foreach ($folder in $openFolders) { $null = Start-OutsideJob "explorer.exe `"$folder`"" }
         if ($p.ExitCode -ne 0) {
             Write-Host "[verify] elevated install exited $($p.ExitCode) — log:" -ForegroundColor Red

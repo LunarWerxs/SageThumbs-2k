@@ -37,9 +37,9 @@ fn is_rival_word(word: &str) -> bool {
 }
 
 /// "QuickLook 3.7.3" or "Seer 4.0.2": the FIRST word names the program. A whole word, so
-/// "Overseer" and "QuickLookAlike" do not count.
+/// "Overseer", "QuickLookAlike" and "Seer-Pro Studio" do not count.
 fn display_name_is_rival(name: &str) -> bool {
-    name.split(|c: char| c.is_whitespace() || c == '(' || c == '-')
+    name.split(|c: char| c.is_whitespace() || c == '(')
         .find(|w| !w.is_empty())
         .is_some_and(is_rival_word)
 }
@@ -161,6 +161,7 @@ mod tests {
             ("seer", true),
             ("QuickLook (64-bit)", true),
             ("Overseer", false),
+            ("Seer-Pro Studio 2", false),
             ("QuickLookAlike 1.0", false),
             ("PowerToys (Preview)", false),
             ("", false),
