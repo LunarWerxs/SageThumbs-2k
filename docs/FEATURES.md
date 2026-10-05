@@ -712,9 +712,10 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   Settings main view also carries a small author credit and a promo banner.
 - **Send feedback:** the pill on the About card opens a box for a suggestion, a bug report,
   or a "please support this format" request, sent straight to the developer without needing
-  a GitHub account. Choose the category, write the message, hit Send. The email field is
-  **optional** and labelled as such: leave it blank and the message still gets through, you
-  simply don't get a reply. The box also links to the GitHub issue tracker for anyone who'd
+  a GitHub account. Choose the category, write the message, tick **I promise I am not being
+  a jerk** (Send stays greyed out until you do), hit Send. The email field is **optional**
+  and labelled as such: leave it blank and the message still gets through, you simply don't
+  get a reply. The box also links to the GitHub issue tracker for anyone who'd
   rather file it in public, and if the send can't get through your text is copied to the
   clipboard so nothing is lost.
 - **Licence:** shows whether the copy is running as personal or business, a field to enter

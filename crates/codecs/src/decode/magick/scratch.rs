@@ -33,7 +33,7 @@ impl MagickScratch {
         });
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let root = std::env::temp_dir().join(ROOT);
-        if std::fs::create_dir_all(&root).is_ok() {
+        if std::fs::create_dir_all(&root).is_ok() && is_plain_dir(&root) {
             for _ in 0..8 {
                 let n = SEQ.fetch_add(1, Ordering::Relaxed);
                 let dir = root.join(format!("{}-{n}", std::process::id()));
@@ -83,11 +83,12 @@ pub fn sweep_stale_magick_temp() {
     sweep_stale_in(&std::env::temp_dir());
 }
 
-/// Delete the leftovers in `temp` older than [`STALE_AFTER`]: our per-child folders whose owner
-/// died before removing them (a live owner's folder stays, however old: a PC that sleeps through
-/// a decode wakes with a child older than any budget), our staged inputs (`st2k-coder-*`), and the loose
-/// `magick-<32 chars>` files earlier versions left. A file still open is skipped, because
-/// Windows refuses to delete it, so a live ImageMagick run, ours or anyone's, keeps its files.
+/// Delete the leftovers in `temp` older than [`STALE_AFTER`]: our per-child folders whose
+/// owner died before removing them (a live owner's folder stays, however old: a PC that sleeps
+/// through a decode wakes with a child older than any budget), our staged inputs
+/// (`st2k-coder-*`), and the loose `magick-<32 chars>` files earlier versions left. A file still
+/// open is skipped, because Windows refuses to delete it, so a live ImageMagick run, ours or
+/// anyone's, keeps its files. A junction or symlink where our folder belongs is never followed.
 fn sweep_stale_in(temp: &Path) {
     let now = SystemTime::now();
     // Read fresh, not from the directory listing, whose copy of the time can lag.
@@ -98,7 +99,11 @@ fn sweep_stale_in(temp: &Path) {
             .and_then(|t| now.duration_since(t).ok())
             .is_some_and(|age| age > STALE_AFTER)
     };
-    if let Ok(children) = std::fs::read_dir(temp.join(ROOT)) {
+    let root = temp.join(ROOT);
+    if let Some(children) = std::fs::read_dir(&root)
+        .ok()
+        .filter(|_| is_plain_dir(&root))
+    {
         for e in children.flatten().filter(stale) {
             if !owner_alive(&e.file_name().to_string_lossy()) {
                 let _ = std::fs::remove_dir_all(e.path());
@@ -113,6 +118,13 @@ fn sweep_stale_in(temp: &Path) {
             }
         }
     }
+}
+
+/// Is `root` a real folder? A junction or symlink in its place would carry the sweep's deletes,
+/// and every child's temp files, out of `%TEMP%`. `symlink_metadata` describes the link itself,
+/// and `is_dir` is false for one.
+fn is_plain_dir(root: &Path) -> bool {
+    std::fs::symlink_metadata(root).is_ok_and(|m| m.is_dir())
 }
 
 /// Is the process that made the child folder `<pid>-<n>` still running? A name with no pid is
@@ -224,25 +236,14 @@ mod tests {
             ("magick-0123456789012345678901234567890", true, true), // 31 characters
             (fresh_name.as_str(), false, true),
         ];
-        let old = SystemTime::now() - 2 * STALE_AFTER;
-        let age = |path: &Path| {
-            // FILE_WRITE_ATTRIBUTES is all `set_modified` needs; BACKUP_SEMANTICS opens a folder.
-            use std::os::windows::fs::OpenOptionsExt;
-            std::fs::OpenOptions::new()
-                .access_mode(0x100)
-                .custom_flags(0x0200_0000)
-                .open(path)
-                .and_then(|f| f.set_modified(old))
-                .unwrap();
-        };
         for (name, is_old, _) in cases {
             std::fs::write(temp.join(name), b"x").unwrap();
             if is_old {
-                age(&temp.join(name));
+                backdate(&temp.join(name));
             }
         }
-        age(&temp.join(ROOT).join("1-0"));
-        age(&temp.join(ROOT).join(&live));
+        backdate(&temp.join(ROOT).join("1-0"));
+        backdate(&temp.join(ROOT).join(&live));
         std::fs::create_dir(temp.join(ROOT).join("1-1")).unwrap();
 
         sweep_stale_in(&temp);
@@ -260,5 +261,44 @@ mod tests {
             "an old folder of a running process stays"
         );
         let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    /// A junction where our folder belongs is not followed: through it, the sweep would delete
+    /// every old folder without a pid in its name wherever the junction points.
+    #[test]
+    fn the_sweep_never_follows_a_junction_out_of_temp() {
+        let temp = std::env::temp_dir().join(format!("st2k-sweep-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        let elsewhere = temp.join("elsewhere");
+        std::fs::create_dir_all(elsewhere.join("Photos")).unwrap();
+        backdate(&elsewhere.join("Photos"));
+        let link = temp.join(ROOT);
+        let line = format!(
+            "mklink /J \"{}\" \"{}\" >nul",
+            link.display(),
+            elsewhere.display()
+        );
+        let linked = st2k_base::shellcmd::cmd_c(&line)
+            .and_then(|mut c| c.wait())
+            .is_ok_and(|s| s.success());
+        assert!(linked, "mklink /J made no junction at {}", link.display());
+        sweep_stale_in(&temp);
+        assert!(
+            elsewhere.join("Photos").exists(),
+            "the sweep followed the junction"
+        );
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    /// Set `path`'s modified time two [`STALE_AFTER`]s back. FILE_WRITE_ATTRIBUTES is all
+    /// `set_modified` needs; BACKUP_SEMANTICS opens a folder.
+    fn backdate(path: &Path) {
+        use std::os::windows::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .access_mode(0x100)
+            .custom_flags(0x0200_0000)
+            .open(path)
+            .and_then(|f| f.set_modified(SystemTime::now() - 2 * STALE_AFTER))
+            .unwrap();
     }
 }

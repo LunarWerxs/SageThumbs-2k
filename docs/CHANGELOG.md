@@ -37,6 +37,8 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **You choose what double-clicking the tray icon does** (fixes #58): Settings > Advanced >
   **Double-click tray icon** takes a screenshot (still the default), opens Settings, or does
   nothing.
+- **Send feedback asks you to promise you are not being a jerk.** Send stays greyed out until
+  you tick the box. The email field is labelled just "Email (optional)" now.
 - **Press Space to preview now works straight after installing.** Quick preview used to start
   off, so most people never found it. A new install turns it on, unless another Space-bar
   previewer (QuickLook or Seer) is already there, since two would fight over every press of

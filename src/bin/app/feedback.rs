@@ -10,8 +10,9 @@
 //! Convert dialog's per-format settings sheet follows.
 //!
 //! The submit is a single form-encoded POST. Nothing is sent until the user fills
-//! the box and clicks Send — the contact field is optional and clearly labelled as
-//! "only if you want a reply", so leaving it blank still delivers the message.
+//! the box, ticks the promise not to be a jerk (Send stays greyed out until then), and
+//! clicks Send. The email field is labelled optional, so leaving it blank still delivers
+//! the message.
 //! If the POST fails the text is put on the clipboard and the user is offered the
 //! GitHub issue page, so a dead network never eats what they typed.
 
@@ -27,8 +28,9 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use st2k_appkit::dark::{dark_ctlcolor, dark_ctlcolor_dim, dark_theme_combo};
 use st2k_appkit::win::{
-    combo_sel, ctl, get_edit_text, open_notify_link, open_url, run_dialog, set_clipboard_text, t,
-    wide, wm_dpichanged, BUTTON, COMBOBOX, EDIT, IDCANCEL, IDOK, STATIC, SYSLINK, URL_GITHUB,
+    checked, combo_sel, ctl, get_edit_text, open_notify_link, open_url, run_dialog,
+    set_clipboard_text, t, wide, wm_dpichanged, BUTTON, COMBOBOX, EDIT, IDCANCEL, IDOK, STATIC,
+    SYSLINK, URL_GITHUB,
 };
 
 /// Where a submitted message goes. Same host as the sponsor manifest / update check.
@@ -65,6 +67,13 @@ const ID_MSG: i32 = 104;
 const ID_EMAIL_LBL: i32 = 105;
 const ID_EMAIL: i32 = 106;
 const ID_GH_LINK: i32 = 107;
+/// "I promise I am not being a jerk": Send is enabled only while it is ticked (owner,
+/// 2026-10-05).
+const ID_PROMISE: i32 = 108;
+
+/// The checkbox glyph plus its gap to the label: a measurement of the text alone does not
+/// know about the box Windows draws in front of it.
+const CHK_GLYPH_W: i32 = 24;
 
 /// Worker → UI: the POST finished. `wparam` is 1 on success, 0 otherwise.
 const WM_FB_DONE: u32 = WM_APP + 3;
@@ -72,7 +81,8 @@ const WM_FB_DONE: u32 = WM_APP + 3;
 /// Design size of the dialog (whole window; [`run_dialog`] adjusts nothing, so the
 /// client is ~30 design px shorter — `build` lays out against the real client rect).
 const DLG_W: i32 = 470;
-const DLG_H: i32 = 400;
+/// The promise row above the buttons takes 30 of it, so the message box keeps its size.
+const DLG_H: i32 = 430;
 
 thread_local! {
     /// True while a POST is in flight — guards against a double submit (the button is
@@ -138,12 +148,15 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     // Bottom-anchored rows first, then the message box takes whatever is left — so the
     // free-text field is the part that grows, which is the part people actually use.
     let btn_y = ch - m - btn_h;
+    // The promise as tall as it wraps to (a checkbox clips silently, it never grows).
+    let promise_h =
+        st2k_appkit::win::wrapped_text_h(hwnd, t("fb_promise"), cw - 2 * m - CHK_GLYPH_W).max(20);
+    let promise_y = btn_y - 14 - promise_h;
     let email_h = 24;
-    let email_y = btn_y - 16 - email_h;
-    // The reply-address hint as tall as it wraps to: Ukrainian's takes two lines, and the
-    // message box above gives up the difference.
-    let email_lbl_h =
-        st2k_appkit::win::wrapped_text_h(hwnd, t("fb_email_hint"), cw - 2 * m).max(18);
+    let email_y = promise_y - 12 - email_h;
+    // The reply-address label as tall as it wraps to, and the message box above gives up
+    // the difference.
+    let email_lbl_h = st2k_appkit::win::wrapped_text_h(hwnd, t("fb_email"), cw - 2 * m).max(18);
     let email_lbl_y = email_y - 2 - email_lbl_h;
     // The intro as tall as it wraps to (at least the two lines it was designed for), and the
     // category label as wide as its text: both were cut off in four languages.
@@ -238,7 +251,7 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
     ctl(
         hwnd,
         STATIC,
-        t("fb_email_hint"),
+        t("fb_email"),
         lbl,
         m,
         email_lbl_y,
@@ -257,6 +270,20 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
         cw - 2 * m,
         email_h,
         ID_EMAIL,
+        hinst,
+    );
+
+    // The promise. BS_MULTILINE renders as one line when it fits and wraps when it does not.
+    ctl(
+        hwnd,
+        BUTTON,
+        t("fb_promise"),
+        WINDOW_STYLE(BS_AUTOCHECKBOX as u32 | BS_MULTILINE as u32) | WS_TABSTOP,
+        m,
+        promise_y,
+        cw - 2 * m,
+        promise_h,
+        ID_PROMISE,
         hinst,
     );
 
@@ -300,8 +327,17 @@ unsafe fn build(hwnd: HWND, hinst: HINSTANCE) {
         IDOK,
         hinst,
     );
+    sync_send(hwnd);
 
     let _ = SetFocus(GetDlgItem(Some(hwnd), ID_MSG).ok());
+}
+
+/// Send is live only while the promise is ticked and no POST is in flight.
+unsafe fn sync_send(hwnd: HWND) {
+    if let Ok(send) = GetDlgItem(Some(hwnd), IDOK) {
+        let ready = checked(hwnd, ID_PROMISE) && !SENDING.with(|s| s.get());
+        let _ = EnableWindow(send, ready);
+    }
 }
 
 /// The form body for one submission. `msg`/`contact` are already trimmed; both are
@@ -402,7 +438,8 @@ unsafe fn nag(hwnd: HWND, message: &str, focus_id: i32) {
 /// disabled where it matters — the Send button) and the outcome arrives as
 /// [`WM_FB_DONE`].
 unsafe fn on_send(hwnd: HWND) {
-    if SENDING.with(|s| s.get()) {
+    // Enter reaches here too, greyed-out Send or not.
+    if SENDING.with(|s| s.get()) || !checked(hwnd, ID_PROMISE) {
         return;
     }
     let msg = get_edit_text(hwnd, ID_MSG).trim().to_string();
@@ -474,8 +511,8 @@ unsafe fn on_done(hwnd: HWND, ok: bool) {
     if let Ok(send) = GetDlgItem(Some(hwnd), IDOK) {
         let label = wide(t("fb_send"));
         let _ = SetWindowTextW(send, PCWSTR(label.as_ptr()));
-        let _ = EnableWindow(send, true);
     }
+    sync_send(hwnd);
     let _ = set_clipboard_text(&get_edit_text(hwnd, ID_MSG));
     let body = wide(t("fb_failed"));
     let cap = wide(t("fb_title"));
@@ -556,10 +593,12 @@ unsafe fn try_ctlcolor(msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESU
     dark_ctlcolor(msg, wparam)
 }
 
-/// Routes a WM_COMMAND id: OK sends the form, Cancel closes the dialog.
+/// Routes a WM_COMMAND id: OK sends the form, Cancel closes the dialog, the promise box
+/// turns Send on and off.
 unsafe fn handle_command(hwnd: HWND, wparam: WPARAM) {
     match st2k_appkit::win::command_id(wparam) {
         IDOK => on_send(hwnd),
+        ID_PROMISE => sync_send(hwnd),
         IDCANCEL => {
             let _ = DestroyWindow(hwnd);
         }
