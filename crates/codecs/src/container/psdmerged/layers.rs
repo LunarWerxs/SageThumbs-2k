@@ -621,19 +621,28 @@ fn open_mask<'a, R: Read + Seek>(
     }
 }
 
-/// A colour as RGB from the display bytes of each colour channel at column `x`.
-fn to_rgb(mode: Mode, rows: &[Vec<u8>], x: usize) -> [u8; 3] {
-    let at = |c: usize| rows.get(c).and_then(|r| r.get(x)).copied().unwrap_or(0);
-    match mode {
-        Mode::Rgb => [at(0), at(1), at(2)],
-        // Stored inverted (255 = no ink), so the black scales what the inks leave.
-        Mode::Cmyk => {
-            let k = u16::from(at(3));
-            [0, 1, 2].map(|c| (u16::from(at(c)) * k / 255) as u8)
-        }
-        Mode::Lab => lab_pixel(at(0), at(1), at(2)),
-        _ => [at(0); 3],
+/// A row of colours as RGB from the display bytes of each colour channel: CMYK through the
+/// document's profile, every other mode in its own RGB or grey, which the finished picture is
+/// carried out of (`Profile::finish`).
+fn to_rgb(head: &Head, rows: &[Vec<u8>], width: usize) -> Option<Vec<[u8; 3]>> {
+    let at = |c: usize, x: usize| rows.get(c).and_then(|r| r.get(x)).copied().unwrap_or(0);
+    if head.mode == Mode::Cmyk {
+        let cmyka = (0..width).flat_map(|x| [at(0, x), at(1, x), at(2, x), at(3, x), 255]);
+        let rgba = head.profile.cmyka_to_rgba(&cmyka.collect::<Vec<_>>())?;
+        return Some(
+            rgba.as_chunks::<4>()
+                .0
+                .iter()
+                .map(|p| [p[0], p[1], p[2]])
+                .collect(),
+        );
     }
+    let pixel = |x| match head.mode {
+        Mode::Rgb => [at(0, x), at(1, x), at(2, x)],
+        Mode::Lab => lab_pixel(at(0, x), at(1, x), at(2, x)),
+        _ => [at(0, x); 3],
+    };
+    Some((0..width).map(pixel).collect())
 }
 
 impl<R: Read + Seek> Sources<'_, R> {
@@ -647,7 +656,7 @@ impl<R: Read + Seek> Sources<'_, R> {
             let raw = rows.row(ly, bytes, head.depth)?;
             colours.push(display_row(&raw, head.depth, width, true));
         }
-        let rgb = (0..width).map(|x| to_rgb(head.mode, &colours, x)).collect();
+        let rgb = to_rgb(head, &colours, width)?;
         let mut cover = match &mut self.alpha {
             Some(rows) => display_row(&rows.row(ly, bytes, head.depth)?, head.depth, width, false),
             None => vec![255u8; width],
@@ -871,7 +880,7 @@ pub(super) fn flatten<R: Read + Seek>(r: &mut R, head: &Head, target_edge: u32) 
     if canvas.rgba.as_chunks::<4>().0.iter().all(|px| px[3] == 0) {
         return Some(Flat::NoLayers);
     }
-    Some(Flat::Picture(canvas.image()?))
+    Some(Flat::Picture(head.profile.finish(canvas.image()?)))
 }
 
 /// [`flatten`] on any document, composite or not, for the tests: a document that keeps both

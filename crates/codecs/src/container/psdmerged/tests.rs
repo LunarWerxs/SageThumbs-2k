@@ -264,21 +264,79 @@ fn find_table(f: &[u8]) -> usize {
     30 + 4 + res + 4 + 2
 }
 
+/// A Photoshop document built by [`synth`], with `icc` as its colour profile (resource 1039).
+fn with_profile(mut f: Vec<u8>, icc: &[u8]) -> Vec<u8> {
+    let mut block = b"8BIM".to_vec();
+    block.extend_from_slice(&ICC_PROFILE.to_be_bytes());
+    block.extend_from_slice(&[0, 0]);
+    block.extend_from_slice(&(icc.len() as u32).to_be_bytes());
+    block.extend_from_slice(icc);
+    if icc.len() % 2 == 1 {
+        block.push(0);
+    }
+    let len = u32::from_be_bytes(f[30..34].try_into().unwrap()) as usize;
+    f.splice(34..34, block.iter().copied());
+    f[30..34].copy_from_slice(&((len + block.len()) as u32).to_be_bytes());
+    f
+}
+
+/// A document's own profile carries its samples to sRGB: a grey level through a linear grey
+/// profile is linear light (128 is 188 in sRGB), and an RGB colour through Display P3 comes
+/// out as the shared colour management makes any Display P3 picture. A 32-bit document is
+/// linear light already shown through the sRGB curve, so its profile is not applied again.
+#[test]
+fn a_documents_own_profile_carries_it_to_srgb() {
+    use moxcms::ColorProfile;
+    let linear_grey = ColorProfile::new_gray_with_gamma(1.0).encode().unwrap();
+    let f = synth((4, 4), (1, 1, 8), false, true, true, |_, _, _| 128);
+    let px = decode(&with_profile(f, &linear_grey), 64)
+        .unwrap()
+        .get_pixel(1, 1)
+        .0;
+    assert!(
+        px[..3].iter().all(|&v| v.abs_diff(188) <= 1),
+        "grey: {px:?}"
+    );
+
+    let p3 = ColorProfile::new_display_p3().encode().unwrap();
+    let f = synth((4, 4), (3, 3, 8), false, true, true, |_, _, c| {
+        [200, 100, 50][usize::from(c)]
+    });
+    let px = decode(&with_profile(f, &p3), 64).unwrap().get_pixel(1, 1).0;
+    let plain = DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+        1,
+        1,
+        image::Rgba([200, 100, 50, 255]),
+    ));
+    let want = crate::decode::apply_icc_to_srgb(plain, Some(p3))
+        .to_rgba8()
+        .get_pixel(0, 0)
+        .0;
+    assert_ne!(want, [200, 100, 50, 255], "premise: Display P3 is not sRGB");
+    assert_eq!(px, want, "Display P3");
+
+    let f = synth((6, 4), (3, 3, 32), false, false, true, |_, _, c| {
+        [255, 128, 0][usize::from(c)]
+    });
+    let px = decode(&with_profile(f, &linear_grey), 64)
+        .unwrap()
+        .get_pixel(2, 2)
+        .0;
+    assert_eq!(px, [255, 188, 0, 255], "32-bit");
+}
+
 /// Every Photoshop-written variant in the corpus, against ImageMagick's reading of the same
 /// file, which is what the Quick preview showed before. Lab is the one allowed to differ by
-/// more: ImageMagick reads Photoshop's D50 Lab as D65 (see `lab_pixel`). Left out: the 32-bit
-/// pair (below) and `real.psd`, a 10x12 16-bit CMYK test file with no layers whose own flag
-/// disowns its composite and whose baked preview is blank white, which ImageMagick draws with
-/// its black channel the other way up from every 8-bit CMYK document here.
+/// more: ImageMagick reads Photoshop's D50 Lab as D65 (see `lab_pixel`). Left out: the
+/// documents ImageMagick reads in the wrong colours (below), and `real.psd`, a 10x12 16-bit
+/// CMYK test file with no layers whose own flag disowns its composite and whose baked preview
+/// is blank white, which ImageMagick draws with its black channel the other way up from every
+/// 8-bit CMYK document here.
 #[test]
 fn real_documents_agree_with_imagemagick() {
-    const READ: [(&str, f64); 19] = [
+    const READ: [(&str, f64); 15] = [
         ("real-flat.psd", 1.5),
         ("real-flat.psb", 1.5),
-        ("real-grey.psd", 1.5),
-        ("real-grey.psb", 1.5),
-        ("real-cmyk.psd", 1.5),
-        ("real-cmyk.psb", 1.5),
         ("real-16bit.psd", 1.5),
         ("real-16bit.psb", 1.5),
         ("real-rgb-layers.psd", 1.5),
@@ -310,13 +368,23 @@ fn real_documents_agree_with_imagemagick() {
     }
 }
 
-/// A 32-bit document against Photoshop's own baked preview instead: ImageMagick writes its
-/// linear light out without the sRGB curve (182, 5, 5 for the corpus's red, where Photoshop's
-/// preview and the 8-bit variants show 220, 40, 40). The preview is a small JPEG, hence the
-/// looser tolerance.
+/// The documents ImageMagick reads in the wrong colours, against Photoshop's own baked preview
+/// instead. A 32-bit one: ImageMagick writes its linear light out without the sRGB curve
+/// (182, 5, 5 for the corpus's red, where Photoshop's preview and the 8-bit variants show
+/// 220, 40, 40). CMYK and grey: ImageMagick, as this reader did until 2026-10-06, ignores the
+/// document's profile, so CMYK's red came out (234, 5, 3) and the Dot Gain grey 94 where
+/// Photoshop shows 115 (see `profile`). The preview is a small JPEG, hence the looser
+/// tolerance.
 #[test]
-fn thirty_two_bit_documents_agree_with_photoshops_preview() {
-    for name in ["real-32bit.psd", "real-32bit.psb"] {
+fn documents_imagemagick_misreads_agree_with_photoshops_preview() {
+    for name in [
+        "real-32bit.psd",
+        "real-32bit.psb",
+        "real-cmyk.psd",
+        "real-cmyk.psb",
+        "real-grey.psd",
+        "real-grey.psb",
+    ] {
         let Some(bytes) = st2k_base::testcorpus::read(name) else {
             eprintln!("NOT MEASURED: {name} absent");
             continue;

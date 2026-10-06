@@ -14,14 +14,20 @@ def psd_variants(b):
     i = 26
     cm_len, = struct.unpack(">I", b[i:i + 4]); i += 4 + cm_len
     res_len, = struct.unpack(">I", b[i:i + 4]); res = b[i + 4:i + 4 + res_len]; i += 4 + res_len
-    if b"8BIM\x04\x0c" in res:
+    has_preview = b"8BIM\x04\x0c" in res
+    if has_preview:
         v.add("has-thumbnail-1036")
     i, layers = _psd_layers(b, i, ver)
     v.add("has-layers" if layers > 0 else "no-layers")
     # Merged image data follows. Photoshop ALWAYS writes the section; with "Maximize
     # Compatibility" off it writes a blank (uniform) composite instead of the artwork, so the
     # tell is whether the composite is uniform, not whether it is there.
-    v.add(composite_kind(b, i, w, h, channels, ver, mode))
+    v.add(composite_kind(b, i, (w * depth + 7) // 8, h, channels, ver, mode))
+    if not has_preview:
+        # With no preview the thumbnail comes from SageThumbs' own composite and layer readers,
+        # whose every colour mode, depth and composite kind is its own path. Until 2026-10-06
+        # the corpus had preview-less files in 8-bit RGB only, and issue #55 lived in the rest.
+        v |= {"no-thumbnail-1036"} | {"nopreview-" + t for t in v & NOPREVIEW_AXES}
     return v
 
 
@@ -72,19 +78,19 @@ def _psd_tagged_layer_count(section, wide):
     return 0
 
 
-def composite_kind(b, i, w, h, channels, ver, mode):
+def composite_kind(b, i, row_bytes, h, channels, ver, mode):
     if len(b) - i < 2:
         return "no-composite"
     comp, = struct.unpack(">H", b[i:i + 2])
     i += 2
     if comp == 1:  # RLE: a table of per-row byte counts, then the packed rows
-        return _composite_rle(b, i, w, h, channels, ver, mode)
+        return _composite_rle(b, i, row_bytes, h, channels, ver, mode)
     if comp == 0:  # raw planar samples
-        return _composite_raw(b, i, w, h, channels, mode)
+        return _composite_raw(b, i, row_bytes, h, channels, mode)
     return "has-composite"
 
 
-def _composite_rle(b, i, w, h, channels, ver, mode):
+def _composite_rle(b, i, row_bytes, h, channels, ver, mode):
     # "Blank" is what Photoshop writes there with Maximize Compatibility off: every row one
     # colour, and that colour paper white (255 in every channel; 0 for a bitmap). A flat-colour
     # ARTWORK is uniform too (real-flat.psd is a red rectangle) and is a real composite. RLE
@@ -94,7 +100,7 @@ def _composite_rle(b, i, w, h, channels, ver, mode):
     if len(b) < i + rows * wide:
         return "no-composite"
     counts = [struct.unpack(fmt, b[i + k * wide:i + k * wide + wide])[0] for k in range(rows)]
-    runs_per_row = (w + 127) // 128  # a uniform row is one run per 128 pixels
+    runs_per_row = (row_bytes + 127) // 128  # a uniform row is one run per 128 bytes
     if not all(c <= runs_per_row * 2 for c in counts):
         return "has-composite"
     first = b[i + rows * wide:i + rows * wide + counts[0]]
@@ -102,9 +108,9 @@ def _composite_rle(b, i, w, h, channels, ver, mode):
     return "composite-blank" if value == 255 and mode in PAPER_WHITE_MODES else "has-composite"
 
 
-def _composite_raw(b, i, w, h, channels, mode):
+def _composite_raw(b, i, row_bytes, h, channels, mode):
     # Raw rows are sampled for a second value; a uniform composite is blank paper white.
-    n = w * h * channels
+    n = row_bytes * h * channels
     data = b[i:i + n]
     if len(data) < n:
         return "no-composite"
@@ -119,6 +125,12 @@ PAPER_WHITE_MODES = {1, 3, 4, 9}
 # `no-composite` (the section absent altogether) is not a variant any writer seen here
 # produces - Photoshop always writes the section and blanks it instead - so it is reported
 # when found and never wanted.
+#
+# The variants that pair with a missing preview (see `psd_variants`); `nopreview-composite-blank`
+# is #55's own shape, layers behind a blank composite and nothing else to draw from.
+NOPREVIEW_AXES = {"8-bit", "16-bit", "32-bit", "rgb", "cmyk", "greyscale", "indexed", "lab",
+                  "psb", "has-layers", "composite-blank"}
+
 PSD_WANTED = {"8-bit", "16-bit", "32-bit", "rgb", "cmyk", "greyscale", "indexed", "lab",
               "has-layers", "no-layers", "has-composite", "composite-blank",
-              "has-thumbnail-1036"}
+              "has-thumbnail-1036", "no-thumbnail-1036"} | {"nopreview-" + t for t in NOPREVIEW_AXES}

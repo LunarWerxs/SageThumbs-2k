@@ -40,6 +40,15 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   MeshLab and ZBrush write every point of a model before its first face, and SageThumbs only
   recognised an OBJ file when a face appeared in its first 64 KB, so nearly every real model
   stayed a blank icon. It now recognises a file whose opening is OBJ through and through.
+- **CMYK and grayscale Photoshop files show their true colours in the Quick preview**, and in the
+  thumbnail when the file has no preview image of its own. SageThumbs ignored the colour profile
+  saved in the document, so a CMYK red came out a harsher, brighter red than Photoshop shows and
+  a grayscale picture came out darker. Photoshop files in a wide colour space such as Adobe RGB
+  were over-saturated the same way. All three now go through the document's own profile.
+- **CMYK JPEGs saved by Photoshop show their true colours.** A CMYK JPEG carries its own colour
+  profile, but Photoshop (and most print tools) save its inks in a form SageThumbs did not take
+  apart, so the profile was skipped and the picture came out with the same harsh colours as the
+  Photoshop files above. It now goes through its profile too.
 
 ## 3.6.0
 

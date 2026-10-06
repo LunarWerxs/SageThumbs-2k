@@ -818,7 +818,13 @@
    "real-nocomposite.psb",
    "real-lab.psb",
    "real-32bit.psb",
-   "real-indexed.psb"
+   "real-indexed.psb",
+   "real-cmyk-noflat.psb",
+   "real-grey-noflat.psb",
+   "real-16bit-noflat.psb",
+   "real-rgb-layers-noflat.psb",
+   "real-32bit-nopreview.psb",
+   "real-indexed-nopreview.psb"
   ],
   "strategy": "psd-layers"
  },
@@ -832,7 +838,15 @@
    "real-grey.psd",
    "real-nocomposite.psd",
    "real-lab.psd",
-   "real-32bit.psd"
+   "real-32bit.psd",
+   "real-cmyk-nopreview.psd",
+   "real-cmyk-noflat.psd",
+   "real-grey-nopreview.psd",
+   "real-grey-noflat.psd",
+   "real-16bit-noflat.psd",
+   "real-32bit-nopreview.psd",
+   "real-lab-noflat.psd",
+   "real-rgb-layers-noflat.psd"
   ],
   "strategy": "psd-layers"
  },

@@ -290,6 +290,28 @@ fn detects_cmyk_jpeg_by_component_count() {
     assert!(!is_cmyk_jpeg(&[]), "empty input");
 }
 
+/// A CMYK JPEG tagged with Photoshop's own U.S. Web Coated (SWOP) v2 profile, flat in the ink
+/// Photoshop stored for its red (build-corpus.ps1, 9z5b): Photoshop shows it as (220, 42, 40).
+/// Until 2026-10-06 it came out (234, 7, 4), the naive conversion, because moxcms refused the
+/// CMYK-plus-alpha transform `decode_cmyk_jpeg` asked it for. Through the thumbnail route, so
+/// a tier taking the JPEG ahead of the colour-managed one fails here too.
+#[test]
+fn a_cmyk_jpeg_is_shown_through_its_profile() {
+    let Some(bytes) = st2k_base::testcorpus::read("sample-jpeg-cmyk-swop.jpg") else {
+        return;
+    };
+    let img = crate::decode::decode_preview_capped(&bytes, 256)
+        .expect("a CMYK JPEG thumbnails")
+        .to_rgb8();
+    let px = img.get_pixel(img.width() / 2, img.height() / 2).0;
+    assert!(
+        px.iter()
+            .zip([220u8, 42, 40])
+            .all(|(&got, want)| got.abs_diff(want) <= 6),
+        "{px:?}, where Photoshop shows [220, 42, 40]"
+    );
+}
+
 #[test]
 fn jxl_applies_its_embedded_color_profile() {
     // Issue #9: the jxl tier decoded correctly but never colour-managed, unlike the `image`

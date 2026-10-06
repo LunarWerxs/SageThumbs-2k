@@ -16,7 +16,8 @@
 //!
 //! Every colour mode Photoshop keeps a composite in is read: Bitmap, Grayscale, Duotone
 //! (stored as greyscale), Indexed, RGB, CMYK and Lab, at 1, 8, 16 and 32 bits, raw or
-//! PackBits. Multichannel and a ZIP composite are `None`, and the caller keeps the route it
+//! PackBits, through the document's own colour profile ([`profile`]). Multichannel and a ZIP
+//! composite are `None`, and the caller keeps the route it
 //! had. A document saved WITHOUT its composite - the box unticked, the usual choice for a huge
 //! one, whose composite Photoshop then leaves white - has its pixel layers flattened instead
 //! ([`layers`]). Checked against the Photoshop-written variants in the corpus
@@ -30,8 +31,11 @@ use super::ilbm::byterun1_decode;
 use super::psd::{has_alpha, resource_block_header};
 
 mod layers;
+mod profile;
 #[cfg(test)]
 mod tests;
+
+use profile::{Profile, ICC_PROFILE};
 
 /// The fixed start of the file: the 26-byte header and the Color Mode Data length after it.
 const HEAD: usize = 30;
@@ -82,6 +86,16 @@ impl Mode {
             Self::Bitmap | Self::Grey | Self::Indexed => 1,
             Self::Rgb | Self::Lab => 3,
             Self::Cmyk => 4,
+        }
+    }
+
+    /// Bytes a cell of the composite takes while it is drawn: RGBA, except that CMYK keeps
+    /// its four inks and transparency until the profile makes them RGB.
+    fn cell_bytes(self) -> usize {
+        if self == Self::Cmyk {
+            5
+        } else {
+            4
         }
     }
 }
@@ -149,6 +163,8 @@ struct Head {
     layers: u64,
     /// Photoshop's own word that the composite is the picture (see [`composite_is_real`]).
     real: bool,
+    /// How the samples reach sRGB.
+    profile: Profile,
 }
 
 impl Head {
@@ -225,25 +241,28 @@ fn read_palette<R: Read>(r: &mut R, len: u32) -> Option<Vec<[u8; 3]>> {
     Some((0..256).map(|i| [t[i], t[256 + i], t[512 + i]]).collect())
 }
 
-/// Photoshop's own word on whether the composite is the picture. `false` only when the
-/// version-info resource says so; a file from before that resource existed has a real one.
-fn composite_is_real(res: &[u8]) -> bool {
+/// The data of resource `id` in the Image Resources section `res`, if it is there.
+fn resource(res: &[u8], id: u16) -> Option<&[u8]> {
     let mut o = 0usize;
     for _ in 0..MAX_RESOURCES {
-        let Some((id, start, end)) = resource_block_header(res, o, res.len()) else {
-            return true;
-        };
-        if id == VERSION_INFO {
-            return res.get(start + 4) != Some(&0);
+        let (rid, start, end) = resource_block_header(res, o, res.len())?;
+        if rid == id {
+            return res.get(start..end);
         }
         o = end + ((end - start) & 1);
     }
-    true
+    None
+}
+
+/// Photoshop's own word on whether the composite is the picture. `false` only when the
+/// version-info resource says so; a file from before that resource existed has a real one.
+fn composite_is_real(res: &[u8]) -> bool {
+    resource(res, VERSION_INFO).is_none_or(|info| info.get(4) != Some(&0))
 }
 
 /// Walk the Image Resources section at `at`: the offset of the Layer and Mask section after
-/// it, and whether the composite is the picture.
-fn past_resources<R: Read + Seek>(r: &mut R, at: u64) -> Option<(u64, bool)> {
+/// it, and the section (its first [`MAX_RESOURCE_SCAN`] bytes).
+fn past_resources<R: Read + Seek>(r: &mut R, at: u64) -> Option<(u64, Vec<u8>)> {
     r.seek(SeekFrom::Start(at)).ok()?;
     let len = u64::from(read_u32(r)?);
     let mut res = Vec::new();
@@ -251,10 +270,7 @@ fn past_resources<R: Read + Seek>(r: &mut R, at: u64) -> Option<(u64, bool)> {
         .take(len.min(MAX_RESOURCE_SCAN))
         .read_to_end(&mut res)
         .ok()?;
-    Some((
-        at.checked_add(4)?.checked_add(len)?,
-        composite_is_real(&res),
-    ))
+    Some((at.checked_add(4)?.checked_add(len)?, res))
 }
 
 /// Skip the Layer and Mask section at `at` and read the Image Data section's compression:
@@ -283,7 +299,7 @@ fn read_head<R: Read + Seek>(r: &mut R) -> Option<Head> {
         Vec::new()
     };
     let resources = (HEAD as u64).checked_add(u64::from(colour_data))?;
-    let (layers, real) = past_resources(r, resources)?;
+    let (layers, res) = past_resources(r, resources)?;
     Some(Head {
         psb,
         channels,
@@ -294,7 +310,8 @@ fn read_head<R: Read + Seek>(r: &mut R) -> Option<Head> {
         alpha: has_alpha(&head),
         palette,
         layers,
-        real,
+        real: composite_is_real(&res),
+        profile: Profile::of(mode, depth, resource(&res, ICC_PROFILE)),
     })
 }
 
@@ -481,17 +498,15 @@ fn shrink_indexed(row: &[u8], palette: &[[u8; 3]], step: usize, line: &mut [u8])
     }
 }
 
-/// What one channel contributes to an RGBA pixel.
+/// What one channel contributes to a cell (see [`Mode::cell_bytes`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Role {
-    /// Written straight into this slot: R, G, B, or 3 for transparency. CMYK's C, M and Y
-    /// land in R, G and B, because Photoshop stores each ink inverted (255 = none), and Lab's
-    /// L, a and b wait there for [`lab_to_srgb`].
+    /// Written straight into this slot of the cell, transparency into its last: R, G and B;
+    /// CMYK's four inks, for [`Profile::cmyka_to_rgba`]; Lab's L, a and b, for
+    /// [`lab_to_srgb`].
     Slot(usize),
     /// A grey level, into R, G and B.
     Grey,
-    /// CMYK's black, scaling the R, G and B its inks left.
-    Key,
     /// An Indexed document's palette index (see [`shrink_indexed`]).
     Index,
 }
@@ -501,14 +516,14 @@ impl Role {
         match (mode, c) {
             (Mode::Grey | Mode::Bitmap, 0) => Self::Grey,
             (Mode::Indexed, 0) => Self::Index,
-            (Mode::Cmyk, 3) => Self::Key,
-            (m, c) if c == m.colours() => Self::Slot(3),
+            (m, c) if c == m.colours() => Self::Slot(m.cell_bytes() - 1),
             (_, c) => Self::Slot(c),
         }
     }
 
-    fn apply(self, cells: &[u8], line: &mut [u8]) {
-        let px = line.as_chunks_mut::<4>().0.iter_mut().zip(cells);
+    /// Write `cells` into `line`, whose cells are `stride` bytes.
+    fn apply(self, cells: &[u8], line: &mut [u8], stride: usize) {
+        let px = line.chunks_exact_mut(stride).zip(cells);
         match self {
             Self::Slot(i) => px.for_each(|(p, &v)| {
                 if let Some(s) = p.get_mut(i) {
@@ -516,11 +531,6 @@ impl Role {
                 }
             }),
             Self::Grey => px.for_each(|(p, &v)| p[..3].fill(v)),
-            Self::Key => px.for_each(|(p, &k)| {
-                for s in &mut p[..3] {
-                    *s = (u16::from(*s) * u16::from(k) / 255) as u8;
-                }
-            }),
             Self::Index => {}
         }
     }
@@ -533,13 +543,14 @@ fn paint_channel<R: Read + Seek>(
     packed: bool,
     (grid, c): (&Grid, usize),
     spans: &[(u64, usize)],
-    rgba: &mut [u8],
+    px: &mut [u8],
 ) -> Option<()> {
     let role = Role::of(head.mode, c);
     // A 32-bit colour sample is linear light; transparency is not a light level at all.
-    let curve = role != Role::Slot(3);
+    let curve = c < head.mode.colours();
+    let stride = head.mode.cell_bytes();
     let mut cells = vec![0u8; grid.tw];
-    let lines = rgba.chunks_mut(grid.tw * 4);
+    let lines = px.chunks_mut(grid.tw * stride);
     for (&span, line) in spans.iter().zip(lines) {
         let raw = read_row(r, span, head.row_bytes(), packed)?;
         let row = display_row(&raw, head.depth, head.width, curve);
@@ -548,7 +559,7 @@ fn paint_channel<R: Read + Seek>(
             continue;
         }
         shrink_row(&row, grid.step, &mut cells);
-        role.apply(&cells, line);
+        role.apply(&cells, line, stride);
     }
     Some(())
 }
@@ -607,13 +618,14 @@ fn unblend(rgba: &mut [u8]) {
     }
 }
 
-/// A canvas of `fill` in every byte, reserved fallibly: its size comes from the file.
-fn canvas(grid: &Grid, fill: u8) -> Option<Vec<u8>> {
-    let len = grid.tw.checked_mul(grid.th)?.checked_mul(4)?;
-    let mut rgba = Vec::new();
-    rgba.try_reserve_exact(len).ok()?;
-    rgba.resize(len, fill);
-    Some(rgba)
+/// A canvas of `cell` bytes a cell, `fill` in every byte, reserved fallibly: its size comes
+/// from the file.
+fn canvas(grid: &Grid, cell: usize, fill: u8) -> Option<Vec<u8>> {
+    let len = grid.tw.checked_mul(grid.th)?.checked_mul(cell)?;
+    let mut px = Vec::new();
+    px.try_reserve_exact(len).ok()?;
+    px.resize(len, fill);
+    Some(px)
 }
 
 /// The stored composite, sampled to at least `target_edge` on its long side (see `Grid::new`).
@@ -621,10 +633,15 @@ fn composite<R: Read + Seek>(r: &mut R, head: &Head, target_edge: u32) -> Option
     let (data, packed) = image_data(r, head.layers, head.psb)?;
     let grid = Grid::new(head.width, head.height, target_edge);
     let spans = row_spans(r, head, (data, packed), &grid)?;
-    let mut rgba = canvas(&grid, 255)?;
+    // 255 everywhere is white and opaque in every mode: CMYK keeps its inks inverted.
+    let mut px = canvas(&grid, head.mode.cell_bytes(), 255)?;
     for (c, rows) in spans.chunks(grid.th).enumerate() {
-        paint_channel(r, head, packed, (&grid, c), rows, &mut rgba)?;
+        paint_channel(r, head, packed, (&grid, c), rows, &mut px)?;
     }
+    let mut rgba = match head.mode {
+        Mode::Cmyk => head.profile.cmyka_to_rgba(&px)?,
+        _ => px,
+    };
     if head.mode == Mode::Lab {
         lab_to_srgb(&mut rgba);
     }
@@ -632,7 +649,7 @@ fn composite<R: Read + Seek>(r: &mut R, head: &Head, target_edge: u32) -> Option
         unblend(&mut rgba);
     }
     let img = RgbaImage::from_raw(grid.tw as u32, grid.th as u32, rgba)?;
-    Some(DynamicImage::ImageRgba8(img))
+    Some(head.profile.finish(DynamicImage::ImageRgba8(img)))
 }
 
 /// The document's picture, sampled to at least `target_edge` (the caller's resize takes it the

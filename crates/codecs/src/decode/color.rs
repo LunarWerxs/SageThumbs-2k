@@ -243,10 +243,10 @@ pub(super) fn is_cmyk_jpeg(b: &[u8]) -> bool {
 }
 
 /// Would decoding a `w`×`h` CMYK JPEG through [`decode_cmyk_jpeg`] blow past `max_alloc`?
-/// Sums the three transient buffers the function allocates along the way: zune's raw CMYK
-/// output (4 B/px), the padded `Cmyka` copy (5 B/px), and the final RGBA buffer (4 B/px) —
-/// 13 B/px, well past the 512 MiB budget every other decode tier is held to at anything near
-/// the dimension cap. A plain `w * h * 13` multiply is used instead of `checked_mul` because
+/// Budgets 13 B/px for what the decode holds at once: zune's component planes while it
+/// decodes (4 B/px), its raw CMYK output (4 B/px) and the RGB the profile makes of it
+/// (3 B/px), with room to spare — well past the 512 MiB budget every other decode tier is
+/// held to at anything near the dimension cap. A plain `w * h * 13` multiply is used instead of `checked_mul` because
 /// both factors are already bounded by `MAX_DIM`/`MAX_PIXELS` at every call site, so the
 /// product can't approach `u64::MAX`.
 fn cmyk_transient_bytes_exceed_budget(w: u32, h: u32, max_alloc: u64) -> bool {
@@ -254,25 +254,27 @@ fn cmyk_transient_bytes_exceed_budget(w: u32, h: u32, max_alloc: u64) -> bool {
     (w as u64) * (h as u64) * CMYK_TRANSIENT_BYTES_PER_PIXEL > max_alloc
 }
 
-/// Decode a CMYK/YCCK JPEG to color-managed sRGB: pull the RAW 4-channel CMYK from
-/// zune-jpeg (the image crate would convert it to RGB naively, dropping the profile), then
-/// run it through the embedded CMYK ICC → sRGB with moxcms. Returns `None` (caller falls
-/// back to the image crate's RGB) if it isn't really CMYK, lacks a usable CMYK profile, or
-/// fails — so this can only ever improve a CMYK thumbnail, never blank one.
+/// Decode a CMYK/YCCK JPEG to color-managed sRGB: pull the RAW 4-channel samples from
+/// zune-jpeg (the image crate would convert them to RGB naively, dropping the profile), then
+/// run their inks through the embedded CMYK ICC → sRGB with moxcms. Returns `None` (caller
+/// falls back to the image crate's RGB) if it isn't really CMYK, lacks a usable CMYK profile,
+/// or fails — so this can only ever improve a CMYK thumbnail, never blank one.
 pub(super) fn decode_cmyk_jpeg(bytes: &[u8]) -> Option<DynamicImage> {
     use moxcms::{ColorProfile, DataColorSpace, Layout, TransformOptions};
     use zune_jpeg::zune_core::bytestream::ZCursor;
     use zune_jpeg::zune_core::colorspace::ColorSpace;
-    use zune_jpeg::zune_core::options::DecoderOptions;
     use zune_jpeg::JpegDecoder;
 
-    let opts = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::CMYK);
-    let mut dec = JpegDecoder::new_with_options(ZCursor::new(bytes), opts);
+    let mut dec = JpegDecoder::new(ZCursor::new(bytes));
     dec.decode_headers().ok()?;
-    match dec.input_colorspace()? {
-        ColorSpace::CMYK | ColorSpace::YCCK => {}
-        _ => return None,
+    let stored = dec.input_colorspace()?;
+    if !matches!(stored, ColorSpace::CMYK | ColorSpace::YCCK) {
+        return None;
     }
+    // The samples as the file holds them. zune maps YCCK to CMYK only by way of RGB (it refuses
+    // YCCK -> CMYK), and YCCK is what Photoshop and libjpeg write for CMYK, so asking for CMYK,
+    // as this did until 2026-10-06, failed for nearly every real CMYK JPEG.
+    dec.set_options(dec.options().jpeg_set_out_colorspace(stored));
     let info = dec.info()?;
     let (w, h) = (u32::from(info.width), u32::from(info.height));
     if !cmyk_output_within_limits(w, h) {
@@ -285,29 +287,44 @@ pub(super) fn decode_cmyk_jpeg(bytes: &[u8]) -> Option<DynamicImage> {
     if src.color_space != DataColorSpace::Cmyk {
         return None;
     }
-    let cmyk = dec.decode().ok()?; // 4 bytes/px
+    let inks = jpeg_inks(dec.decode().ok()?, stored == ColorSpace::YCCK); // 4 bytes/px
     let px = (w as usize) * (h as usize);
-    if cmyk.len() < px * 4 {
+    if inks.len() < px * 4 {
         return None;
     }
-    // moxcms takes CMYK + alpha (`Cmyka`, 5 channels); pad each pixel with an opaque alpha.
-    let mut cmyka = vec![0u8; px * 5];
-    for i in 0..px {
-        cmyka[i * 5..i * 5 + 4].copy_from_slice(&cmyk[i * 4..i * 4 + 4]);
-        cmyka[i * 5 + 4] = 255;
-    }
+    // Four inks in, RGB out: moxcms lays CMYK out as `Rgba`. Its `Cmyka` layout, which this
+    // used until 2026-10-06, is refused (`InvalidLayout`, moxcms 0.8.1) for the lookup-table
+    // profiles every real CMYK profile is: with that and the YCCK refusal above, a CMYK JPEG
+    // with Photoshop's own SWOP profile fell through to the naive conversion, and the red
+    // Photoshop shows as (220, 42, 40) came out (234, 7, 4).
     let dst = ColorProfile::new_srgb();
     let transform = src
-        .create_transform_8bit(
-            Layout::Cmyka,
-            &dst,
-            Layout::Rgba,
-            TransformOptions::default(),
-        )
+        .create_transform_8bit(Layout::Rgba, &dst, Layout::Rgb, TransformOptions::default())
         .ok()?;
-    let mut rgba = vec![0u8; px * 4];
-    transform.transform(&cmyka, &mut rgba).ok()?;
-    image::RgbaImage::from_raw(w, h, rgba).map(DynamicImage::ImageRgba8)
+    let mut rgb = vec![0u8; px * 3];
+    transform.transform(&inks[..px * 4], &mut rgb).ok()?;
+    image::RgbImage::from_raw(w, h, rgb).map(DynamicImage::ImageRgb8)
+}
+
+/// A CMYK JPEG's samples as ink, 0 for none, which is how a CMYK profile counts it. Adobe
+/// stores CMYK inverted (255 is no ink), the reading zune's own conversion makes too. YCCK
+/// keeps C, M and Y as one colour triple through the JPEG YCbCr transform (so the triple
+/// that comes back IS the inks) and K inverted.
+fn jpeg_inks(mut samples: Vec<u8>, ycck: bool) -> Vec<u8> {
+    let ink = |v: f32| v.round().clamp(0.0, 255.0) as u8;
+    for p in samples.as_chunks_mut::<4>().0 {
+        if ycck {
+            let [y, cb, cr] = [p[0], p[1], p[2]].map(f32::from);
+            let (cb, cr) = (cb - 128.0, cr - 128.0);
+            p[0] = ink(y + 1.402 * cr);
+            p[1] = ink(y - 0.344_136 * cb - 0.714_136 * cr);
+            p[2] = ink(y + 1.772 * cb);
+            p[3] = 255 - p[3];
+        } else {
+            p.iter_mut().for_each(|v| *v = 255 - *v);
+        }
+    }
+    samples
 }
 
 /// Are a CMYK JPEG's `w`×`h` samples decodable here: nonzero, within `MAX_DIM`/`MAX_PIXELS`,
@@ -479,7 +496,7 @@ where
 /// Short-circuits to a pure pass-through when the embedded profile is already sRGB
 /// (checked numerically by [`icc_profile_is_srgb`]) — most PNG/TIFF/WebP exports carry
 /// one, and building a `moxcms` transform for the identity case is pure loss.
-pub(super) fn apply_icc_to_srgb(img: DynamicImage, icc: Option<Vec<u8>>) -> DynamicImage {
+pub(crate) fn apply_icc_to_srgb(img: DynamicImage, icc: Option<Vec<u8>>) -> DynamicImage {
     use moxcms::{ColorProfile, DataColorSpace, Layout};
 
     let Some(icc) = icc.filter(|p| !p.is_empty()) else {

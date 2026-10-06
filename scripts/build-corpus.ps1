@@ -1146,6 +1146,42 @@ if ((Test-Path $srgbIcc) -and (Test-Path $adobeIcc)) {
     Write-Host "[corpus] Windows colour profiles not found - skipping the wide-gamut JPEG fixture" -ForegroundColor Yellow
 }
 
+# 9z5b) The CMYK half: a CMYK JPEG carrying Photoshop's own U.S. Web Coated (SWOP) v2 profile,
+# flat in the ink Photoshop stored for the red of real-cmyk.psd, which Photoshop itself shows as
+# (220,42,40). Read without the profile it is (234,7,4), and until 2026-10-06 every such JPEG was:
+# decode/color.rs asked moxcms for a CMYK-plus-alpha transform, which it refuses for the
+# lookup-table profiles real CMYK profiles are, and fell back to the naive conversion unseen.
+# The profile and the ink both come from the Photoshop sample, so no Adobe file is fetched.
+$cmykJpeg = Join-Path $OutDir 'sample-jpeg-cmyk-swop.jpg'
+$cmykDonor = Join-Path $OutDir 'real-cmyk.psd'
+if (Test-Path $cmykDonor) {
+    $swop = Join-Path $env:TEMP "st2k-corpus-swop-$PID.icc"
+    & magick "$cmykDonor[0]" $swop 2>$null
+    $ink = & magick "$cmykDonor[0]" -format '%[fx:int(255*p{5,5}.c+0.5)],%[fx:int(255*p{5,5}.m+0.5)],%[fx:int(255*p{5,5}.y+0.5)],%[fx:int(255*p{5,5}.k+0.5)]' info: 2>$null
+    if ((Test-Path $swop) -and $ink -eq '19,249,251,2') {
+        & magick -size 320x240 -colorspace CMYK "xc:cmyk($ink)" -profile $swop -sampling-factor 1x1 -quality 100 $cmykJpeg 2>$null
+    }
+    Remove-Item -LiteralPath $swop -Force -ErrorAction SilentlyContinue
+    # Both halves of the self-check, as for the AdobeRGB fixture: it carries the profile, and
+    # its unmanaged green is far from Photoshop's 42.
+    $naiveG = if (Test-Path $cmykJpeg) { & magick $cmykJpeg -strip -colorspace sRGB -format '%[fx:int(255*p{10,10}.g+0.5)]' info: 2>$null } else { '' }
+    $tagged = (Test-Path $cmykJpeg) -and ((& magick identify -format '%[profile:icc]' $cmykJpeg 2>$null) -match 'SWOP')
+    if ($tagged -and $naiveG -match '^\d+$' -and (42 - [int]$naiveG) -gt 8) {
+        $expectedColors += @(
+            '',
+            '# CMYK JPEG tagged U.S. Web Coated (SWOP) v2, flat in real-cmyk.psd''s red ink. Photoshop',
+            '# shows (220,42,40); ignoring the profile renders (234,7,4). decode/color.rs decode_cmyk_jpeg.',
+            "sample-jpeg-cmyk-swop.jpg`t220,42,40"
+        )
+        Write-Host "[corpus] sample-jpeg-cmyk-swop.jpg written (SWOP, unmanaged green $naiveG)"
+    } else {
+        Remove-Item -LiteralPath $cmykJpeg -Force -ErrorAction SilentlyContinue
+        Write-Host "[corpus] sample-jpeg-cmyk-swop.jpg REJECTED (ink=$ink tagged=$tagged unmanagedGreen=$naiveG) - a fixture that cannot fail is worse than none" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "[corpus] real-cmyk.psd not in the corpus - skipping the CMYK JPEG fixture (its profile and ink come from it)" -ForegroundColor Yellow
+}
+
 # --- 9z6) PROGRESSIVE JPEG ------------------------------------------------------------
 # The JPEG variant two decoders are most likely to disagree on, and the corpus had none - so
 # routing JPEG to the OS codec was verified only against baseline files. Flat colour, so it
@@ -1212,6 +1248,14 @@ if (-not $SkipDownloads) {
     if ($py) { & $py "$PSScriptRoot\fetch-real-samples.py" --corpus $OutDir | Out-Host }
     else { Write-Host "  (real samples: need python; run scripts\fetch-real-samples.py when it is available)" -ForegroundColor Yellow }
 }
+
+# 9y2) Every Photoshop-written sample carries the small baked preview the thumbnail route reads
+# first, so no real file reached the composite and layer readers end to end: issue #55 and the
+# CMYK and grey colours (their profile ignored) lived there. scripts\corpus_psd_shapes.py writes
+# each sample's -nopreview and -noflat twin from its own bytes, the two ways Photoshop saves a
+# document without them (see its docstring), and removes a twin its sample no longer takes.
+if ($py) { & $py "$PSScriptRoot\corpus_psd_shapes.py" --corpus $OutDir | Out-Host }
+else { Write-Host "  (Photoshop shapes: need python; run scripts\corpus_psd_shapes.py when it is available)" -ForegroundColor Yellow }
 
 # --- 10) Honesty ledger: registered formats with NO real sample ----------------
 # Mostly Camera RAW (real sensor dumps are MBs and vendor-licensed — only dng has

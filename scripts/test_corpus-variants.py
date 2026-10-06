@@ -63,9 +63,15 @@ class TestCorpusVariants(unittest.TestCase):
 
     def test_psd_variants_reads_layers_and_blank_composite(self):
         # Raw (uncompressed) uniform paper-white composite in an RGB file is 'composite-blank'.
+        # With no preview resource, every mode/depth/composite variant also pairs with it.
         blank = self._psd(comp=struct.pack(">H", 0) + b"\xff\xff\xff")
         self.assertEqual(cv.psd_variants(blank),
-                         {"psd", "8-bit", "rgb", "no-layers", "composite-blank"})
+                         {"psd", "8-bit", "rgb", "no-layers", "composite-blank", "no-thumbnail-1036",
+                          "nopreview-8-bit", "nopreview-rgb", "nopreview-composite-blank"})
+
+        # A 16-bit sample is two bytes: the blank test reads rows in bytes, not pixels.
+        blank16 = self._psd(depth=16, comp=struct.pack(">H", 0) + b"\xff" * 6)
+        self.assertIn("composite-blank", cv.psd_variants(blank16))
 
         # A non-uniform raw composite is real artwork, not blank.
         artwork = self._psd(comp=struct.pack(">H", 0) + b"\x01\x02\x03")

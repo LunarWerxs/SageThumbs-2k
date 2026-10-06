@@ -200,6 +200,8 @@ mod wic;
 // By name, not a glob: a second glob exporting a `fuzzapi` module would shadow `dds::fuzzapi`
 // below into a private-import error.
 use cicp::{cicp_hdr_to_linear, png_cicp};
+// The Photoshop reader carries an RGB document's own profile out the same way.
+pub(crate) use color::apply_icc_to_srgb;
 use color::*;
 use dds::*;
 use mesh::*;
