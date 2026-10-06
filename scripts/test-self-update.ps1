@@ -24,7 +24,11 @@
 # Abort/Retry/Ignore with Abort and rolled the update back without a word), and a handle
 # WITHOUT delete sharing pins a third file (a scanner's grip: not even renameable). The upgrade
 # must land anyway, and every holder must still be alive afterwards: an update that works by
-# killing the user's programs is not a fix.
+# killing the user's programs is not a fix. It also starts from what that failed 3.6.0 update
+# LEFT behind (reproduced 2026-10-06): the shell extension renamed to `.old<N>`, still mapped,
+# and its own name empty, because the rollback never put it back. Baseline and upgrade are the
+# same version here, so "the DLL is version X afterwards" cannot tell a replaced DLL from an
+# untouched one; "the DLL exists afterwards" can, and it is what the user needs.
 #
 # Elevation: the launched setup elevates via the `runas` verb. On GitHub-hosted runners and
 # on dev boxes with silent admin consent this shows no prompt. It INSTALLS/UPGRADES the
@@ -136,7 +140,14 @@ $t0 = (Get-Date).ToUniversalTime()
 # (mirroring the production caller, which exits so the installer can replace it), so a zero
 # exit here means verify + lock + launch all succeeded - the half that was broken for
 # twenty releases. The polling below proves the other half.
+$orphan = $null
 try {
+    if ($Hold) {
+        $orphan = 0..20 | ForEach-Object { "$installedDll.old$_" } |
+            Where-Object { -not (Test-Path -LiteralPath $_) } | Select-Object -First 1
+        Rename-Item -LiteralPath $installedDll -NewName (Split-Path -Leaf $orphan)
+        Write-Host "  [self-update] -Hold: left the shell extension at $(Split-Path -Leaf $orphan), its own name empty (a failed 3.6.0 update's leftovers)"
+    }
     $p = Start-Process -FilePath $App -ArgumentList '--update-selftest', "`"$Setup`"" -Wait -PassThru
     if ($p.ExitCode) {
         throw "--update-selftest exited $($p.ExitCode): the updater could not verify, lock, or LAUNCH the installer. See %LOCALAPPDATA%\SageThumbs2K.log (update-selftest lines)."
@@ -163,6 +174,9 @@ try {
 
     # The DLL must land too - a "successful" upgrade that left the shell extension stale is the
     # 2026-08-02 "still on the old version" bug shape. Name the likely holder in the failure.
+    if (-not (Test-Path -LiteralPath $installedDll -PathType Leaf)) {
+        throw "The update finished but $installedDll is MISSING: thumbnails are off on this machine. Setup's log ends:`n$(Get-SetupLogTail)"
+    }
     if ((Get-Ver3 $installedDll) -ne $expected) {
         $holders = (tasklist /m sagethumbs2k.dll 2>$null | Out-String).Trim()
         throw "Installed exe updated but $installedDll is still $(Get-Ver3 $installedDll) (expected $expected) - a process is holding the old DLL mapped. tasklist /m says:`n$holders"
@@ -176,6 +190,11 @@ try {
     }
 } finally {
     if ($Hold) { Stop-Holders }
+    # Whatever happened above, never leave this machine without its shell extension.
+    if ($orphan -and -not (Test-Path -LiteralPath $installedDll) -and (Test-Path -LiteralPath $orphan)) {
+        Move-Item -LiteralPath $orphan -Destination $installedDll
+        Write-Host "  [self-update] restored $installedDll from $(Split-Path -Leaf $orphan)" -ForegroundColor Yellow
+    }
 }
 
 Write-Host "  [self-update] PASS - installed exe + dll are $expected, upgraded in place by the app's own updater." -ForegroundColor Green
