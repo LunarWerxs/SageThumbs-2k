@@ -697,6 +697,11 @@ jobs:
       - name: check-consistency
         shell: pwsh
         run: ./scripts/check-consistency.ps1
+      # The big-file gate's judge and compare-renders read pictures; without these packages their
+      # tests skipped or failed on the runner instead of measuring.
+      - name: Python packages the support-script tests read pictures with
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check --quiet numpy==2.4.5 pillow==12.3.0
       - name: support-script unit tests (scripts/test_*.py, scripts/*.test.mjs)
         shell: pwsh
         run: ./scripts/test-script-tests.ps1

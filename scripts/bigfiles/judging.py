@@ -21,6 +21,19 @@ def load(path):
         return None
 
 
+def alpha(path):
+    """The picture's alpha, 255 where it has none. `load` judges colour only, and a picture can
+    keep its colours where it is drawn while holes open in it: a dense 3D scan drawn from a sample
+    of its triangles came out see-through, and its colours passed."""
+    try:
+        im = Image.open(path)
+        if im.mode in ("RGBA", "LA", "PA") or "transparency" in im.info:
+            return np.asarray(im.convert("RGBA").getchannel("A"), dtype=np.float32)
+        return np.full((im.height, im.width), 255.0, dtype=np.float32)
+    except OSError:
+        return None
+
+
 def sharpness(a):
     g = a.mean(axis=2)
     return float(np.abs(np.diff(g, axis=0)).mean() + np.abs(np.diff(g, axis=1)).mean())
@@ -72,6 +85,10 @@ def judge(surface, normal, big, reference=False, same_frame=True):
     if a.shape != b.shape:
         return "FAIL", f"a {b.shape[1]}x{b.shape[0]} picture where the normal file gets {a.shape[1]}x{a.shape[0]}"
     diff = float(np.abs(a - b).mean()) if same_frame else 0.0
+    ka, kb = alpha(n_png), alpha(b_png)
+    holes = float(np.abs(ka - kb).mean()) if same_frame and ka is not None and kb is not None else 0.0
+    if holes > 6:
+        return "FAIL", f"see-through where the normal file is not (mean alpha diff {holes:.1f})"
     sa, sb = sharpness(a), sharpness(b)
     # Another frame of a longer video is simply another picture: its detail is its own (a
     # program stream's twin read 0.77 of the normal frame's, and both were real frames). The
