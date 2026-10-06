@@ -10,6 +10,8 @@ contact.png
 countdown.PspTube
 cube.stl
 huge.jp2
+issue55-layers-nopreview.psd
+issue55-nocomposite-nopreview.psd
 jxl-jpeg420.jxl
 real-16bit.psb
 real-16bit.psd
@@ -208,6 +210,7 @@ real.ott
 real.pages
 real.pam
 real.pbm
+real.pdd
 real.pdf
 real.pfm
 real.pgm
@@ -287,6 +290,7 @@ sample-bc7srgb.dds
 sample-big-canvas.bmp
 sample-big-canvas.jpg
 sample-big-canvas.png
+sample-big-canvas.psd
 sample-dds-bc6hs.dds
 sample-dds-bc7-real.dds
 sample-dds-bgra8.dds

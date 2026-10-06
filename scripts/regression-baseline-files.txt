@@ -10,6 +10,8 @@ contact.png
 countdown.PspTube
 cube.stl
 huge.jp2
+issue55-layers-nopreview.psd
+issue55-nocomposite-nopreview.psd
 jxl-jpeg420.jxl
 real-16bit.psb
 real-16bit.psd
@@ -19,6 +21,7 @@ real-artboards.ai
 real-bc2.ktx
 real-bgra8888.vtf
 real-bricscad.dxf
+real-cmyk.jxl
 real-cmyk.psb
 real-cmyk.psd
 real-dxt5.vtf
@@ -39,6 +42,7 @@ real-nocomposite.psb
 real-nocomposite.psd
 real-nopreview.eps
 real-not4.ktx
+real-patches.jxl
 real-photoshop-nopreview.eps
 real-photoshop-tiffpreview.eps
 real-rgb-layers.psb
@@ -118,6 +122,7 @@ real.dicom
 real.divx
 real.djv
 real.djvu
+real.dng
 real.doc
 real.docm
 real.docx
