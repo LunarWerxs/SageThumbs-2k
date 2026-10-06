@@ -29,10 +29,10 @@ pub(super) unsafe fn draw_image(
 ) -> i32 {
     let sc = |v: i32| st2k_appkit::win::dpi_scale(hwnd, v);
     if !ensure_img_cached(hwnd, ib, imgs, doc_dir, gen, c.bg) {
-        return pill_fallback(hwnd, hdc, ib, x0, y, full_w, c, links, fonts_cache);
+        return pill_fallback(hwnd, hdc, ib, true, x0, y, full_w, c, links, fonts_cache);
     }
     let Some(ImgSlot::Ready(rd)) = imgs.get(&ib.src) else {
-        return pill_fallback(hwnd, hdc, ib, x0, y, full_w, c, links, fonts_cache);
+        return pill_fallback(hwnd, hdc, ib, false, x0, y, full_w, c, links, fonts_cache);
     };
     let mut dw = match ib.width {
         ImgW::Natural => sc(rd.iw),
@@ -79,11 +79,10 @@ unsafe fn ensure_img_cached(
     gen: u64,
     bg: u32,
 ) -> bool {
-    const MAX_IMAGES: usize = 24; // bound decode/fetch work per document
     if imgs.contains_key(&ib.src) {
         return true;
     }
-    if imgs.len() >= MAX_IMAGES {
+    if !cap_allows(imgs) {
         return false;
     }
     if is_remote_src(&ib.src) {
@@ -101,12 +100,40 @@ unsafe fn ensure_img_cached(
     true
 }
 
-/// Alt-text pill for an image we won't/can't decode (remote, failed, over caps).
+/// Whether the per-document cap still has room for one more distinct src. Bounds the decode and
+/// fetch work, and the DIB memory, a document can cause. A `Failed` slot holds no bitmap, so it
+/// does not use up one of the `MAX_LIVE_IMAGES` places (a doc full of dead links must not hide
+/// the good images after them); `MAX_TRIED_IMAGES` still bounds how many srcs are ever attempted.
+fn cap_allows(imgs: &ImgCache) -> bool {
+    const MAX_LIVE_IMAGES: usize = 64;
+    const MAX_TRIED_IMAGES: usize = 256;
+    let live = imgs
+        .values()
+        .filter(|s| !matches!(s, ImgSlot::Failed))
+        .count();
+    live < MAX_LIVE_IMAGES && imgs.len() < MAX_TRIED_IMAGES
+}
+
+/// The text inside an image's pill: its alt text (or "image"), plus a note when the image is
+/// only a pill because the per-document cap was hit, so the reader knows it was left out.
+fn pill_label(ib: &ImgBlock, capped: bool) -> String {
+    let alt = ib.alt.trim();
+    let label = if alt.is_empty() { "image" } else { alt };
+    if capped {
+        format!("{label} (image limit reached)")
+    } else {
+        label.to_string()
+    }
+}
+
+/// Alt-text pill for an image we won't/can't decode (remote, failed, over caps); `capped` is
+/// true when the per-document image cap is the reason.
 #[allow(clippy::too_many_arguments)] // owner-draw helper: many positional draw params by nature
 pub(super) unsafe fn pill_fallback(
     hwnd: HWND,
     hdc: HDC,
     ib: &ImgBlock,
+    capped: bool,
     x0: i32,
     y: i32,
     full_w: i32,
@@ -115,12 +142,7 @@ pub(super) unsafe fn pill_fallback(
     fonts_cache: &mut FontCache,
 ) -> i32 {
     let sc = |v: i32| st2k_appkit::win::dpi_scale(hwnd, v);
-    let label = if ib.alt.trim().is_empty() {
-        "image"
-    } else {
-        ib.alt.trim()
-    };
-    let label = label.replace(' ', "\u{00A0}"); // one unbroken pill token
+    let label = pill_label(ib, capped).replace(' ', "\u{00A0}"); // one unbroken pill token
     let runs = [Run {
         text: format!("\u{00A0}{label}\u{00A0}"),
         bold: false,
@@ -318,6 +340,30 @@ pub(crate) unsafe fn decode_bytes_to_dib(bytes: &[u8], bg: u32) -> Option<Render
 }
 
 // ---- inline run layout -------------------------------------------------------------------
+
+#[cfg(test)]
+mod cap_tests {
+    use super::*;
+
+    fn cache_of(slot: fn() -> ImgSlot, n: usize) -> ImgCache {
+        (0..n).map(|i| (format!("img{i}.png"), slot())).collect()
+    }
+
+    /// A document whose first 30 images are dead links used to fill the old 24-slot cap, so the
+    /// good images after them were never tried and came out as bare pills.
+    #[test]
+    fn failed_slots_do_not_use_up_the_image_cap() {
+        assert!(cap_allows(&cache_of(|| ImgSlot::Failed, 30)));
+    }
+
+    /// The cap still bounds live images and the number of srcs ever tried.
+    #[test]
+    fn cap_still_stops_live_and_runaway_images() {
+        assert!(cap_allows(&cache_of(|| ImgSlot::Pending, 63)));
+        assert!(!cap_allows(&cache_of(|| ImgSlot::Pending, 64)));
+        assert!(!cap_allows(&cache_of(|| ImgSlot::Failed, 256)));
+    }
+}
 
 #[cfg(test)]
 mod resolve_src_tests {

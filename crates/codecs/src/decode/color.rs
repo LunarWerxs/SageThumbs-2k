@@ -242,16 +242,55 @@ pub(super) fn is_cmyk_jpeg(b: &[u8]) -> bool {
     .unwrap_or(false)
 }
 
-/// Would decoding a `w`×`h` CMYK JPEG through [`decode_cmyk_jpeg`] blow past `max_alloc`?
-/// Budgets 13 B/px for what the decode holds at once: zune's component planes while it
-/// decodes (4 B/px), its raw CMYK output (4 B/px) and the RGB the profile makes of it
-/// (3 B/px), with room to spare — well past the 512 MiB budget every other decode tier is
-/// held to at anything near the dimension cap. A plain `w * h * 13` multiply is used instead of `checked_mul` because
-/// both factors are already bounded by `MAX_DIM`/`MAX_PIXELS` at every call site, so the
-/// product can't approach `u64::MAX`.
-fn cmyk_transient_bytes_exceed_budget(w: u32, h: u32, max_alloc: u64) -> bool {
-    const CMYK_TRANSIENT_BYTES_PER_PIXEL: u64 = 13;
-    (w as u64) * (h as u64) * CMYK_TRANSIENT_BYTES_PER_PIXEL > max_alloc
+/// Bytes a pixel that [`decode_cmyk_jpeg`] holds at once while zune decodes a one-scan
+/// baseline CMYK JPEG: the 4-byte raw output (the sample buffer the colour conversion then
+/// runs in place) plus one more for what is O(width) there — an MCU row of component rows,
+/// the colour-conversion band and the upsampler scratch.
+const CMYK_SEQUENTIAL_BYTES_PER_PIXEL: u64 = 5;
+
+/// The same for a progressive or multi-scan JPEG, where zune keeps every component's DCT
+/// coefficients (i16, 2 B/px a component, 8 B/px for four) until the last scan has landed,
+/// next to the 4-byte output. That is zune's own storage; the cost of going past it is that
+/// these files stay at the lower pixel ceiling.
+const CMYK_COEFFICIENT_BYTES_PER_PIXEL: u64 = 12;
+
+/// Would decoding a `w`×`h` CMYK JPEG through [`decode_cmyk_jpeg`] blow past `max_alloc`, at
+/// `bytes_per_pixel` held at once ([`cmyk_jpeg_bytes_per_pixel`])? Past it the caller falls
+/// back to the image crate's naive CMYK conversion, so the colours get worse, not the
+/// memory. A plain multiply is used instead of `checked_mul` because both factors are
+/// already bounded by `MAX_DIM`/`MAX_PIXELS` at every call site, so the product can't
+/// approach `u64::MAX`.
+fn cmyk_transient_bytes_exceed_budget(
+    w: u32,
+    h: u32,
+    bytes_per_pixel: u64,
+    max_alloc: u64,
+) -> bool {
+    (w as u64) * (h as u64) * bytes_per_pixel > max_alloc
+}
+
+/// What the decode of this CMYK JPEG holds a pixel at once: the cheap sequential figure when
+/// the frame is baseline (SOF0/SOF1) with a single SOS, the coefficient-keeping one for
+/// anything else. A stray `FF DA` inside an APP segment can only make it count more scans
+/// than there are, which errs towards the safe side.
+fn cmyk_jpeg_bytes_per_pixel(b: &[u8]) -> u64 {
+    use core::ops::ControlFlow;
+    let baseline = for_each_jpeg_segment(b, |marker, _| {
+        if marker == 0xC0 || marker == 0xC1 {
+            ControlFlow::Break(true)
+        } else if (0xC2..=0xCF).contains(&marker) && ![0xC4, 0xC8, 0xCC].contains(&marker) {
+            ControlFlow::Break(false)
+        } else {
+            ControlFlow::Continue(())
+        }
+    })
+    .unwrap_or(false);
+    let one_scan = b.windows(2).filter(|p| p == &[0xFF, 0xDA]).take(2).count() == 1;
+    if baseline && one_scan {
+        CMYK_SEQUENTIAL_BYTES_PER_PIXEL
+    } else {
+        CMYK_COEFFICIENT_BYTES_PER_PIXEL
+    }
 }
 
 /// Decode a CMYK/YCCK JPEG to color-managed sRGB: pull the RAW 4-channel samples from
@@ -277,7 +316,7 @@ pub(super) fn decode_cmyk_jpeg(bytes: &[u8]) -> Option<DynamicImage> {
     dec.set_options(dec.options().jpeg_set_out_colorspace(stored));
     let info = dec.info()?;
     let (w, h) = (u32::from(info.width), u32::from(info.height));
-    if !cmyk_output_within_limits(w, h) {
+    if !cmyk_output_within_limits(w, h, cmyk_jpeg_bytes_per_pixel(bytes)) {
         return None;
     }
     // We can only color-manage with the embedded CMYK profile — without one there is no
@@ -287,11 +326,13 @@ pub(super) fn decode_cmyk_jpeg(bytes: &[u8]) -> Option<DynamicImage> {
     if src.color_space != DataColorSpace::Cmyk {
         return None;
     }
-    let inks = jpeg_inks(dec.decode().ok()?, stored == ColorSpace::YCCK); // 4 bytes/px
+    let mut samples = jpeg_inks(dec.decode().ok()?, stored == ColorSpace::YCCK); // 4 bytes/px
+    drop(dec);
     let px = (w as usize) * (h as usize);
-    if inks.len() < px * 4 {
+    if samples.len() < px * 4 {
         return None;
     }
+    samples.truncate(px * 4);
     // Four inks in, RGB out: moxcms lays CMYK out as `Rgba`. Its `Cmyka` layout, which this
     // used until 2026-10-06, is refused (`InvalidLayout`, moxcms 0.8.1) for the lookup-table
     // profiles every real CMYK profile is: with that and the YCCK refusal above, a CMYK JPEG
@@ -301,9 +342,37 @@ pub(super) fn decode_cmyk_jpeg(bytes: &[u8]) -> Option<DynamicImage> {
     let transform = src
         .create_transform_8bit(Layout::Rgba, &dst, Layout::Rgb, TransformOptions::default())
         .ok()?;
-    let mut rgb = vec![0u8; px * 3];
-    transform.transform(&inks[..px * 4], &mut rgb).ok()?;
-    image::RgbImage::from_raw(w, h, rgb).map(DynamicImage::ImageRgb8)
+    cmyk_bands_to_rgb(&*transform, &mut samples, w as usize, h as usize)?;
+    image::RgbImage::from_raw(w, h, samples).map(DynamicImage::ImageRgb8)
+}
+
+/// Rows the colour transform is run on at a time in [`cmyk_bands_to_rgb`].
+const CMYK_BAND_ROWS: usize = 64;
+
+/// Turn `w`×`h` ink pixels (4 B each) into RGB (3 B each) inside the SAME buffer, a band of
+/// rows at a time: the band's inks are copied out, then the transform writes its RGB over the
+/// front of what is already consumed (row `r` of RGB ends at `r*w*3`, never past `r*w*4`
+/// where the unread inks start). The RGB needs no second image-sized buffer that way: a 70 MP
+/// poster holds 4 B/px here where a separate output held 7. Leaves `samples` exactly `w*h*3` long.
+fn cmyk_bands_to_rgb(
+    transform: &moxcms::Transform8BitExecutor,
+    samples: &mut Vec<u8>,
+    w: usize,
+    h: usize,
+) -> Option<()> {
+    let mut band = vec![0u8; w * CMYK_BAND_ROWS.min(h) * 4];
+    let mut row = 0;
+    while row < h {
+        let rows = CMYK_BAND_ROWS.min(h - row);
+        let inks = &mut band[..rows * w * 4];
+        inks.copy_from_slice(&samples[row * w * 4..(row + rows) * w * 4]);
+        transform
+            .transform(inks, &mut samples[row * w * 3..(row + rows) * w * 3])
+            .ok()?;
+        row += rows;
+    }
+    samples.truncate(w * h * 3);
+    Some(())
 }
 
 /// A CMYK JPEG's samples as ink, 0 for none, which is how a CMYK profile counts it. Adobe
@@ -328,8 +397,8 @@ fn jpeg_inks(mut samples: Vec<u8>, ycck: bool) -> Vec<u8> {
 }
 
 /// Are a CMYK JPEG's `w`×`h` samples decodable here: nonzero, within `MAX_DIM`/`MAX_PIXELS`,
-/// and inside the transient-byte budget of the three buffers the decode allocates?
-fn cmyk_output_within_limits(w: u32, h: u32) -> bool {
+/// and inside the transient-byte budget of what the decode holds at `bytes_per_pixel`?
+fn cmyk_output_within_limits(w: u32, h: u32, bytes_per_pixel: u64) -> bool {
     if w == 0 || h == 0 || w > MAX_DIM || h > MAX_DIM || (w as u64) * (h as u64) > MAX_PIXELS {
         return false;
     }
@@ -338,7 +407,7 @@ fn cmyk_output_within_limits(w: u32, h: u32) -> bool {
     // that budget is even constructed (it's tried up front in `decode_with_image_alloc`),
     // so it has to enforce its own ceiling here rather than inherit one from a
     // caller-supplied `Limits`.
-    if cmyk_transient_bytes_exceed_budget(w, h, MAX_ALLOC) {
+    if cmyk_transient_bytes_exceed_budget(w, h, bytes_per_pixel, MAX_ALLOC) {
         return false;
     }
     true

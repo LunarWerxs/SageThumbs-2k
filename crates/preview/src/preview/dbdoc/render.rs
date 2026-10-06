@@ -122,7 +122,11 @@ impl<R: Read + Seek> Db<R> {
             // Still show the columns — an empty table's shape is the useful part.
             out.push_str(&row_line(&header));
             out.push_str(&sep_line(ncols));
-            out.push_str("\n*(no rows)*\n\n");
+            if data.truncated {
+                out.push_str("\n*Not read: preview read limit reached.*\n\n");
+            } else {
+                out.push_str("\n*(no rows)*\n\n");
+            }
             return out;
         }
         out.push_str(&row_line(&header));

@@ -478,16 +478,127 @@ pub(super) fn is_archive_ext(ext: &str) -> bool {
 
 /// Read an archive and format its entries (name + size) as a scrollable text listing, sorted with
 /// directories first then case-insensitively by path. Never extracts (header/central-dir read only).
-/// `None` if unreadable, not a recognized archive, or larger than the read cap (keeps the UI snappy).
+/// `None` if unreadable or not a recognized archive. Past the whole-file read cap a ZIP-family
+/// file is still listed (from its central directory alone), and a 7z/RAR says why it is not.
 pub(super) fn archive_listing(path: &str) -> Option<String> {
     // Cap the in-memory read: list_archive needs the whole byte slice, and this runs on the UI
     // thread. 64 MB covers the vast majority of previewed .zip/.jar/.apk without a visible hang.
     const CAP: u64 = 64 * 1024 * 1024;
-    if std::fs::metadata(path).ok()?.len() > CAP {
-        return None;
+    let len = std::fs::metadata(path).ok()?.len();
+    if len > CAP {
+        return big_archive_listing(path, len);
     }
     let bytes = std::fs::read(path).ok()?;
-    let mut entries = st2k_codecs::container::list_archive(&bytes)?;
+    let entries = st2k_codecs::container::list_archive(&bytes)?;
+    Some(format_listing(path, entries))
+}
+
+/// Largest slice of a big ZIP the listing reads: its central directory, plus the tail the
+/// end-of-central-directory record is searched in.
+const ZIP_DIR_CAP: u64 = 16 * 1024 * 1024 + 128 * 1024;
+/// Same bound as the whole-file path's listing (`st2k_codecs::container::list_archive`).
+const ZIP_LIST_MAX_ENTRIES: usize = 50_000;
+
+/// An archive over the whole-file read cap. APKs, IPAs, MSIX bundles and fat JARs are routinely
+/// this big, and a ZIP's directory sits at its END, so the listing needs a few megabytes of the
+/// file, never all of it. 7z and RAR have no such shortcut in the codecs: they get a line saying
+/// so, not the generic binary card. `None` for anything that is not an archive by signature.
+fn big_archive_listing(path: &str, len: u64) -> Option<String> {
+    use std::io::Read;
+    let mut head = [0u8; 6];
+    std::fs::File::open(path).ok()?.read_exact(&mut head).ok()?;
+    let zip = [b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"]
+        .iter()
+        .any(|sig| head.starts_with(*sig));
+    if zip {
+        return Some(match big_zip_entries(path) {
+            Some(entries) => format_listing(path, entries),
+            None => too_large_note(
+                path,
+                len,
+                "its directory could not be read within the limit",
+            ),
+        });
+    }
+    if head.starts_with(&[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C]) || head.starts_with(b"Rar!\x1a\x07")
+    {
+        return Some(too_large_note(
+            path,
+            len,
+            "7z and RAR entries are listed only for archives up to 64 MB",
+        ));
+    }
+    None
+}
+
+/// The one-line stand-in listing for a big archive whose entries are not shown.
+fn too_large_note(path: &str, len: u64, why: &str) -> String {
+    let name = std::path::Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    format!(
+        "{name}\n{} archive: entries not listed ({why}).\n",
+        human_size(len)
+    )
+}
+
+/// Reader over a big ZIP that hands out at most `left` bytes, then fails. `ZipArchive::new`
+/// reads the central directory straight through it, so a crafted directory cannot pull more
+/// than the cap into memory however many entries it declares.
+struct DirBudget<'a> {
+    inner: std::io::BufReader<std::fs::File>,
+    left: &'a std::cell::Cell<u64>,
+}
+
+impl std::io::Read for DirBudget<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = self.left.get();
+        if left == 0 {
+            return Err(std::io::Error::other("zip directory over the listing cap"));
+        }
+        let take = buf.len().min(usize::try_from(left).unwrap_or(usize::MAX));
+        let n = self.inner.read(&mut buf[..take])?;
+        self.left.set(left.saturating_sub(n as u64));
+        Ok(n)
+    }
+}
+
+impl std::io::Seek for DirBudget<'_> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
+/// `(name, uncompressed size, is_dir)` for a ZIP too big to read whole: the `zip` crate seeks
+/// to the end-of-central-directory record and reads the directory, and each entry's name and
+/// size come from that directory (plus the 30-byte local header it checks). `None` if the
+/// directory is unreadable or over [`ZIP_DIR_CAP`].
+fn big_zip_entries(path: &str) -> Option<Vec<(String, u64, bool)>> {
+    let budget = std::cell::Cell::new(ZIP_DIR_CAP);
+    let reader = DirBudget {
+        // Small buffer: the per-entry seeks below throw it away every time.
+        inner: std::io::BufReader::with_capacity(4096, std::fs::File::open(path).ok()?),
+        left: &budget,
+    };
+    let mut zip = zip::ZipArchive::new(reader).ok()?;
+    // The directory is parsed; what follows is the bounded local-header peeks.
+    budget.set(u64::MAX);
+    let mut out = Vec::new();
+    for i in 0..zip.len().min(ZIP_LIST_MAX_ENTRIES) {
+        let Ok(f) = zip.by_index_raw(i) else {
+            continue;
+        };
+        // Valid UTF-8 wins whatever the flag says (the same rule as the whole-file listing);
+        // otherwise the crate's own CP437 reading.
+        let name = String::from_utf8(f.name_raw().to_vec()).unwrap_or_else(|_| f.name().to_owned());
+        out.push((name, f.size(), f.is_dir()));
+    }
+    Some(out)
+}
+
+/// The listing text: a name + summary header, then one line per entry, directories first.
+fn format_listing(path: &str, mut entries: Vec<(String, u64, bool)>) -> String {
     entries.sort_by(|a, b| {
         b.2.cmp(&a.2) // directories (is_dir=true) first
             .then_with(|| a.0.to_ascii_lowercase().cmp(&b.0.to_ascii_lowercase()))
@@ -509,7 +620,7 @@ pub(super) fn archive_listing(path: &str) -> Option<String> {
             out.push_str(&format!("{:>10}   {n}\n", human_size(*sz)));
         }
     }
-    Some(out)
+    out
 }
 
 /// Human-readable byte size (B/KB/MB/GB/TB, one decimal above bytes).
@@ -729,6 +840,55 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// An APK/JAR/IPA past the 64 MB whole-file cap still lists its entries, from its central
+    /// directory at the end of the file; a 7z past the cap says why it has no listing instead of
+    /// falling through to the generic card.
+    #[test]
+    fn archive_listing_past_the_read_cap_lists_a_zip_and_explains_a_7z() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("st2k_bigzip_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = dir.join("big.zip");
+        let opts = || {
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored)
+        };
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&big).unwrap());
+        zip.start_file("a.txt", opts()).unwrap();
+        zip.write_all(b"hello").unwrap();
+        zip.start_file("dir/pad.bin", opts()).unwrap();
+        let chunk = vec![0u8; 1 << 20];
+        for _ in 0..65 {
+            zip.write_all(&chunk).unwrap(); // 65 MiB of stored zeros: past the cap
+        }
+        zip.start_file("dir/b.bin", opts()).unwrap();
+        zip.write_all(b"b").unwrap();
+        zip.finish().unwrap();
+        assert!(std::fs::metadata(&big).unwrap().len() > 64 * 1024 * 1024);
+
+        let listing = archive_listing(big.to_str().unwrap()).expect("a big zip must list");
+        assert!(
+            listing.starts_with("big.zip"),
+            "header missing in:\n{listing}"
+        );
+        assert!(listing.contains("a.txt"), "a.txt missing in:\n{listing}");
+        assert!(
+            listing.contains("dir/b.bin"),
+            "b.bin missing in:\n{listing}"
+        );
+        assert!(listing.contains("3 file(s)"), "wrong count in:\n{listing}");
+
+        let big7z = dir.join("big.7z");
+        let mut f = std::fs::File::create(&big7z).unwrap();
+        f.write_all(&[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C]).unwrap();
+        f.set_len(65 * 1024 * 1024).unwrap();
+        drop(f);
+        let note = archive_listing(big7z.to_str().unwrap()).expect("a big 7z must say why");
+        assert!(note.contains("not listed"), "no explanation in:\n{note}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A Photoshop document whose stored composite (800x600, green) is `gap` bytes past its

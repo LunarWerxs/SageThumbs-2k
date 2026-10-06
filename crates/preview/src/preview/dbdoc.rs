@@ -511,4 +511,120 @@ mod tests {
         let worse = "x ````` y;\n";
         assert_eq!(super::super::docconv::fence_for(worse), "``````");
     }
+
+    /// SQLite varint (big-endian, 7 bits a byte, the 9-byte form is not needed here).
+    fn put_varint(out: &mut Vec<u8>, v: u64) {
+        let mut groups = vec![(v & 0x7F) as u8];
+        let mut rest = v >> 7;
+        while rest > 0 {
+            groups.push((rest & 0x7F) as u8 | 0x80);
+            rest >>= 7;
+        }
+        groups.reverse();
+        out.extend_from_slice(&groups);
+    }
+
+    const BIG_BLOB: usize = 2 * 1024 * 1024;
+
+    /// Record header for `(id INTEGER, data BLOB(BIG_BLOB), n INTEGER)`: header length, then the
+    /// three serial types. The blob's serial is `2 * len + 12`, a multi-byte varint.
+    fn big_record_header() -> Vec<u8> {
+        let mut serials = vec![1u8];
+        put_varint(&mut serials, (2 * BIG_BLOB + 12) as u64);
+        serials.push(1);
+        let mut hdr = vec![(serials.len() + 1) as u8];
+        hdr.extend_from_slice(&serials);
+        hdr
+    }
+
+    /// A record whose body past `rec` was never read still shows what its header says: the blob
+    /// column its size, the column after it "<not read>". Cut off at the same byte WITHOUT the
+    /// full length, the record is a short read and ends at the last whole column.
+    #[test]
+    fn record_head_shows_columns_past_the_read_part() {
+        let mut rec = big_record_header();
+        rec.push(7); // id
+        rec.extend_from_slice(&[0xAB; 100]); // first 100 bytes of the 2 MiB blob
+        let full_len = big_record_header().len() + 1 + BIG_BLOB + 1;
+        assert_eq!(
+            decode_record_head(&rec, full_len, Enc::Utf8, 24),
+            vec![
+                Val::Int(7),
+                Val::Blob(BIG_BLOB),
+                Val::Text("<not read>".into())
+            ]
+        );
+        assert_eq!(decode_record(&rec, Enc::Utf8, 24), vec![Val::Int(7)]);
+    }
+
+    /// A real two-page file whose middle row is over MAX_PAYLOAD (2 MiB blob, record start in the
+    /// cell, overflow pointer to a page that does not exist). Rows 1 and 3 are small. The old walk
+    /// counted row 2 and dropped it, so the preview said "first 2 of 3 rows" about a table whose
+    /// MIDDLE row was missing.
+    #[test]
+    fn oversized_middle_row_is_listed_not_dropped() {
+        const PS: usize = 4096;
+        let mut file = synthetic_master_page(1); // page 1: sqlite_master -> table t1, root page 2
+        assert_eq!(file.len(), PS);
+
+        let small = |id: u8| {
+            let rec = [4u8, 1, 12, 1, id, 9]; // id int8, empty blob, n int8
+            let mut cell = vec![rec.len() as u8, id];
+            cell.extend_from_slice(&rec);
+            cell
+        };
+        let hdr = big_record_header();
+        let plen = hdr.len() + 1 + BIG_BLOB + 1;
+        assert!(plen > MAX_PAYLOAD);
+        let local = local_size(plen, PS, true);
+        let mut big = Vec::new();
+        put_varint(&mut big, plen as u64);
+        put_varint(&mut big, 2); // rowid
+        big.extend_from_slice(&hdr);
+        big.push(2); // id
+        big.resize(big.len() + (local - hdr.len() - 1), 0); // blob start, up to `local` bytes
+        big.extend_from_slice(&3u32.to_be_bytes()); // first overflow page: never followed
+
+        let cells = [small(1), big, small(3)];
+        let mut page = vec![0u8; PS];
+        page[0] = 0x0D; // table b-tree leaf
+        page[3..5].copy_from_slice(&3u16.to_be_bytes());
+        let mut off = 8 + 3 * 2;
+        page[5..7].copy_from_slice(&(off as u16).to_be_bytes());
+        for (i, cell) in cells.iter().enumerate() {
+            page[8 + i * 2..10 + i * 2].copy_from_slice(&(off as u16).to_be_bytes());
+            page[off..off + cell.len()].copy_from_slice(cell);
+            off += cell.len();
+        }
+        assert!(off <= PS);
+        file.extend_from_slice(&page);
+
+        let mut db = Db::open(std::io::Cursor::new(file)).expect("valid sqlite");
+        let data = db.read_rows(2, None, MAX_ROWS);
+        assert_eq!(data.total, 3);
+        assert_eq!(data.rows.len(), 3, "the oversized row must be listed");
+        assert_eq!(data.rows[0][0], Val::Int(1));
+        assert_eq!(data.rows[1][0], Val::Int(2));
+        assert_eq!(data.rows[1][1], Val::Blob(BIG_BLOB));
+        assert_eq!(data.rows[2][0], Val::Int(3));
+        let md = db.render("big.db", 2 * PS as u64);
+        assert!(!md.contains("first 2 of 3"), "{md}");
+        assert!(!md.contains("of 3 rows"), "{md}");
+    }
+
+    /// A table whose walk is cut off before it reads a single row (here its root page lies past
+    /// the end of the file, so `page()` refuses it exactly as it does once the I/O budget is
+    /// spent) is not an empty table. The old renderer printed "(no rows)" for it.
+    #[test]
+    fn unread_table_says_not_read_instead_of_no_rows() {
+        let page = synthetic_master_page(1); // table t1, root page 2, but the file has one page
+        let mut db = Db::open(std::io::Cursor::new(page)).expect("valid sqlite header");
+        let md = db.render("cut.db", 4096);
+        assert!(md.contains("## t1"), "{md}");
+        assert!(
+            md.contains("*Not read: preview read limit reached.*"),
+            "{md}"
+        );
+        assert!(!md.contains("*(no rows)*"), "{md}");
+    }
 }

@@ -177,9 +177,10 @@ pub(super) fn decode_via_magick_capped(
     max_edge: Option<u32>,
     fidelity: Fidelity,
 ) -> Result<DynamicImage> {
-    // Metafiles get a much tighter, format-specific child budget whoever is asking. A slow
-    // vector WMF would otherwise grind for seconds to a near-blank frame; a raster decode
-    // keeps the budget its caller's [`Fidelity`] earns.
+    // A metafile tile gets a much tighter, format-specific child budget: a slow vector WMF
+    // would otherwise grind for seconds to a near-blank thumbnail. A metafile the user chose to
+    // convert gets its own longer one (`budget_for`), as a raster decode keeps the budget its
+    // caller's [`Fidelity`] earns.
     let is_meta = looks_like_metafile(bytes);
     // DICOM files carry a TIFF-compatible 128-byte preamble that tricks magick's
     // content-sniffer into treating them as TIFF (which then fails).  Pass an
@@ -393,7 +394,7 @@ fn decode_via_magick_spec_alloc(
     if is_meta {
         // Must follow the shared caps: ImageMagick applies the last resource
         // setting, leaving every non-metafile invocation on the normal budget.
-        add_metafile_magick_limits(&mut cmd);
+        add_metafile_magick_limits_for(&mut cmd, budget.wall);
     }
     let mut args: Vec<&str> = Vec::with_capacity(6 + pre_input.len() + pre_ops.len());
     // Pre-INPUT settings (e.g. `-density` for a small vector metafile) must precede the input so

@@ -235,6 +235,18 @@ pub(super) fn be_int(b: &[u8]) -> i64 {
 
 /// Decode a record (header of serial types + the column bodies) into at most `max_cols` values.
 pub(super) fn decode_record(rec: &[u8], enc: Enc, max_cols: usize) -> Vec<Val> {
+    decode_record_head(rec, rec.len(), enc, max_cols)
+}
+
+/// [`decode_record`] of a record `full_len` bytes long of which only `rec`, its start, was read:
+/// a row too big to fetch whole. A column whose body lies past `rec` but inside the record shows
+/// its size (its serial type says it) instead of its value.
+pub(super) fn decode_record_head(
+    rec: &[u8],
+    full_len: usize,
+    enc: Enc,
+    max_cols: usize,
+) -> Vec<Val> {
     let mut out = Vec::new();
     let Some((hdr_len, n)) = varint(rec, 0) else {
         return out;
@@ -254,23 +266,37 @@ pub(super) fn decode_record(rec: &[u8], enc: Enc, max_cols: usize) -> Vec<Val> {
         let Some(end) = data_off.checked_add(size) else {
             break;
         };
-        // A truncated body (short read / corrupt file) ends the record rather than faking values.
-        let Some(body) = rec.get(data_off..end) else {
-            break;
-        };
-        out.push(match serial {
-            0 => Val::Null,
-            1..=6 => Val::Int(be_int(body)),
-            7 => Val::Real(f64::from_be_bytes(body.try_into().unwrap_or([0; 8]))),
-            8 => Val::Int(0),
-            9 => Val::Int(1),
-            10 | 11 => Val::Null,
-            n if n % 2 == 0 => Val::Blob(size),
-            _ => Val::Text(decode_text(body, enc)),
+        out.push(match rec.get(data_off..end) {
+            Some(body) => column(serial, size, body, enc),
+            None if end <= full_len => unread_column(serial, size),
+            // A truncated body (short read / corrupt file) ends the record rather than faking values.
+            None => break,
         });
         data_off = end;
     }
     out
+}
+
+fn column(serial: u64, size: usize, body: &[u8], enc: Enc) -> Val {
+    match serial {
+        0 => Val::Null,
+        1..=6 => Val::Int(be_int(body)),
+        7 => Val::Real(f64::from_be_bytes(body.try_into().unwrap_or([0; 8]))),
+        8 => Val::Int(0),
+        9 => Val::Int(1),
+        10 | 11 => Val::Null,
+        n if n % 2 == 0 => Val::Blob(size),
+        _ => Val::Text(decode_text(body, enc)),
+    }
+}
+
+/// A column of a row too big to read whole, whose body was not read.
+fn unread_column(serial: u64, size: usize) -> Val {
+    match serial {
+        n if n >= 12 && n % 2 == 0 => Val::Blob(size),
+        n if n >= 13 => Val::Text(format!("<text, {}>", human_size(size as u64))),
+        _ => Val::Text("<not read>".into()),
+    }
 }
 
 /// Decode TEXT bytes in the database's declared encoding (lossy — a preview shows what it can).
@@ -465,14 +491,23 @@ impl<R: Read + Seek> Db<R> {
             return ControlFlow::Continue(());
         }
         let plen = plen as usize;
-        if plen == 0 || plen > MAX_PAYLOAD {
+        if plen == 0 {
             return ControlFlow::Continue(());
         }
         let local = local_size(plen, self.usable, table);
-        let Some(rec) = self.payload(page, off, plen, local) else {
-            return ControlFlow::Continue(());
+        let mut vals = if plen > MAX_PAYLOAD {
+            // A row too big to fetch whole (a stored file, say) still shows: the columns in this
+            // page's part of it, and the size of each one past that.
+            let Some(head) = page.get(off..off.saturating_add(local)) else {
+                return ControlFlow::Continue(());
+            };
+            decode_record_head(head, plen, self.enc, MAX_COLS)
+        } else {
+            let Some(rec) = self.payload(page, off, plen, local) else {
+                return ControlFlow::Continue(());
+            };
+            decode_record(&rec, self.enc, MAX_COLS)
         };
-        let mut vals = decode_record(&rec, self.enc, MAX_COLS);
         if let Some(i) = w.rowid_alias {
             // The INTEGER PRIMARY KEY column reads as NULL in the record; the real value is the
             // cell's rowid.

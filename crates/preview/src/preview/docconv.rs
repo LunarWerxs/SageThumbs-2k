@@ -392,11 +392,14 @@ fn ipynb_md(text: &str) -> Converted {
 
     let mut out = String::with_capacity(text.len() / 2);
     let mut attachments: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut skipped_images = 0usize;
     for (idx, cell) in cells.iter().take(MAX_CELLS).enumerate() {
         let kind = cell.get("cell_type").and_then(|t| t.as_str()).unwrap_or("");
         let src = join_source(cell.get("source"));
         match kind {
-            "markdown" => push_markdown_cell(&mut out, &mut attachments, cell, idx, &src),
+            "markdown" => {
+                skipped_images += push_markdown_cell(&mut out, &mut attachments, cell, idx, &src);
+            }
             "code" => push_code_cell(&mut out, cell, &src, &lang),
             "raw" if !src.trim().is_empty() => {
                 let fence = fence_for(&src);
@@ -409,6 +412,12 @@ fn ipynb_md(text: &str) -> Converted {
         out.push_str(&format!(
             "*Showing the first {MAX_CELLS} of {} cells.*\n",
             cells.len()
+        ));
+    }
+    if skipped_images > 0 {
+        out.push_str(&format!(
+            "*Showing the first {MAX_ATTACHMENTS} of {} pasted images.*\n",
+            attachments.len() + skipped_images
         ));
     }
     let md = if out.trim().is_empty() {
@@ -431,13 +440,12 @@ fn push_markdown_cell(
     cell: &serde_json::Value,
     idx: usize,
     src: &str,
-) {
+) -> usize {
     let rewritten = src.replace("](attachment:", &format!("](c{idx}/attachment:"));
-    if attachments.len() < MAX_ATTACHMENTS {
-        collect_attachments(cell, idx, attachments);
-    }
+    let skipped = collect_attachments(cell, idx, attachments);
     out.push_str(rewritten.trim_end());
     out.push_str("\n\n");
+    skipped
 }
 
 /// A code cell: a fenced block in the kernel language (skipped when empty), then each output.
@@ -456,25 +464,27 @@ fn push_code_cell(out: &mut String, cell: &serde_json::Value, src: &str, lang: &
 /// Decode a markdown cell's `attachments` object into `(key, bytes)` pairs, where `key` matches
 /// the rewritten `c{idx}/attachment:NAME` src the markdown now references. Each attachment is
 /// `{ "name": { "image/png": "base64…", … } }`; we take the first `image/*` MIME.
-fn collect_attachments(cell: &serde_json::Value, idx: usize, out: &mut Vec<(String, Vec<u8>)>) {
+///
+/// Past `MAX_ATTACHMENTS` the image is not decoded (that is the work the cap bounds) but is still
+/// counted; the return value is how many were left out, so the caller can say so.
+fn collect_attachments(
+    cell: &serde_json::Value,
+    idx: usize,
+    out: &mut Vec<(String, Vec<u8>)>,
+) -> usize {
     use base64::Engine;
     let Some(atts) = cell.get("attachments").and_then(|a| a.as_object()) else {
-        return;
+        return 0;
     };
+    let mut skipped = 0;
     for (name, mimes) in atts {
+        let Some(b64) = first_image_b64(mimes) else {
+            continue;
+        };
         if out.len() >= MAX_ATTACHMENTS {
-            break;
+            skipped += 1;
+            continue;
         }
-        let Some(map) = mimes.as_object() else {
-            continue;
-        };
-        let Some(b64) = map
-            .iter()
-            .find(|(mime, _)| mime.starts_with("image/"))
-            .and_then(|(_, v)| v.as_str())
-        else {
-            continue;
-        };
         // Jupyter wraps base64 payloads with newlines; strip all whitespace before decoding.
         let cleaned: String = b64.chars().filter(|c| !c.is_whitespace()).collect();
         if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(cleaned.as_bytes()) {
@@ -483,6 +493,16 @@ fn collect_attachments(cell: &serde_json::Value, idx: usize, out: &mut Vec<(Stri
             }
         }
     }
+    skipped
+}
+
+/// The base64 payload of an attachment's first `image/*` MIME entry, if it has one.
+fn first_image_b64(mimes: &serde_json::Value) -> Option<&str> {
+    mimes
+        .as_object()?
+        .iter()
+        .find(|(mime, _)| mime.starts_with("image/"))
+        .and_then(|(_, v)| v.as_str())
 }
 
 /// Notebook `source`/text fields are either one string or an array of line strings.
@@ -662,6 +682,27 @@ mod tests {
         assert_eq!(conv.attachments.len(), 1);
         assert_eq!(conv.attachments[0].0, "c0/attachment:img.png");
         assert_eq!(conv.attachments[0].1, b"hi");
+    }
+
+    /// Pasted images past the decode cap used to lose their bytes with no word to the reader (an
+    /// alt-text pill each); the preview now says how many of how many it kept.
+    #[test]
+    fn ipynb_attachments_past_the_cap_are_counted_in_a_note() {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"hi");
+        let total = MAX_ATTACHMENTS + 6;
+        let cells: Vec<String> = (0..total)
+            .map(|_| {
+                format!(
+                    r##"{{"cell_type":"markdown","source":["![](attachment:i.png)"],"attachments":{{"i.png":{{"image/png":"{b64}"}}}}}}"##
+                )
+            })
+            .collect();
+        let nb = format!(r#"{{"cells":[{}]}}"#, cells.join(","));
+        let conv = ipynb_md(&nb);
+        assert_eq!(conv.attachments.len(), MAX_ATTACHMENTS);
+        let note = format!("*Showing the first {MAX_ATTACHMENTS} of {total} pasted images.*");
+        assert!(conv.md.contains(&note), "md was: {}", conv.md);
     }
 
     #[test]

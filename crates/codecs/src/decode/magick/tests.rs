@@ -1,11 +1,11 @@
 #![cfg(test)]
 
 use super::{
-    add_magick_limits, add_metafile_magick_limits, apply_magick_environment, encode_wait_decision,
-    magick_output_extensions, magick_output_supported, magick_stdin_spec, output_coder, EncodeWait,
-    FULL_FIDELITY_PNG_CAP, MAGICK_CPU_BUDGET, MAGICK_PNG_CAP, MAX_ISOBMFF_TOP_LEVEL_BOXES,
-    METAFILE_MAGICK_CPU_BUDGET, METAFILE_MAGICK_MAP_LIMIT, METAFILE_MAGICK_MEMORY_LIMIT,
-    METAFILE_MAGICK_THREAD_LIMIT, METAFILE_MAGICK_TIMEOUT, METAFILE_MAGICK_TIME_LIMIT,
+    add_magick_limits, add_metafile_magick_limits_for, apply_magick_environment, budget_for,
+    encode_wait_decision, magick_output_extensions, magick_output_supported, magick_stdin_spec,
+    output_coder, EncodeWait, Fidelity, FULL_FIDELITY_PNG_CAP, MAGICK_CPU_BUDGET, MAGICK_PNG_CAP,
+    MAX_ISOBMFF_TOP_LEVEL_BOXES, METAFILE_MAGICK_CPU_BUDGET, METAFILE_MAGICK_MAP_LIMIT,
+    METAFILE_MAGICK_MEMORY_LIMIT, METAFILE_MAGICK_THREAD_LIMIT, METAFILE_MAGICK_TIMEOUT,
 };
 use std::collections::HashMap;
 use std::process::Command;
@@ -171,7 +171,7 @@ fn every_advertised_magick_output_uses_an_explicit_coder() {
 fn metafile_limits_override_the_shared_magick_budget() {
     let mut command = Command::new("magick.exe");
     add_magick_limits(&mut command, crate::decode::MAGICK_TIMEOUT);
-    add_metafile_magick_limits(&mut command);
+    add_metafile_magick_limits_for(&mut command, budget_for(Fidelity::Tile, true).wall);
     let args: Vec<_> = command
         .get_args()
         .map(|arg| arg.to_string_lossy().into_owned())
@@ -197,7 +197,7 @@ fn metafile_limits_override_the_shared_magick_budget() {
             METAFILE_MAGICK_MAP_LIMIT,
             "-limit",
             "time",
-            METAFILE_MAGICK_TIME_LIMIT,
+            "18",
             "-limit",
             "thread",
             METAFILE_MAGICK_THREAD_LIMIT,
@@ -212,11 +212,33 @@ fn metafile_limits_override_the_shared_magick_budget() {
         std::time::Duration::from_secs(3)
     );
     assert_eq!(METAFILE_MAGICK_TIMEOUT, std::time::Duration::from_secs(18));
+}
+
+/// A CAD or Visio EMF of tens of MB costs more than the tile tier's 3 s of CPU, and Convert and
+/// Resize used to be held to that same 3 s: the user's own file came back with no picture. Only
+/// the user-chosen tier is widened, and its child's own elapsed limit has to follow the wall
+/// backstop or it would abort the decode the CPU budget allows.
+#[test]
+fn a_metafile_the_user_converts_gets_a_longer_cpu_budget_than_a_tile() {
     assert_eq!(
-        METAFILE_MAGICK_TIME_LIMIT.parse::<u64>().unwrap(),
-        METAFILE_MAGICK_TIMEOUT.as_secs(),
-        "magick's own elapsed limit must match the metafile wall backstop",
+        budget_for(Fidelity::Tile, true).cpu,
+        METAFILE_MAGICK_CPU_BUDGET
     );
+    let full = budget_for(Fidelity::Full, true);
+    assert!(full.cpu > METAFILE_MAGICK_CPU_BUDGET);
+    assert!(
+        full.wall > full.cpu,
+        "the wall backstop sits above the CPU budget"
+    );
+
+    let mut command = Command::new("magick.exe");
+    add_metafile_magick_limits_for(&mut command, full.wall);
+    let args: Vec<_> = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    let time = args.iter().position(|arg| arg == "time").unwrap();
+    assert_eq!(args[time + 1], full.wall.as_secs().to_string());
 }
 
 #[test]

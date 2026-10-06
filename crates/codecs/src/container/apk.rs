@@ -73,7 +73,6 @@ const DENSITY_NONE: u16 = 0xFFFF;
 // Caps on attacker-controlled counts/lengths. Every loop below is bounded by one of
 // these or by a `get()` that fails on the first out-of-range read.
 const MAX_CHUNKS: usize = 65_536;
-const MAX_STRINGS: u32 = 200_000;
 const MAX_ATTRS: usize = 4096;
 const MAX_ENTRY_COUNT: u32 = 65_536;
 const MAX_REF_DEPTH: u8 = 8;
@@ -252,7 +251,7 @@ fn pick_wrapper_apk<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<usize> {
         }
         let is_base = name.eq_ignore_ascii_case("base.apk") || ends_with_ci(name, "/base.apk");
         let size = f.size();
-        if size == 0 || size > MAX_INNER_APK {
+        if size == 0 {
             continue;
         }
         if better_wrapper_pick(pick, is_base, size) {
@@ -292,9 +291,12 @@ fn wrapper_icon<R: Read + Seek>(zip: &mut ZipArchive<R>, depth: u8) -> Option<Ve
     // Fallback for a COMPRESSED inner member: the `zip` crate has no seekable reader for
     // a compressed entry (`by_index_seek` refuses anything but Stored — see zip-8.6.0
     // read/zip_archive.rs), so there is no way to open it as an archive without
-    // materializing its bytes first. Bounded the same as before this streamed the common
-    // case out of this path.
+    // materializing its bytes first. Keep the 256 MiB memory bound only where bytes are
+    // actually buffered.
     let f = zip.by_index(idx).ok()?;
+    if f.size() > MAX_INNER_APK {
+        return None;
+    }
     let mut inner = Vec::new();
     // Not `read_named`: its 32 MiB cover cap is far too small for a real base.apk.
     // `take` bounds the decompressed size regardless of what the entry header claims.
@@ -416,9 +418,6 @@ struct Pool<'a> {
 impl<'a> Pool<'a> {
     fn parse(chunk: &'a [u8], header_size: usize) -> Option<Self> {
         let count = le32(chunk, 8)?;
-        if count > MAX_STRINGS {
-            return None;
-        }
         let flags = le32(chunk, 16)?;
         let strings_start = le32(chunk, 20)? as usize;
         // The offsets array must fit inside the chunk; a truncated pool is refused

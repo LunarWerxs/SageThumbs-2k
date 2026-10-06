@@ -48,7 +48,30 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **CMYK JPEGs saved by Photoshop show their true colours.** A CMYK JPEG carries its own colour
   profile, but Photoshop (and most print tools) save its inks in a form SageThumbs did not take
   apart, so the profile was skipped and the picture came out with the same harsh colours as the
-  Photoshop files above. It now goes through its profile too.
+  Photoshop files above. It now goes through its profile too, on an ordinary (not progressive)
+  JPEG of up to about 100 megapixels, more than twice the size any CMYK JPEG got before.
+- **Big 3D scans draw solid.** A model of more than two million triangles (a photogrammetry scan,
+  a ZBrush sculpt) was drawn from a sample of them, and where its triangles are smaller than a
+  pixel most of the surface came out see-through. Every triangle is now drawn. A model with more
+  than 16 million points, which got no thumbnail at all, now gets one.
+- **Files past one of SageThumbs' size limits show what fits, instead of nothing.** Each limit is
+  still there, to keep Explorer fast, but going over it no longer throws the whole picture away:
+  - Android app bundles (`.xapk`, `.apks`, `.apkm`) whose `base.apk` is over 256 MB, and apps
+    with very large resource tables, show their icon.
+  - Affinity documents over 64 MB that store their thumbnail near the end get it.
+  - Photoshop EPS files saved with a colour profile (most CMYK ones) get their thumbnail.
+  - Comic book RARs whose first pages are big lossless scans get a cover from the pages that fit.
+  - SpriteLoop rigs with very large parts draw the parts that fit, instead of one stray part.
+  - The Quick preview lists the contents of ZIP, APK, JAR and IPA files over 64 MB; a 7z or RAR
+    that big says why it has no listing.
+  - SQLite previews list a row that holds a big stored file, showing the file's size, instead of
+    silently skipping it, and a table the preview had no time left to read says so instead of
+    "(no rows)".
+  - Markdown documents with broken image links no longer hide the good images after them; up to
+    64 images show (it was 24), and one left out over the limit says so. A Jupyter notebook with
+    more than 64 pasted images says how many were left out.
+  - Converting or resizing a big EMF or WMF picture gets a full minute instead of failing after 3
+    seconds.
 
 ## 3.6.0
 

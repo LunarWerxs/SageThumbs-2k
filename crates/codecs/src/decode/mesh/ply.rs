@@ -1,7 +1,5 @@
 //! Stanford PLY: the header grammar (the bodies are read in `read`).
 
-use super::*;
-
 /// Header parse state accumulated while walking PLY header lines.
 pub(super) struct PlyHeaderState {
     pub(super) ascii: bool,
@@ -41,10 +39,11 @@ impl PlyHeaderState {
         Some(())
     }
 
-    /// `x`/`y`/`z` must be the first three vertex properties and the vertex count must be in
-    /// range. Any number of faces is fine: past `MAX_TRIS` they are sampled (`read::Reservoir`).
+    /// `x`/`y`/`z` must be the first three vertex properties and there must be a vertex. Any
+    /// number of faces is fine: past `MAX_TRIS` they are sampled (`read::Reservoir`). So is any
+    /// number of vertices: past `MAX_VERTS` the body is read in two passes (`read::read_ply_capped`).
     pub(super) fn is_valid(&self) -> bool {
-        self.xyz_lead >= 3 && self.n_verts > 0 && self.n_verts <= MAX_VERTS
+        self.xyz_lead >= 3 && self.n_verts > 0
     }
 }
 

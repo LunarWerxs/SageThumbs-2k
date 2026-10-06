@@ -450,6 +450,38 @@ fn xapk_root_icon_shortcut_wins() {
     assert_eq!(extract(&xapk).as_deref(), Some(store_icon.as_slice()));
 }
 
+/// A split bundle of a big game: its `base.apk` is STORED and over [`MAX_INNER_APK`]. The pick
+/// used to skip an inner apk that size, so the bundle got no icon, though a stored member is read
+/// in place and never buffered.
+#[test]
+fn a_stored_base_apk_past_the_buffer_cap_still_gives_its_icon() {
+    let icon = png(12, 12);
+    let path = "res/mipmap/ic_launcher.png";
+    let apk = zip_of(&[
+        ("AndroidManifest.xml", &axml_string_icon(path)),
+        (path, &icon),
+    ]);
+    let file = std::env::temp_dir().join(format!("st2k_bigxapk_{}.xapk", std::process::id()));
+    let mut zw = zip::ZipWriter::new(std::fs::File::create(&file).unwrap());
+    let opts =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    zw.start_file("base.apk", opts).unwrap();
+    // Bytes ahead of the apk's own archive, as a self-extracting stub has: the member is past
+    // the cap while the archive inside it stays a few KB.
+    let pad = vec![0u8; 1 << 20];
+    for _ in 0..=MAX_INNER_APK >> 20 {
+        zw.write_all(&pad).unwrap();
+    }
+    zw.write_all(&apk).unwrap();
+    zw.finish().unwrap();
+
+    let mut zip = ZipArchive::new(std::fs::File::open(&file).unwrap()).unwrap();
+    let got = extract_from_archive(&mut zip);
+    drop(zip);
+    let _ = std::fs::remove_file(&file);
+    assert_eq!(got.as_deref(), Some(icon.as_slice()));
+}
+
 #[test]
 fn plain_zip_is_not_claimed() {
     let z = zip_of(&[("page1.png", &png(4, 4))]);
@@ -535,6 +567,43 @@ fn adversarial_axml_returns_none_without_panicking() {
         let _ = looks_like_apk(apk.get(..cut).unwrap());
         let _ = extract(apk.get(..cut).unwrap());
     }
+}
+
+#[test]
+fn string_pool_over_200k_strings_parses_successfully() {
+    // Build a UTF-8 ResStringPool chunk with count = 200_001, header_size 28,
+    // one entry "res/a1.png" at strings_start, all offsets are 0.
+    let icon_path = "res/a1.png";
+    let mut data = Vec::new();
+    data.extend_from_slice(&utf8_varint(icon_path.encode_utf16().count()));
+    data.extend_from_slice(&utf8_varint(icon_path.len()));
+    data.extend_from_slice(icon_path.as_bytes());
+    data.push(0);
+    while data.len() % 4 != 0 {
+        data.push(0);
+    }
+    let strings_start = 28u32 + 200_001u32 * 4;
+    let chunk_size = strings_start + data.len() as u32;
+    let mut chunk = Vec::new();
+    chunk.extend_from_slice(&RES_STRING_POOL.to_le_bytes());
+    chunk.extend_from_slice(&28u16.to_le_bytes());
+    chunk.extend_from_slice(&chunk_size.to_le_bytes());
+    chunk.extend_from_slice(&200_001u32.to_le_bytes()); // stringCount = 200_001
+    chunk.extend_from_slice(&0u32.to_le_bytes()); // styleCount
+    chunk.extend_from_slice(&UTF8_FLAG.to_le_bytes());
+    chunk.extend_from_slice(&strings_start.to_le_bytes());
+    chunk.extend_from_slice(&0u32.to_le_bytes()); // stylesStart
+                                                  // All offsets are 0 (all strings start at the same location in this test)
+    for _ in 0..200_001 {
+        chunk.extend_from_slice(&0u32.to_le_bytes());
+    }
+    chunk.extend_from_slice(&data);
+    let pool = Pool::parse(&chunk, 28).expect("pool with 200_001 strings should parse");
+    assert_eq!(
+        pool.get(200_000).as_deref(),
+        Some(icon_path),
+        "last string must be retrievable"
+    );
 }
 
 #[test]

@@ -339,8 +339,180 @@ fn an_obj_whose_faces_start_past_the_head_still_renders() {
     );
     let whole = decode_mesh_sniffed(&bytes).expect("an exporter's OBJ renders");
     let head = &bytes[..MESH_SNIFF_BYTES];
-    let streamed = mesh_from_reader(&bytes[..], head, bytes.len() as u64).expect("streamed");
+    let streamed = mesh_from_reader(std::io::Cursor::new(&bytes[..]), head, bytes.len() as u64)
+        .expect("streamed");
     assert_eq!(whole.as_bytes(), streamed.as_bytes());
+}
+
+/// A UV sphere's vertices and quads (0-based), as `exporter_sphere` lays them out.
+fn sphere_parts(n: usize) -> (Vec<[f32; 3]>, Vec<[usize; 4]>) {
+    use std::f32::consts::PI;
+    let mut verts = Vec::new();
+    for i in 0..=n {
+        let t = PI * i as f32 / n as f32;
+        for j in 0..n {
+            let p = 2.0 * PI * j as f32 / n as f32;
+            verts.push([t.sin() * p.cos(), t.cos(), t.sin() * p.sin()]);
+        }
+    }
+    let mut quads = Vec::new();
+    for i in 0..n {
+        for j in 0..n {
+            let (a, b) = (i * n + j, i * n + (j + 1) % n);
+            quads.push([a, b, b + n, a + n]);
+        }
+    }
+    (verts, quads)
+}
+
+/// One sphere as an OBJ, an ASCII PLY and a binary PLY (with a `uchar` after x/y/z, so the
+/// vertex stride is not just 12).
+fn sphere_files(n: usize) -> [(&'static str, Vec<u8>); 3] {
+    let (verts, quads) = sphere_parts(n);
+    let mut obj = String::new();
+    let mut ply = format!(
+        "ply\nformat ascii 1.0\nelement vertex {}\nproperty float x\nproperty float y\n\
+         property float z\nelement face {}\nproperty list uchar int vertex_indices\nend_header\n",
+        verts.len(),
+        quads.len()
+    );
+    for v in &verts {
+        obj.push_str(&format!("v {} {} {}\n", v[0], v[1], v[2]));
+        ply.push_str(&format!("{} {} {}\n", v[0], v[1], v[2]));
+    }
+    let mut bin = format!(
+        "ply\nformat binary_little_endian 1.0\nelement vertex {}\nproperty float x\n\
+         property float y\nproperty float z\nproperty uchar r\nelement face {}\n\
+         property list uchar int vertex_indices\nend_header\n",
+        verts.len(),
+        quads.len()
+    )
+    .into_bytes();
+    for v in &verts {
+        v.iter()
+            .for_each(|c| bin.extend_from_slice(&c.to_le_bytes()));
+        bin.push(7);
+    }
+    for q in &quads {
+        obj.push_str(&format!(
+            "f {} {} {} {}\n",
+            q[0] + 1,
+            q[1] + 1,
+            q[2] + 1,
+            q[3] + 1
+        ));
+        ply.push_str(&format!("4 {} {} {} {}\n", q[0], q[1], q[2], q[3]));
+        bin.push(4);
+        q.iter()
+            .for_each(|&i| bin.extend_from_slice(&(i as u32).to_le_bytes()));
+    }
+    [
+        ("obj", obj.into_bytes()),
+        ("ascii ply", ply.into_bytes()),
+        ("binary ply", bin),
+    ]
+}
+
+/// A model with more vertices than a pass holds is read in two and draws exactly what the
+/// one-pass read draws. Past the cap it used to be refused outright, so a photogrammetry scan of
+/// tens of millions of vertices (an OBJ or float PLY) went without a thumbnail, while its
+/// triangles past their own cap were only sampled. The cap is a parameter, so a sphere of a few
+/// hundred vertices stands in for it.
+#[test]
+fn a_model_past_the_vertex_cap_reads_in_two_passes() {
+    type Cur = std::io::Cursor<Vec<u8>>;
+    type Reader = fn(&mut Cur, usize, &mut Collector) -> Option<()>;
+    for (name, bytes) in sphere_files(12) {
+        let read: Reader = if name == "obj" {
+            read::read_obj_capped::<Cur>
+        } else {
+            read::read_ply_capped::<Cur>
+        };
+        let (mut one, mut two) = (Collector::new(usize::MAX), Collector::new(usize::MAX));
+        read(&mut Cur::new(bytes.clone()), usize::MAX, &mut one).expect("one pass");
+        read(&mut Cur::new(bytes), 156 / 3, &mut two).expect("two passes");
+        let (one, two) = (one.into_tris(), two.into_tris());
+        assert!(!one.is_empty(), "{name}: the sphere has triangles");
+        assert_eq!(two, one, "{name}: the two-pass read draws the same model");
+        assert!(
+            render(&two, 64).pixels().any(|p| p[3] > 0),
+            "{name}: it draws"
+        );
+    }
+}
+
+/// One triangle cut into `k * k` sub-triangles that tile it exactly.
+fn tile(t: [[f32; 3]; 3], k: usize) -> Vec<[f32; 9]> {
+    let at = |i: usize, j: usize| -> [f32; 3] {
+        let (u, v) = (i as f32 / k as f32, j as f32 / k as f32);
+        std::array::from_fn(|c| t[0][c] + u * (t[1][c] - t[0][c]) + v * (t[2][c] - t[0][c]))
+    };
+    let flat = |a: [f32; 3], b: [f32; 3], c: [f32; 3]| {
+        [a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]]
+    };
+    let mut out = Vec::with_capacity(k * k);
+    for i in 0..k {
+        for j in 0..k - i {
+            out.push(flat(at(i, j), at(i + 1, j), at(i, j + 1)));
+            if i + j + 1 < k {
+                out.push(flat(at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)));
+            }
+        }
+    }
+    out
+}
+
+/// A binary STL of `tris`.
+fn stl_of(tris: &[[f32; 9]]) -> Vec<u8> {
+    let mut out = vec![0u8; 80];
+    out.extend_from_slice(&(tris.len() as u32).to_le_bytes());
+    for t in tris {
+        out.extend_from_slice(&[0u8; 12]);
+        t.iter()
+            .for_each(|c| out.extend_from_slice(&c.to_le_bytes()));
+        out.extend_from_slice(&[0u8; 2]);
+    }
+    out
+}
+
+/// A model past the triangle cap is drawn whole, every triangle, not sampled to the cap. A few big
+/// triangles, each cut into a fine grid of sub-triangles smaller than a pixel, must cover as many
+/// pixels as the same triangles uncut: sampled to a fraction, the sub-triangles that remain seldom
+/// cover a pixel centre and most of the surface came out see-through (a real 6.6M-triangle scan
+/// lost 70% of its pixels). The cap is a parameter, so a few tens of thousands of triangles over
+/// a cap of a thousand stand in for it.
+#[test]
+fn a_model_past_the_triangle_cap_is_drawn_whole() {
+    let big = [
+        [[0., 0., 0.], [10., 0., 3.], [0., 10., 1.]],
+        [[10., 0., 3.], [10., 10., 6.], [0., 10., 1.]],
+        [[0., 0., 0.], [0., 10., 1.], [-5., 5., 8.]],
+    ];
+    let flat = |t: &[[f32; 3]; 3]| {
+        [
+            t[0][0], t[0][1], t[0][2], t[1][0], t[1][1], t[1][2], t[2][0], t[2][1], t[2][2],
+        ]
+    };
+    let whole: Vec<[f32; 9]> = big.iter().map(flat).collect();
+    let cut: Vec<[f32; 9]> = big.iter().flat_map(|t| tile(*t, 120)).collect();
+    let limits = Limits {
+        tris: 1000,
+        verts: MAX_VERTS,
+        edge: 64,
+    };
+    assert!(cut.len() > 40 * limits.tris, "far past the cap");
+
+    let opaque = |img: &image::RgbaImage| img.pixels().filter(|p| p[3] > 0).count();
+    let want = opaque(&render(&whole, limits.edge));
+    let stl = stl_of(&cut);
+    let kind = mesh_kind(&stl[..MESH_SNIFF_BYTES], stl.len() as u64).expect("a binary STL");
+    let img = mesh_image(&mut std::io::Cursor::new(&stl[..]), kind, limits).expect("drawn");
+    let got = opaque(&img);
+    assert!(want > 500, "the model covers the canvas: {want}");
+    assert!(
+        got.abs_diff(want) * 100 <= want,
+        "drawn {got} opaque pixels, the uncut model has {want}"
+    );
 }
 
 /// The sniffers must refuse close-but-wrong inputs: prose with a "v " line but no
@@ -421,8 +593,9 @@ fn rasterizer_budget_bounds_full_canvas_triangles() {
     );
 }
 
-/// A model with more triangles than the render keeps is sampled across ALL of them, not cut
-/// off after the first `MAX_TRIS`: triangles numbered along x keep both ends of the range.
+/// The sample a model past the vertex cap is drawn from (the one place sampling is left, see
+/// `MAX_VERTS`) is taken across ALL its triangles, not cut off after the first `MAX_TRIS`:
+/// triangles numbered along x keep both ends of the range.
 #[test]
 fn a_model_past_the_triangle_budget_is_sampled_from_end_to_end() {
     let n = MAX_TRIS * 3;
@@ -451,7 +624,8 @@ fn a_model_past_the_triangle_budget_is_sampled_from_end_to_end() {
 fn a_mesh_read_off_a_reader_renders_as_its_bytes_do() {
     for bytes in [cube_stl(), tetra_obj(), tetra_ply()] {
         let head = &bytes[..bytes.len().min(MESH_SNIFF_BYTES)];
-        let streamed = mesh_from_reader(&bytes[..], head, bytes.len() as u64).expect("renders");
+        let streamed = mesh_from_reader(std::io::Cursor::new(&bytes[..]), head, bytes.len() as u64)
+            .expect("renders");
         let whole = decode_mesh_sniffed(&bytes).expect("renders");
         assert!(streamed.to_rgba8() == whole.to_rgba8());
     }
@@ -472,6 +646,6 @@ fn an_ascii_stl_facet_never_grows_past_one_invalid_facet() {
     stl.push_str(&"vertex 1 2 3\n".repeat(4));
     stl.push_str("endloop\nendfacet\nfacet normal 0 0 1\nouter loop\n");
     stl.push_str("vertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid x\n");
-    let tris = read::read_ascii_stl(&mut std::io::Cursor::new(stl.into_bytes())).expect("parses");
+    let tris = parse_ascii_stl(stl.as_bytes()).expect("parses");
     assert_eq!(tris, vec![[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]]);
 }

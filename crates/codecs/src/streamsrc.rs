@@ -806,9 +806,9 @@ unsafe fn offset_cover(stream: &IStream, head: &StreamHead, who: &str) -> Option
     }
 }
 
-/// A 3D mesh (STL, OBJ, PLY) read whole off the stream and rendered, a huge one sampled down
-/// to the render's triangle budget (see `decode::mesh`): a big model is all triangles, so no
-/// head holds its shape.
+/// A 3D mesh (STL, OBJ, PLY) read whole off the stream and rendered, a huge one read again and
+/// drawn as it streams past (see `decode::mesh`): a big model is all triangles, so no head holds
+/// its shape.
 unsafe fn mesh_stream(stream: &IStream, head: &StreamHead, who: &str) -> Option<StreamSource> {
     let size = head.size?;
     let sniff = stream_prefix(stream, Some(size), decode::MESH_SNIFF_BYTES)?;

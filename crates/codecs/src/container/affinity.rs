@@ -14,8 +14,8 @@ const PNG_SIG: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
 const IEND: [u8; 8] = [0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82];
 
 /// Cap the O(n·m) byte scan so a huge/hostile `.af` (often hundreds of MB)
-/// can't run away. Only the first 64 MiB are searched for the PNG signature,
-/// and each IEND search span extends at most a further 64 MiB, bounding
+/// can't run away. Only the first and the last 64 MiB are searched for the PNG
+/// signature, and each IEND search span extends at most a further 64 MiB, bounding
 /// pathological inputs. Derived from the canonical cover budget rather than a
 /// separately picked magic number.
 const MAX_SCAN: usize = super::MAX_COVER as usize * 2;
@@ -30,19 +30,41 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
     let mut best_le512: Option<&[u8]> = None; // last PNG with max edge ≤ 512
     let mut last_any: Option<&[u8]> = None; // fallback: last valid PNG
 
-    // Bound the signature search to the first MAX_SCAN bytes so we can't walk
-    // an arbitrarily large file; a signature past that bound is never found,
-    // though each IEND search below still scans a MAX_SCAN window.
+    // Bound the signature search to two MAX_SCAN windows, the head and the tail,
+    // so we can't walk an arbitrarily large file. A big layered document may keep
+    // its thumbnail near the end, past the head window; the tail window is
+    // scanned after the head so a thumbnail there still wins ("last ≤512 wins").
+    // Each IEND search below still scans at most a MAX_SCAN window.
     let sig_limit = bytes.len().min(MAX_SCAN);
+    scan_window(bytes, 0, sig_limit, &mut best_le512, &mut last_any);
+    if bytes.len() > MAX_SCAN {
+        let tail_start = (bytes.len() - MAX_SCAN).max(sig_limit);
+        scan_window(
+            bytes,
+            tail_start,
+            bytes.len(),
+            &mut best_le512,
+            &mut last_any,
+        );
+    }
+    best_le512.or(last_any).map(|p| p.to_vec())
+}
 
-    let mut i = 0usize;
-    while i + PNG_SIG.len() <= sig_limit {
-        match scan_step(bytes, i, &mut best_le512, &mut last_any) {
+/// Scan `start..limit` for PNG signatures, recording candidates as `scan_step` does.
+fn scan_window<'a>(
+    bytes: &'a [u8],
+    start: usize,
+    limit: usize,
+    best_le512: &mut Option<&'a [u8]>,
+    last_any: &mut Option<&'a [u8]>,
+) {
+    let mut i = start;
+    while i + PNG_SIG.len() <= limit {
+        match scan_step(bytes, i, best_le512, last_any) {
             Some(next) => i = next,
             None => break, // no terminator → no more complete PNGs
         }
     }
-    best_le512.or(last_any).map(|p| p.to_vec())
 }
 
 /// Advance the scan from `i` by one step, recording any bounded PNG candidate;
@@ -116,6 +138,22 @@ mod tests {
             "should pick the ≤512 preview"
         );
         assert!(extract(b"no png in here").is_none());
+    }
+
+    /// A layered document keeps a layer icon up front and the real thumbnail past the
+    /// head scan window; the thumbnail must still win over the earlier small PNG.
+    #[test]
+    fn thumb_past_64mib_is_found() {
+        let icon = png(16, 16); // a layer icon in the head — must lose
+        let thumb = png(256, 256); // the thumbnail, stored past MAX_SCAN — must win
+        let mut bytes = vec![0x00, 0xFF, 0x4B, 0x41, 0x09, 0x00]; // Affinity magic
+        bytes.extend_from_slice(&icon);
+        bytes.resize(MAX_SCAN + 1024, 0);
+        bytes.extend_from_slice(&thumb);
+
+        let got = extract(&bytes).expect("embedded png");
+        let d = image::load_from_memory(&got).unwrap();
+        assert_eq!((d.width(), d.height()), (256, 256));
     }
 
     /// `extract` used to carry its own copy of `find` with no empty-needle guard

@@ -71,7 +71,7 @@ pub fn extract<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
 }
 
 /// Loads every asset the frame references into `assets` keyed by part index, once each, and
-/// bounds their total DECODED bytes; `None` when that aggregate budget is exceeded.
+/// bounds their total DECODED bytes; parts that would exceed the budget are skipped.
 fn load_assets<R: Read + Seek>(
     zip: &mut ZipArchive<R>,
     rig: &Rig,
@@ -99,10 +99,11 @@ fn load_assets<R: Read + Seek>(
         let Some(img) = decode_asset(&bytes) else {
             continue;
         };
-        decoded_bytes += u64::from(img.width()) * u64::from(img.height()) * 4;
-        if decoded_bytes > MAX_TOTAL_DECODED_BYTES {
-            return None;
+        let asset_bytes = u64::from(img.width()) * u64::from(img.height()) * 4;
+        if decoded_bytes + asset_bytes > MAX_TOTAL_DECODED_BYTES {
+            continue;
         }
+        decoded_bytes += asset_bytes;
         assets[placed.part] = Some(img);
     }
     Some(())
@@ -731,5 +732,93 @@ mod tests {
                 "a manifestless zip is not a spla rig"
             );
         }
+    }
+
+    /// Over budget: parts that exceed the decoded-asset cap are skipped, but the kept ones
+    /// still render. The user sees the pose minus the missing parts, not one random part from
+    /// the generic image pick.
+    #[test]
+    fn spla_over_decoded_budget_still_renders_kept_parts() {
+        use std::io::Write;
+        use zip::ZipWriter;
+
+        let mut zip_buf = std::io::Cursor::new(Vec::new());
+        let mut zw = ZipWriter::new(&mut zip_buf);
+
+        // Part A: 1x1 solid red, placed at (32, 32), drawOrder 1 (on top).
+        let red_png = {
+            let img = RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]));
+            let mut out = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+            out.into_inner()
+        };
+
+        // Parts B and C: 4096x4096 transparent PNGs (~64 MiB each when decoded).
+        // Decode to check: 4096 * 4096 * 4 = 67,108,864 bytes each.
+        let large_png = {
+            let img = RgbaImage::from_pixel(4096, 4096, image::Rgba([0, 0, 0, 0]));
+            let mut out = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+            out.into_inner()
+        };
+
+        // Add files to the zip in stored (no compression) format.
+        let manifest = r#"{
+            "format": "spla",
+            "version": 1,
+            "name": "budget_test",
+            "canvas": {"width": 64, "height": 64},
+            "parts": [
+                {"id": "a", "asset": "assets/a.png", "pivot": {"x": 0, "y": 0}, "drawOrder": 1, "visible": true},
+                {"id": "b", "asset": "assets/b.png", "pivot": {"x": 0, "y": 0}, "drawOrder": 0, "visible": true},
+                {"id": "c", "asset": "assets/c.png", "pivot": {"x": 0, "y": 0}, "drawOrder": 0, "visible": true}
+            ],
+            "animations": [
+                {"id": "idle", "fps": 24, "frames": [
+                    {"index": 0, "parts": [
+                        {"part": "b", "x": 0, "y": 0},
+                        {"part": "c", "x": 0, "y": 0},
+                        {"part": "a", "x": 32, "y": 32}
+                    ]}
+                ]}
+            ]
+        }"#;
+
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        zw.start_file("manifest.json", opts).unwrap();
+        zw.write_all(manifest.as_bytes()).unwrap();
+
+        zw.start_file("assets/a.png", opts).unwrap();
+        zw.write_all(&red_png).unwrap();
+
+        zw.start_file("assets/b.png", opts).unwrap();
+        zw.write_all(&large_png).unwrap();
+
+        zw.start_file("assets/c.png", opts).unwrap();
+        zw.write_all(&large_png).unwrap();
+
+        zw.finish().unwrap();
+
+        let zip_bytes = zip_buf.into_inner();
+        let mut zip = ZipArchive::new(std::io::Cursor::new(zip_bytes)).expect("zip");
+        let png_bytes = extract(&mut zip).expect("should render kept parts");
+        let img = image::load_from_memory(&png_bytes)
+            .expect("valid png")
+            .to_rgba8();
+
+        // The red part (1x1) was placed at (32, 32). The output is scaled down to fit
+        // MAX_EDGE (1024). Canvas is 64x64, so scale factor is 1.0. The red pixel should be
+        // present somewhere in the output (at or near 32, 32).
+        let red_pixel_found = img
+            .pixels()
+            .filter(|p| p[0] > 200 && p[1] < 100 && p[2] < 100)
+            .count()
+            > 0;
+        assert!(
+            red_pixel_found,
+            "red pixel from part A should be in the output"
+        );
     }
 }

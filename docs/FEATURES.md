@@ -423,9 +423,11 @@ plus these viewer-only extras:
 - **3D-print models** (`.stl`, `.obj`, `.ply`): these carry no picture inside them, so one is
   drawn. The model is rendered shaded from a consistent three-quarter angle, in Explorer
   thumbnails and at full size in the preview, on a transparent background like any other
-  thumbnail. A folder of prints becomes something you can tell apart at a glance. Geometry is
-  read defensively (triangle and vertex counts are capped, non-finite values dropped) because the
-  bytes come from a file someone else made.
+  thumbnail. A folder of prints becomes something you can tell apart at a glance. A scan of
+  millions of triangles is drawn whole, triangle by triangle as the file is read, so it never
+  has to fit in memory. Geometry is read defensively (the drawing work and the points held in
+  memory are capped, non-finite values dropped) because the bytes come from a file someone
+  else made.
 - **Jupyter notebooks** (`.ipynb`): markdown cells render, code cells show syntax-highlighted with
   line numbers in the notebook's language, and text outputs (stream, results, cleaned error
   tracebacks) display beneath their cells.

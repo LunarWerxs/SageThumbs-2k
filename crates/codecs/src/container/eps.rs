@@ -302,7 +302,10 @@ fn photoshop_preview(bytes: &[u8]) -> Option<Vec<u8>> {
         .ok()?
         .parse::<usize>()
         .ok()?;
-    if declared == 0 || declared as u64 > MAX_COVER || declared > ASCII_SCAN_MAX / 2 {
+    // A block bigger than the head can hold is still worth walking: a CMYK EPS saved with its
+    // colour profile carries well over 512 KiB, but Photoshop writes the resources in ID order,
+    // so the 1036 thumbnail sits ahead of the profile (1039) and XMP (1060), inside the head.
+    if declared == 0 || declared as u64 > MAX_COVER {
         return None;
     }
     let resource = read_photoshop_resource(rest, declared)?;
@@ -310,15 +313,26 @@ fn photoshop_preview(bytes: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Read `declared` hex-encoded `%` lines into a resource buffer, refusing an early terminator.
+///
+/// Running out of the scanned head before `declared` bytes are in is not a failure: the bytes
+/// read so far are returned and the resource walker stops at the block the cut falls in. Memory
+/// stays bounded by the head, since the hex is never more than half of it.
 fn read_photoshop_resource(mut rest: &[u8], declared: usize) -> Option<Vec<u8>> {
-    let mut resource = Vec::with_capacity(declared);
+    let mut resource = Vec::with_capacity(declared.min(ASCII_SCAN_MAX / 2));
     while resource.len() < declared {
+        if rest.is_empty() {
+            return Some(resource);
+        }
         let (line, next) = take_line(rest);
         rest = next;
         if line == b"%%EndPhotoshop" || line == b"%EndPhotoshop" {
             return None;
         }
-        append_hex(comment_payload(line)?, &mut resource, declared)?;
+        // The head's last line is cut wherever the scan limit fell; the pairs before the cut
+        // were already pushed.
+        if append_hex(comment_payload(line)?, &mut resource, declared).is_none() {
+            return rest.is_empty().then_some(resource);
+        }
     }
     Some(resource)
 }
@@ -685,5 +699,24 @@ mod tests {
         assert!(extract_ascii_preview(&photoshop_eps(&resource, resource.len() - 1)).is_none());
         assert!(extract_ascii_preview(&photoshop_eps(&resource[..8], resource.len())).is_none());
         assert!(extract_ascii_preview(b"%!PS\n%%BeginPhotoshop: 33554433\n").is_none());
+    }
+
+    #[test]
+    fn a_photoshop_block_longer_than_the_scanned_head_still_yields_its_thumbnail() {
+        // A CMYK EPS saved with its colour profile: the 1036 thumbnail comes first, then a
+        // profile (1039) whose hex runs well past the 1 MiB head.
+        let jpeg = b"\xFF\xD8\xFFpreview";
+        let mut resource = photoshop_resource(jpeg);
+        resource.extend_from_slice(b"8BIM");
+        resource.extend_from_slice(&1039u16.to_be_bytes());
+        resource.extend_from_slice(&[0, 0]);
+        resource.extend_from_slice(&700_000u32.to_be_bytes());
+        resource.extend_from_slice(&vec![0u8; 700_000]);
+        let eps = photoshop_eps(&resource, resource.len());
+        assert!(eps.len() > ASCII_SCAN_MAX, "the hex must outrun the head");
+        assert!(matches!(
+            extract_ascii_preview(&eps),
+            Some(CoverOut::Bytes(bytes)) if bytes == jpeg
+        ));
     }
 }

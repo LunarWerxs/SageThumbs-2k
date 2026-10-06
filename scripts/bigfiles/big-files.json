@@ -661,7 +661,10 @@
   "strategy": "zip-last"
  },
  "obj": {
-  "strategy": "tail"
+  "strategy": "tail",
+  "also": [
+   "obj-dense"
+  ]
  },
  "odf": {
   "strategy": "zip-last"
@@ -766,7 +769,10 @@
   "waive": "An Alias/Wavefront .pix is recognised by its runs ending exactly on the last byte (the format has no magic), so no ballast can be added without making it a different file; a genuinely big .pix is just a bigger picture, which the pixel sweep (bigpixels.py) covers."
  },
  "ply": {
-  "strategy": "tail"
+  "strategy": "tail",
+  "also": [
+   "ply-dense"
+  ]
  },
  "png": {
   "strategy": "tail"
@@ -998,7 +1004,10 @@
   }
  },
  "stl": {
-  "strategy": "tail"
+  "strategy": "tail",
+  "also": [
+   "stl-dense"
+  ]
  },
  "sun": {
   "strategy": "tail"

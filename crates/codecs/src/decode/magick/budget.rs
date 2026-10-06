@@ -48,8 +48,7 @@ pub(super) const METAFILE_MAGICK_MAP_LIMIT: &str = "192MiB";
 /// general-purpose pair (see [`limits::MAGICK_CPU_SECS`]): 3 s of CPU still kills a complex
 /// or malformed WMF/EMF exactly as before, while the wider elapsed allowance keeps a busy
 /// machine from failing a metafile that only needed a fraction of a second of real work.
-pub(super) const METAFILE_MAGICK_TIME_LIMIT: &str = "18";
-
+/// ImageMagick's own `-limit time` is this wall backstop ([`add_metafile_magick_limits_for`]).
 pub(super) const METAFILE_MAGICK_TIMEOUT: Duration = Duration::from_secs(18);
 
 /// One thread. The CPU budget above is summed over the child's threads, and ImageMagick's
@@ -80,7 +79,7 @@ pub(super) const RASTER_BUDGET: MagickBudget = MagickBudget {
 };
 
 /// Metafiles, which get a much tighter CPU budget (see [`METAFILE_MAGICK_CPU_BUDGET`]);
-/// [`add_metafile_magick_limits`] sets their memory/map/elapsed caps and the one thread.
+/// [`add_metafile_magick_limits_for`] sets their memory/map/elapsed caps and the one thread.
 pub(super) const METAFILE_BUDGET: MagickBudget = MagickBudget {
     cpu: METAFILE_MAGICK_CPU_BUDGET,
     wall: METAFILE_MAGICK_TIMEOUT,
@@ -134,17 +133,37 @@ pub(super) const FULL_FIDELITY_BUDGET: MagickBudget = MagickBudget {
     wall: FULL_FIDELITY_MAGICK_TIMEOUT,
 };
 
+/// CPU budget for a metafile the user picked for Convert, Resize or Image info. The tile
+/// budget's 3 s is right for browsing past a file nobody asked about, but the CAD, Visio and
+/// plotting exporters write EMFs of tens of MB, and an ordinary embedded WMF already costs
+/// 0.72 s of CPU (see [`METAFILE_MAGICK_THREAD_LIMIT`]): ten times the records crosses 3 s and
+/// the converted file got nothing at all. The memory and map caps and the one thread still
+/// apply, and the progress dialog can cancel, so a hostile program stays bounded.
+pub(super) const METAFILE_FULL_FIDELITY_CPU_BUDGET: Duration = Duration::from_secs(60);
+
+/// The full-fidelity metafile pairing: the long CPU budget above under the same wall backstop
+/// as every other full-fidelity child.
+pub(super) const METAFILE_FULL_FIDELITY_BUDGET: MagickBudget = MagickBudget {
+    cpu: METAFILE_FULL_FIDELITY_CPU_BUDGET,
+    wall: FULL_FIDELITY_MAGICK_TIMEOUT,
+};
+
 /// The budget one child runs under: the metafile clamp first (an untrusted vector program is
-/// tight whoever asked for it), then the caller's fidelity.
+/// tight when nobody asked for it), then the caller's fidelity.
 pub(super) fn budget_for(fidelity: Fidelity, is_meta: bool) -> MagickBudget {
     match (is_meta, fidelity) {
-        (true, _) => METAFILE_BUDGET,
+        (true, Fidelity::Tile) => METAFILE_BUDGET,
+        (true, Fidelity::Full) => METAFILE_FULL_FIDELITY_BUDGET,
         (false, Fidelity::Tile) => RASTER_BUDGET,
         (false, Fidelity::Full) => FULL_FIDELITY_BUDGET,
     }
 }
 
-pub(super) fn add_metafile_magick_limits(cmd: &mut Command) {
+/// The metafile caps with `-limit time` taken from the caller's own wall backstop, for the
+/// same reason [`add_magick_limits`] derives it: a fixed 18 s here would make the child
+/// abort a full-fidelity decode that its CPU budget and wall backstop still allow.
+pub(super) fn add_metafile_magick_limits_for(cmd: &mut Command, wall: Duration) {
+    let time_limit = wall.as_secs().to_string();
     cmd.args([
         "-limit",
         "memory",
@@ -154,7 +173,7 @@ pub(super) fn add_metafile_magick_limits(cmd: &mut Command) {
         METAFILE_MAGICK_MAP_LIMIT,
         "-limit",
         "time",
-        METAFILE_MAGICK_TIME_LIMIT,
+        &time_limit,
         "-limit",
         "thread",
         METAFILE_MAGICK_THREAD_LIMIT,

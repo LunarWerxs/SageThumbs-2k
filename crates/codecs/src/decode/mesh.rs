@@ -19,12 +19,14 @@ mod read;
 use ply::*;
 use read::*;
 
-/// Triangles the render keeps. A model with more is SAMPLED down to this uniformly
-/// (`read::Reservoir`), never cut off at it, so a huge scan still shows its whole shape; a
-/// 2M-triangle render is already far past what a 1024 px canvas can show.
+/// Triangles a render holds in memory. A model with more is not cut off or sampled: the file is
+/// read again and every triangle drawn as it passes (`mesh_image`), since a sample of a dense scan
+/// leaves most of its surface see-through.
 const MAX_TRIS: usize = 2_000_000;
-/// Vertex cap for the indexed formats (OBJ/PLY): every vertex a sampled face may name has to be
-/// in hand. 16M positions are 192 MB, the size of a detailed 3D scan; past it the file declines.
+/// Vertex cap for the indexed formats (OBJ/PLY) read in one pass: every vertex a face may name
+/// has to be in hand, and 16M positions are 192 MB, the size of a detailed 3D scan. A model with
+/// more has its faces sampled and only the vertices the sample names kept (`read::read_ply_capped`),
+/// so it costs time, not memory, and shows a sampled picture rather than none.
 const MAX_VERTS: usize = 16_000_000;
 /// Aggregate rasterization budget, in bounding-box PIXEL-ITERATIONS across every triangle
 /// in one render — a multiple of the (supersampled) canvas area. `MAX_TRIS` bounds parse
@@ -46,12 +48,24 @@ pub(crate) const MESH_SNIFF_BYTES: usize = 64 * 1024;
 /// Sniff-and-render, mirroring `decode_svg_if_svg`'s shape: `None` = not a mesh, fall
 /// through to the raster tiers untouched.
 pub(super) fn decode_mesh_sniffed(bytes: &[u8]) -> Option<DynamicImage> {
-    let tris = parse_mesh_sniffed(bytes)?;
-    if tris.is_empty() {
-        return None;
-    }
-    Some(DynamicImage::ImageRgba8(render(&tris, RENDER_EDGE)))
+    let kind = sniff(bytes)?;
+    mesh_image(&mut std::io::Cursor::new(bytes), kind, LIMITS).map(DynamicImage::ImageRgba8)
 }
+
+/// What a render holds and draws at; the real values are [`LIMITS`], and the inner functions take
+/// them so a test can stand a small model in for a huge one.
+#[derive(Clone, Copy)]
+struct Limits {
+    tris: usize,
+    verts: usize,
+    edge: u32,
+}
+
+const LIMITS: Limits = Limits {
+    tris: MAX_TRIS,
+    verts: MAX_VERTS,
+    edge: RENDER_EDGE,
+};
 
 /// Which mesh format a file is, from its head and its full length.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -83,40 +97,104 @@ pub(crate) fn mesh_kind(head: &[u8], total: u64) -> Option<MeshKind> {
     looks_like_obj(head, total > head.len() as u64).then_some(MeshKind::Obj)
 }
 
-/// Parse a mesh of `kind` from `r`, standing at the start of the file.
-pub(crate) fn parse_mesh_reader<R: std::io::BufRead>(
+/// Read a mesh of `kind` from `r`, standing at the start of the file, into `sink`; `verts` is the
+/// vertex cap of the indexed formats.
+fn read_mesh<R: std::io::BufRead + std::io::Seek>(
     r: &mut R,
     kind: MeshKind,
-) -> Option<Vec<[f32; 9]>> {
+    verts: usize,
+    sink: &mut impl TriSink,
+) -> Option<()> {
     match kind {
-        MeshKind::Ply => read_ply(r),
+        MeshKind::Ply => read_ply_capped(r, verts, sink),
         MeshKind::BinaryStl(n) => {
             let mut header = [0u8; 84];
             r.read_exact(&mut header).ok()?;
-            Some(read_binary_stl(r, n))
+            read_binary_stl(r, n, sink);
+            Some(())
         }
-        MeshKind::AsciiStl => read_ascii_stl(r),
-        MeshKind::Obj => read_obj(r),
+        MeshKind::AsciiStl => read_ascii_stl(r, sink),
+        MeshKind::Obj => read_obj_capped(r, verts, sink),
+    }
+}
+
+/// A mesh rendered off `r`, standing at the start of the file. The first read holds up to
+/// `limits.tris` triangles and measures the bounds of all of them; a model with more is read once
+/// more, holding no triangle, to draw each one as it passes. It is not sampled, because a dense
+/// scan (a fine grid of coplanar triangles, each smaller than a pixel) sampled to a few million
+/// leaves most of its surface see-through. `r` must seek for that.
+fn mesh_image<R: std::io::BufRead + std::io::Seek>(
+    r: &mut R,
+    kind: MeshKind,
+    limits: Limits,
+) -> Option<image::RgbaImage> {
+    let start = r.stream_position().ok()?;
+    let mut first = FirstRead {
+        held: Collector::new(limits.tris),
+        bounds: Bounds::new(),
+    };
+    read_mesh(r, kind, limits.verts, &mut first)?;
+    if !first.held.past() {
+        let tris = first.held.into_tris();
+        return (!tris.is_empty()).then(|| render(&tris, limits.edge));
+    }
+    drop(first.held);
+    let Some(mut raster) = Rasterizer::new(&first.bounds, limits.edge) else {
+        // fully transparent, as for a small model with no extent
+        return Some(image::RgbaImage::new(limits.edge, limits.edge));
+    };
+    r.seek(std::io::SeekFrom::Start(start)).ok()?;
+    read_mesh(r, kind, limits.verts, &mut raster)?;
+    Some(raster.finish())
+}
+
+/// The first read of [`mesh_image`]: the triangles up to the cap, and the bounds of every one, so
+/// a model past the cap is framed without a read of its own.
+struct FirstRead {
+    held: Collector,
+    bounds: Bounds,
+}
+
+impl TriSink for FirstRead {
+    fn push(&mut self, t: [f32; 9]) {
+        self.bounds.push(t);
+        self.held.push(t);
     }
 }
 
 /// A mesh read and rendered straight off `r` (a stream over a file too big to hold), `head`
 /// being its first bytes and `total` its length: the render the bytes would get.
-pub(crate) fn mesh_from_reader<R: std::io::BufRead>(
+pub(crate) fn mesh_from_reader<R: std::io::BufRead + std::io::Seek>(
     mut r: R,
     head: &[u8],
     total: u64,
 ) -> Option<DynamicImage> {
-    let tris = parse_mesh_reader(&mut r, mesh_kind(head, total)?)?;
-    (!tris.is_empty()).then(|| DynamicImage::ImageRgba8(render(&tris, RENDER_EDGE)))
+    let kind = mesh_kind(head, total)?;
+    mesh_image(&mut r, kind, LIMITS).map(DynamicImage::ImageRgba8)
+}
+
+/// Which format the bytes are, from their head.
+fn sniff(bytes: &[u8]) -> Option<MeshKind> {
+    mesh_kind(
+        &bytes[..bytes.len().min(MESH_SNIFF_BYTES)],
+        bytes.len() as u64,
+    )
+}
+
+/// The triangles of a read, sampled to [`MAX_TRIS`], for the parser tests and the fuzz harness.
+#[cfg(test)]
+fn sampled(read: impl FnOnce(&mut Reservoir<[f32; 9]>) -> Option<()>) -> Option<Vec<[f32; 9]>> {
+    let mut res = Reservoir::new();
+    read(&mut res)?;
+    Some(res.into_tris())
 }
 
 /// Parse whichever mesh format the bytes are, or `None` when they're none of them.
 /// Public-in-crate so the fuzz harness can hit each branch.
+#[cfg(test)]
 pub(crate) fn parse_mesh_sniffed(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
-    let head = &bytes[..bytes.len().min(MESH_SNIFF_BYTES)];
-    let kind = mesh_kind(head, bytes.len() as u64)?;
-    parse_mesh_reader(&mut &bytes[..], kind)
+    let kind = sniff(bytes)?;
+    sampled(|s| read_mesh(&mut std::io::Cursor::new(bytes), kind, MAX_VERTS, s))
 }
 
 /// Binary STL has NO magic; its signature is arithmetic: 80-byte header + u32 count +
@@ -225,22 +303,25 @@ fn find_sub(hay: &[u8], needle: &[u8]) -> Option<usize> {
 #[cfg(test)]
 pub(crate) fn parse_binary_stl(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
     let n = u32::from_le_bytes(bytes.get(80..84)?.try_into().ok()?);
-    Some(read_binary_stl(&mut bytes.get(84..)?, n))
+    sampled(|s| {
+        read_binary_stl(&mut bytes.get(84..)?, n, s);
+        Some(())
+    })
 }
 
 #[cfg(test)]
 pub(crate) fn parse_ascii_stl(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
-    read_ascii_stl(&mut &bytes[..])
+    sampled(|s| read_ascii_stl(&mut &bytes[..], s))
 }
 
 #[cfg(test)]
 pub(crate) fn parse_obj(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
-    read_obj(&mut &bytes[..])
+    sampled(|s| read_obj_capped(&mut std::io::Cursor::new(bytes), MAX_VERTS, s))
 }
 
 #[cfg(test)]
 pub(crate) fn parse_ply(bytes: &[u8]) -> Option<Vec<[f32; 9]>> {
-    read_ply(&mut &bytes[..])
+    sampled(|s| read_ply_capped(&mut std::io::Cursor::new(bytes), MAX_VERTS, s))
 }
 
 /// Push the up-to-three x/y/z tokens after a `vertex` keyword onto `cur`. `None` when a
@@ -287,6 +368,7 @@ fn parse_obj_face_indices(rest: &str, n_verts: usize) -> Vec<usize> {
 /// The fixed turntable/tilt view: turntable −35°, tilt −25°, giving every mesh the same
 /// three-quarter view a slicer's file list shows, which is what makes a FOLDER of models
 /// scannable. Precomputes its sin/cos once so `project` is a handful of multiplies.
+#[derive(Clone, Copy)]
 struct MeshView {
     sy: f32,
     cy: f32,
@@ -316,21 +398,35 @@ impl MeshView {
     }
 }
 
-/// Projected bounding box of every triangle's vertices, for framing the render.
-fn mesh_bounds(tris: &[[f32; 9]], view: &MeshView) -> ([f32; 3], [f32; 3]) {
-    let mut min = [f32::INFINITY; 3];
-    let mut max = [f32::NEG_INFINITY; 3];
-    for t in tris {
+/// Projected bounding box of every triangle's vertices, for framing the render; grown a triangle
+/// at a time so a model too big to hold can be measured as it streams past.
+struct Bounds {
+    view: MeshView,
+    min: [f32; 3],
+    max: [f32; 3],
+}
+
+impl Bounds {
+    fn new() -> Self {
+        Bounds {
+            view: MeshView::new(),
+            min: [f32::INFINITY; 3],
+            max: [f32::NEG_INFINITY; 3],
+        }
+    }
+}
+
+impl TriSink for Bounds {
+    fn push(&mut self, t: [f32; 9]) {
         let (chunks, _) = t.as_chunks::<3>();
         for v in chunks {
-            let p = view.project([v[0], v[1], v[2]]);
-            for a in 0..3 {
-                min[a] = min[a].min(p[a]);
-                max[a] = max[a].max(p[a]);
+            let p = self.view.project([v[0], v[1], v[2]]);
+            for (a, &pa) in p.iter().enumerate() {
+                self.min[a] = self.min[a].min(pa);
+                self.max[a] = self.max[a].max(pa);
             }
         }
     }
-    (min, max)
 }
 
 /// The fixed directional light, normalized.
@@ -376,12 +472,7 @@ fn rasterize_triangle(
     zbuf: &mut [f32],
     shade: &mut [u8],
 ) -> u64 {
-    let p: Vec<[f32; 3]> = t
-        .as_chunks::<3>()
-        .0
-        .iter()
-        .map(|v| view.project([v[0], v[1], v[2]]))
-        .collect();
+    let p = [0, 3, 6].map(|k| view.project([t[k], t[k + 1], t[k + 2]]));
     // Screen coords (y flipped: +y up in view space, down in the image).
     let sxy = |v: &[f32; 3]| {
         (
@@ -505,41 +596,96 @@ fn downsample_block(big: u32, zbuf: &[f32], shade: &[u8], x: u32, y: u32) -> Opt
 /// Orthographic flat-shaded render with a z-buffer, supersampled [`SS`]× and box-averaged
 /// down. See [`MeshView`] for the fixed camera angle.
 fn render(tris: &[[f32; 9]], edge: u32) -> image::RgbaImage {
-    let big = edge * SS;
-    let view = MeshView::new();
-    let (min, max) = mesh_bounds(tris, &view);
-
-    let span = (max[0] - min[0]).max(max[1] - min[1]);
-    if !span.is_finite() || span <= 0.0 {
-        // fully transparent: a degenerate mesh renders as nothing, calmly
-        return image::RgbaImage::new(edge, edge);
-    }
-    let margin = 0.94f32;
-    let scale = big as f32 * margin / span;
-    let off = |a: usize| (big as f32 - (max[a] - min[a]) * scale) / 2.0 - min[a] * scale;
-    let (offx, offy) = (off(0), off(1));
-
-    let mut zbuf = vec![f32::NEG_INFINITY; (big * big) as usize];
-    let mut shade = vec![0u8; (big * big) as usize];
-    let light = mesh_light();
-    // Aggregate rasterization budget: `MAX_TRIS` bounds how many triangles are drawn (a bigger
-    // model is sampled down to it as it is read), not how much each one fills, and a
-    // crafted mesh whose triangles all cover roughly the whole canvas would otherwise multiply
-    // triangle count by full-canvas coverage — see `RASTER_BUDGET_CANVAS_MULTIPLE`. Stopping
-    // early keeps whatever fully rasterized so far, the same partial-result spirit as the
-    // parse-time caps: a shape from most of a huge model beats no thumbnail at all.
-    let budget = u64::from(big) * u64::from(big) * RASTER_BUDGET_CANVAS_MULTIPLE;
-    let mut spent = 0u64;
+    let mut bounds = Bounds::new();
     for t in tris {
-        if spent >= budget {
-            break;
+        bounds.push(*t);
+    }
+    // A degenerate mesh renders as nothing, calmly: fully transparent.
+    let Some(mut raster) = Rasterizer::new(&bounds, edge) else {
+        return image::RgbaImage::new(edge, edge);
+    };
+    for t in tris {
+        raster.push(*t);
+    }
+    raster.finish()
+}
+
+/// The canvas a mesh is drawn on, framed from its [`Bounds`] and fed a triangle at a time, so a
+/// model too big to hold is drawn as it streams past.
+struct Rasterizer {
+    view: MeshView,
+    scale: f32,
+    offx: f32,
+    offy: f32,
+    edge: u32,
+    big: u32,
+    light: [f32; 3],
+    zbuf: Vec<f32>,
+    shade: Vec<u8>,
+    /// Aggregate rasterization budget: `MAX_TRIS` bounds how many triangles are held, not how
+    /// much each one fills, and a crafted mesh whose triangles all cover roughly the whole canvas
+    /// would otherwise multiply triangle count by full-canvas coverage — see
+    /// `RASTER_BUDGET_CANVAS_MULTIPLE`. A real model, a dense scan of sub-pixel triangles
+    /// included, spends a small fraction of it; a pathological one stops drawing once it is
+    /// gone, and keeps whatever fully rasterized so far, the same partial-result spirit as the
+    /// parse-time caps: a shape from most of a huge model beats no thumbnail at all.
+    budget: u64,
+    spent: u64,
+}
+
+impl Rasterizer {
+    /// `None` when `bounds` hold no extent to frame (no triangle, or a flat or non-finite one).
+    fn new(bounds: &Bounds, edge: u32) -> Option<Self> {
+        let big = edge * SS;
+        let (min, max) = (bounds.min, bounds.max);
+        let span = (max[0] - min[0]).max(max[1] - min[1]);
+        if !span.is_finite() || span <= 0.0 {
+            return None;
         }
-        spent += rasterize_triangle(
-            t, &view, scale, offx, offy, big, light, &mut zbuf, &mut shade,
+        let margin = 0.94f32;
+        let scale = big as f32 * margin / span;
+        let off = |a: usize| (big as f32 - (max[a] - min[a]) * scale) / 2.0 - min[a] * scale;
+        Some(Rasterizer {
+            view: bounds.view,
+            scale,
+            offx: off(0),
+            offy: off(1),
+            edge,
+            big,
+            light: mesh_light(),
+            zbuf: vec![f32::NEG_INFINITY; (big * big) as usize],
+            shade: vec![0u8; (big * big) as usize],
+            budget: u64::from(big) * u64::from(big) * RASTER_BUDGET_CANVAS_MULTIPLE,
+            spent: 0,
+        })
+    }
+
+    fn finish(self) -> image::RgbaImage {
+        downsample_mesh(self.edge, self.big, &self.zbuf, &self.shade)
+    }
+}
+
+impl TriSink for Rasterizer {
+    fn push(&mut self, t: [f32; 9]) {
+        if self.full() {
+            return;
+        }
+        self.spent += rasterize_triangle(
+            &t,
+            &self.view,
+            self.scale,
+            self.offx,
+            self.offy,
+            self.big,
+            self.light,
+            &mut self.zbuf,
+            &mut self.shade,
         );
     }
 
-    downsample_mesh(edge, big, &zbuf, &shade)
+    fn full(&self) -> bool {
+        self.spent >= self.budget
+    }
 }
 
 /// The parser entry points by name, for the fuzz harness — same shape as `dds::fuzzapi`.

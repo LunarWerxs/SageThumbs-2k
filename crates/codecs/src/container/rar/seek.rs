@@ -78,8 +78,26 @@ fn picks(layout: &Layout, want: usize, prefs: &CoverPrefs) -> Option<Vec<usize>>
         })
         .collect();
     let mut keep = dedupe_by_name(pick_covers(&entries, want, prefs), &entries);
+    fit_picks(layout, &mut keep);
     keep.sort_unstable();
     (!keep.is_empty()).then_some(keep)
+}
+
+/// Drop picks from the end of `keep` (cover order, the first cover last to go) until the cut-down
+/// archive fits [`MAX_MINI_BYTES`]: heavy lossless scans give a smaller collage, not no picture.
+/// Left empty when even the first cover cannot fit.
+fn fit_picks(layout: &Layout, keep: &mut Vec<usize>) {
+    let end_len = layout.end.map_or(0, |(_, len)| len);
+    let mut bytes = layout.lead.saturating_add(end_len);
+    let mut fit = 0;
+    for &i in keep.iter() {
+        bytes = bytes.saturating_add(layout.members[i].len);
+        if bytes > MAX_MINI_BYTES {
+            break;
+        }
+        fit += 1;
+    }
+    keep.truncate(fit);
 }
 
 /// The archive cut down to its signature and main header, the `keep` members and the end
@@ -487,6 +505,27 @@ mod tests {
             assert!(whole.is_some(), "{name}: no cover to compare");
             assert_eq!(walked, whole, "{name}");
         }
+    }
+
+    /// Four heavy scans past the cut-down cap together: the first pages still come back, the
+    /// archive no longer gives no cover at all (it did: the cap refused the whole cut).
+    #[test]
+    fn four_heavy_pages_over_the_cap_give_the_leading_ones() {
+        let page_bytes = 17 << 20;
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(8, 8, image::Rgb([20, 40, 90])))
+            .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+            .expect("png");
+        // Padding after the last chunk: a decoder stops at IEND, the archive stores it all.
+        png.resize(page_bytes, 0);
+        let names: [&[u8]; 4] = [b"01.png", b"02.png", b"03.png", b"04.png"];
+        let entries: Vec<(&[u8], &[u8])> = names.iter().map(|&n| (n, png.as_slice())).collect();
+        let bytes = build::archive(&entries);
+        assert!(bytes.len() as u64 > MAX_MINI_BYTES);
+
+        let covers = covers_seek(Cursor::new(&bytes), 4, &PREFS).expect("a collage, not no cover");
+        assert!((1..4).contains(&covers.len()), "{} covers", covers.len());
+        assert_eq!(covers[0], png);
     }
 
     #[test]

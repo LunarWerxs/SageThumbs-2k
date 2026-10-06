@@ -3,20 +3,82 @@
 use super::*;
 
 /// A moderately-sized CMYK JPEG (well within MAX_DIM/MAX_PIXELS) must still be refused
-/// once its transient CMYK/Cmyka/RGBA buffers would exceed MAX_ALLOC (512 MiB) — the gap
-/// A025/A010 found between the dimension caps and the actual allocation budget.
+/// once what the decode holds would exceed MAX_ALLOC (512 MiB) — the gap A025/A010 found
+/// between the dimension caps and the actual allocation budget.
 #[test]
 fn cmyk_transient_budget_catches_what_dimension_caps_miss() {
-    // 8000x8000 is far under MAX_DIM (16384) and MAX_PIXELS (16384^2), but at 13 transient
-    // bytes/px that's ~830 MiB, comfortably past the 512 MiB MAX_ALLOC budget.
-    assert!(cmyk_transient_bytes_exceed_budget(8000, 8000, MAX_ALLOC));
+    let coefficients = CMYK_COEFFICIENT_BYTES_PER_PIXEL;
+    // 8000x8000 is far under MAX_DIM (16384) and MAX_PIXELS (16384^2), but a progressive
+    // decode's 12 bytes/px is ~730 MiB there, comfortably past the 512 MiB MAX_ALLOC budget.
+    assert!(cmyk_transient_bytes_exceed_budget(
+        8000,
+        8000,
+        coefficients,
+        MAX_ALLOC
+    ));
     // A small, ordinary CMYK JPEG must sail through unaffected.
-    assert!(!cmyk_transient_bytes_exceed_budget(800, 600, MAX_ALLOC));
+    assert!(!cmyk_transient_bytes_exceed_budget(
+        800,
+        600,
+        coefficients,
+        MAX_ALLOC
+    ));
     // Right at the boundary: exactly MAX_ALLOC bytes is not "exceeds".
     let (w, h) = (200u32, 200u32);
-    let budget = (w as u64) * (h as u64) * 13;
-    assert!(!cmyk_transient_bytes_exceed_budget(w, h, budget));
-    assert!(cmyk_transient_bytes_exceed_budget(w, h, budget - 1));
+    let budget = (w as u64) * (h as u64) * coefficients;
+    assert!(!cmyk_transient_bytes_exceed_budget(
+        w,
+        h,
+        coefficients,
+        budget
+    ));
+    assert!(cmyk_transient_bytes_exceed_budget(
+        w,
+        h,
+        coefficients,
+        budget - 1
+    ));
+}
+
+/// A one-scan baseline CMYK JPEG of 7000x10000 (an A1 poster at 300 dpi, 70 MP) holds 4-5
+/// bytes a pixel, so it is within budget and keeps its profile; it used to be charged 13 and
+/// fell to the image crate's naive CMYK. A progressive one of that size still is not.
+#[test]
+fn a_baseline_cmyk_poster_fits_the_budget_and_a_progressive_one_does_not() {
+    let jpeg = |sof: u8, scans: usize| {
+        let mut b = vec![0xFF, 0xD8, 0xFF, sof, 0x00, 0x14, 8];
+        b.extend_from_slice(&[0x27, 0x10, 0x1B, 0x58, 4]); // 10000 high, 7000 wide, 4 components
+        (1..=4u8).for_each(|id| b.extend_from_slice(&[id, 0x11, 0]));
+        (0..scans).for_each(|_| b.extend_from_slice(&[0xFF, 0xDA, 0, 2, 1, 2, 3]));
+        b
+    };
+    let fits = |b: &[u8]| cmyk_output_within_limits(7000, 10_000, cmyk_jpeg_bytes_per_pixel(b));
+    assert!(fits(&jpeg(0xC0, 1)));
+    assert!(!fits(&jpeg(0xC2, 1)), "progressive keeps coefficients");
+    assert!(!fits(&jpeg(0xC0, 2)), "several scans keep coefficients");
+}
+
+/// The in-place band conversion must give exactly what one whole-image transform gives, over
+/// a height that is not a whole number of bands: a band's RGB lands over inks already read.
+#[test]
+fn cmyk_bands_to_rgb_matches_one_whole_transform() {
+    use moxcms::{ColorProfile, Layout, TransformOptions};
+    let srgb = ColorProfile::new_srgb();
+    let transform = srgb
+        .create_transform_8bit(
+            Layout::Rgba,
+            &srgb,
+            Layout::Rgb,
+            TransformOptions::default(),
+        )
+        .unwrap();
+    let (w, h) = (7usize, CMYK_BAND_ROWS * 2 + 5);
+    let inks: Vec<u8> = (0..w * h * 4).map(|i| (i * 31 % 251) as u8).collect();
+    let mut whole = vec![0u8; w * h * 3];
+    transform.transform(&inks, &mut whole).unwrap();
+    let mut banded = inks;
+    cmyk_bands_to_rgb(&*transform, &mut banded, w, h).unwrap();
+    assert_eq!(banded, whole);
 }
 
 /// Bogus/non-CMYK input must still decline cleanly through the normal early-outs — the
