@@ -261,7 +261,8 @@ foreach ($entry in $actualFileEntries) {
 # a silent update. Only the Suppressible forms, which /SUPPRESSMSGBOXES answers with their
 # default.
 for ($i = 0; $i -lt $lines.Count; $i++) {
-    $code = $lines[$i] -replace '//.*$', '' -replace '\{[^}]*\}', ''
+    # String literals first, so a URL's '//' cannot hide the call after it on the same line.
+    $code = $lines[$i] -replace "'(?:[^']|'')*'", "''" -replace '//.*$', '' -replace '\{[^}]*\}', '' -replace '\(\*.*?\*\)', ''
     if ($code -match '(?<![\w])(MsgBox|TaskDialogMsgBox)\s*\(') {
         $violations.Add(
             "  installer.iss:$($i + 1): $($Matches[1]) shows even under /SUPPRESSMSGBOXES and " +

@@ -213,9 +213,13 @@ Start-Sleep -Seconds 900
     if ($LASTEXITCODE) { throw "-Hold could not create the SYSTEM holder task (it needs an elevated shell): $made" }
     schtasks.exe /Run /TN $holdTask | Out-Null
     $until = (Get-Date).AddSeconds(30)
-    while (-not (Test-Path -LiteralPath $ready) -and (Get-Date) -lt $until) { Start-Sleep -Milliseconds 500 }
-    if (-not (Test-Path -LiteralPath $ready)) { Stop-Holders; throw 'The SYSTEM holder never took hold of the install files.' }
-    $readyText = (Get-Content -LiteralPath $ready -Raw).Trim()
+    # Until its whole line is there: Set-Content creates the file before it writes the text.
+    $readyText = ''
+    while ($readyText -notmatch 'pinned=' -and (Get-Date) -lt $until) {
+        Start-Sleep -Milliseconds 500
+        $readyText = ([string](Get-Content -LiteralPath $ready -Raw -ErrorAction SilentlyContinue)).Trim()
+    }
+    if ($readyText -notmatch 'pinned=') { Stop-Holders; throw 'The SYSTEM holder never took hold of the install files.' }
     if ($readyText -notmatch 'mapped=True,True') { Stop-Holders; throw "The SYSTEM holder could not map both files: $readyText" }
     Write-Host "  [self-update] -Hold: SYSTEM maps $(Split-Path -Leaf $installedDll) + $(Split-Path -Leaf $mapped2), pins $(Split-Path -Leaf $pinned) without delete sharing ($readyText)"
 }
@@ -267,7 +271,8 @@ try {
         }
     }
     if (-not $landed) {
-        throw "Self-update did NOT land within ${TimeoutSec}s: $installedExe is $(Get-Ver3 $installedExe) (expected $expected), uninstall log fresh: $((Test-Path $uninsDat) -and (Get-Item $uninsDat).LastWriteTimeUtc -gt $t0). The launch succeeded, so the installer itself failed or stalled. Setup's log ($setupLog) ends:`n$(Get-SetupLogTail)"
+        $now = if (Test-Path -LiteralPath $installedExe) { Get-Ver3 $installedExe } else { 'MISSING' }
+        throw "Self-update did NOT land within ${TimeoutSec}s: $installedExe is $now (expected $expected), uninstall log fresh: $((Test-Path $uninsDat) -and (Get-Item $uninsDat).LastWriteTimeUtc -gt $t0). The launch succeeded, so the installer itself failed or stalled. Setup's log ($setupLog) ends:`n$(Get-SetupLogTail)"
     }
 
     # The DLL must land too - a "successful" upgrade that left the shell extension stale is the
@@ -301,7 +306,8 @@ try {
         # refuse first, say to restart Windows, and launch nothing.
         Stop-Holders
         $appLog = Join-Path $env:LOCALAPPDATA 'SageThumbs2K.log'
-        $seen = if (Test-Path -LiteralPath $appLog) { (Get-Content -LiteralPath $appLog -Raw).Length } else { 0 }
+        # [string]: -Raw gives $null for an empty file.
+        $seen = ([string](Get-Content -LiteralPath $appLog -Raw -ErrorAction SilentlyContinue)).Length
         $t1 = (Get-Date).ToUniversalTime()
         $p = Start-Process -FilePath $App -ArgumentList '--update-selftest', "`"$Setup`"" -PassThru
         $null = $p.Handle
@@ -312,7 +318,7 @@ try {
         if ((Get-Item -LiteralPath $uninsDat).LastWriteTimeUtc -gt $t1) {
             throw "A second update before the restart still ran setup. Setup's log ends:`n$(Get-SetupLogTail)"
         }
-        $all = if (Test-Path -LiteralPath $appLog) { Get-Content -LiteralPath $appLog -Raw } else { '' }
+        $all = [string](Get-Content -LiteralPath $appLog -Raw -ErrorAction SilentlyContinue)
         $new = if ($all.Length -ge $seen) { $all.Substring($seen) } else { $all }
         $pinnedDir = [regex]::Escape((Split-Path -Parent $pinned))
         if ($new -notmatch "Windows has to restart first: its rename list still names $pinnedDir\\") {
