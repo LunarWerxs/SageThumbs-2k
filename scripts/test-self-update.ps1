@@ -74,6 +74,13 @@ function Get-SetupLogTail([string]$Path = $setupLog) {
     if (Test-Path -LiteralPath $Path) { (Get-Content -LiteralPath $Path -Tail 40) -join "`n" } else { '(no setup log)' }
 }
 
+# A file's text, '' when it is missing or empty. Not [string](Get-Content ...): an empty
+# pipeline casts to $null, not '', and the first CI run of the ready-file wait died on it.
+function Read-Text([string]$Path) {
+    $text = Get-Content -LiteralPath $Path -Raw -ErrorAction SilentlyContinue
+    if ($null -eq $text) { '' } else { $text }
+}
+
 # The setup processes started under $Root: the setup copy and the engine Inno unpacks and runs
 # beside it, both named after that copy. Found by ancestry, so nobody else's setup is touched,
 # and by name, so the app's own notice that setup starts at the end is not waited on.
@@ -217,7 +224,7 @@ Start-Sleep -Seconds 900
     $readyText = ''
     while ($readyText -notmatch 'pinned=' -and (Get-Date) -lt $until) {
         Start-Sleep -Milliseconds 500
-        $readyText = ([string](Get-Content -LiteralPath $ready -Raw -ErrorAction SilentlyContinue)).Trim()
+        $readyText = (Read-Text $ready).Trim()
     }
     if ($readyText -notmatch 'pinned=') { Stop-Holders; throw 'The SYSTEM holder never took hold of the install files.' }
     if ($readyText -notmatch 'mapped=True,True') { Stop-Holders; throw "The SYSTEM holder could not map both files: $readyText" }
@@ -306,8 +313,7 @@ try {
         # refuse first, say to restart Windows, and launch nothing.
         Stop-Holders
         $appLog = Join-Path $env:LOCALAPPDATA 'SageThumbs2K.log'
-        # [string]: -Raw gives $null for an empty file.
-        $seen = ([string](Get-Content -LiteralPath $appLog -Raw -ErrorAction SilentlyContinue)).Length
+        $seen = (Read-Text $appLog).Length
         $t1 = (Get-Date).ToUniversalTime()
         $p = Start-Process -FilePath $App -ArgumentList '--update-selftest', "`"$Setup`"" -PassThru
         $null = $p.Handle
@@ -318,7 +324,7 @@ try {
         if ((Get-Item -LiteralPath $uninsDat).LastWriteTimeUtc -gt $t1) {
             throw "A second update before the restart still ran setup. Setup's log ends:`n$(Get-SetupLogTail)"
         }
-        $all = [string](Get-Content -LiteralPath $appLog -Raw -ErrorAction SilentlyContinue)
+        $all = Read-Text $appLog
         $new = if ($all.Length -ge $seen) { $all.Substring($seen) } else { $all }
         $pinnedDir = [regex]::Escape((Split-Path -Parent $pinned))
         if ($new -notmatch "Windows has to restart first: its rename list still names $pinnedDir\\") {
