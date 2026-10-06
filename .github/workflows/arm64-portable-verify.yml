@@ -45,13 +45,13 @@ jobs:
       - name: Resolve the tag
         id: tag
         shell: pwsh
+        # Through the environment, never pasted into the script: a quote in a tag would end the
+        # string and run the rest as code.
+        env:
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
         run: |
-          $tag = if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
-            '${{ inputs.tag }}'
-          } else {
-            '${{ github.event.release.tag_name }}'
-          }
-          if (-not $tag) { throw 'no tag resolved' }
+          $tag = $env:TAG
+          if ($tag -notmatch '^v?\d+(\.\d+)*(-[0-9A-Za-z.]+)?$') { throw "not a release tag: '$tag'" }
           "tag=$tag" >> $env:GITHUB_OUTPUT
           Write-Host "verifying $tag"
 
@@ -261,9 +261,10 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
         run: |
-          $tag = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ inputs.tag }}' } else { '${{ github.event.release.tag_name }}' }
-          if (-not $tag) { throw 'no tag resolved' }
+          $tag = $env:TAG
+          if ($tag -notmatch '^v?\d+(\.\d+)*(-[0-9A-Za-z.]+)?$') { throw "not a release tag: '$tag'" }
           $ver = $tag.TrimStart('v')
           $asset = "SageThumbs2K-Setup-$ver-arm64.exe"
           $repo = '${{ github.repository }}'
