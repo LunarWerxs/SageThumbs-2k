@@ -102,7 +102,10 @@ unsafe fn click_upload(case: &str, doc: &Path, out: &Path, settings_root: &str) 
         out.display(),
         doc.display()
     ));
-    let env = env_block(&[("ST2K_SETTINGS_ROOT", settings_root), ("ST2K_THEME", "dark")]);
+    let env = env_block(&[
+        ("ST2K_SETTINGS_ROOT", settings_root),
+        ("ST2K_THEME", "dark"),
+    ]);
     let mut pi = PROCESS_INFORMATION::default();
     CreateProcessW(
         PCWSTR::null(),
@@ -154,7 +157,10 @@ fn check(case: &str, upload_on: bool) {
         .save(&doc)
         .expect("write the picture");
     let out = dir.join("shot.png");
-    let root = format!(r"Software\SageThumbs2K-test-upload-{}-{case}", std::process::id());
+    let root = format!(
+        r"Software\SageThumbs2K-test-upload-{}-{case}",
+        std::process::id()
+    );
     CURRENT_USER
         .create(&root)
         .and_then(|k| k.set_u32("PreviewUpload", u32::from(upload_on)))
@@ -176,8 +182,14 @@ fn check(case: &str, upload_on: bool) {
         got.exit
     );
     assert!(got.asked, "{case}: the Upload click asked nothing");
-    assert!(shot > 0, "{case}: the viewer did not live past the question to capture a frame");
-    assert!(!uploaded, "{case}: closing the question still handed the file to the uploader");
+    assert!(
+        shot > 0,
+        "{case}: the viewer did not live past the question to capture a frame"
+    );
+    assert!(
+        !uploaded,
+        "{case}: closing the question still handed the file to the uploader"
+    );
 }
 
 #[test]
