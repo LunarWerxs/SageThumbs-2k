@@ -179,7 +179,10 @@ $expected = Get-Ver3 $App
 Write-Host "  [self-update] installed: $(Get-Ver3 $installedExe) -> expecting $expected via the app's own updater"
 
 $holdTask = "st2k-selfupdate-hold-$PID"
-$holdDir = Join-Path ([IO.Path]::GetTempPath()) $holdTask
+# A SYSTEM task runs the holder script, so it lives where only administrators and SYSTEM can
+# write, under a name nobody can guess and claim first: from the user's %TEMP%, any of the
+# user's unelevated programs could have swapped it for its own code before the task ran.
+$holdDir = Join-Path $env:ProgramData "st2k-selfupdate-hold-$([guid]::NewGuid().ToString('N'))"
 $holdScript = Join-Path $holdDir 'hold.ps1'
 function Get-Holders {
     @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
@@ -197,7 +200,16 @@ if ($Hold) {
         Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1 }
     $mapped2 = & $firstPresent @('CORE_RL_MagickCore_.dll', 'st2k_dlghook.dll', 'st2k.exe')
     $pinned = & $firstPresent @('modules\coders\IM_MOD_RL_png_.dll', 'st2k.exe')
-    New-Item -ItemType Directory -Force -Path $holdDir | Out-Null
+    # Created WITH its access list, so there is no moment it inherits ProgramData's "users may
+    # add files": Administrators and SYSTEM only.
+    $acl = [Security.AccessControl.DirectorySecurity]::new()
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($sid in 'S-1-5-32-544', 'S-1-5-18') {
+        $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+            [Security.Principal.SecurityIdentifier]::new($sid), 'FullControl',
+            'ContainerInherit, ObjectInherit', 'None', 'Allow'))
+    }
+    [IO.FileSystemAclExtensions]::Create([IO.DirectoryInfo]::new($holdDir), $acl)
     $ready = Join-Path $holdDir 'ready.txt'
     # The paths ride IN the script, not on its command line: schtasks refuses a /TR over 261
     # characters, and four quoted install paths are well past that (the first CI run of -Hold
@@ -249,6 +261,7 @@ try {
     if ($Hold) {
         $orphan = 0..20 | ForEach-Object { "$installedDll.old$_" } |
             Where-Object { -not (Test-Path -LiteralPath $_) } | Select-Object -First 1
+        if (-not $orphan) { throw "-Hold: $installedDll.old0 to .old20 all exist; restart Windows (or clear them) first." }
         Rename-Item -LiteralPath $installedDll -NewName (Split-Path -Leaf $orphan)
         Write-Host "  [self-update] -Hold: left the shell extension at $(Split-Path -Leaf $orphan), its own name empty (a failed 3.6.0 update's leftovers)"
     }
