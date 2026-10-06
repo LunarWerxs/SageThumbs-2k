@@ -698,15 +698,18 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   toggle) asks GitHub whether a newer release exists. With the toggle on, SageThumbs also
   checks on a schedule of its own, and again whenever you open it - **no background service
   and nothing resident**: the check starts, looks once a day at most, tells you if there is
-  something newer, and closes. Switching the toggle off removes the schedule. When an update
+  something newer (click the notification to go straight to the update), and closes.
+  Switching the toggle off removes the schedule. When an update
   is available, SageThumbs can **download and install it for you**: a progress bar shows the
   download, the file is integrity-checked, Windows asks once for permission, and the new
   version installs in the background and confirms with a quiet tray notification when it's
-  done. That notification is clickable: instead of waiting for Explorer's thumbnail cache
-  to expire on its own, clicking it refreshes your thumbnails right away. If antivirus or
-  a security policy blocks the installer, it **says so** rather than
+  done, or tells you when a Windows restart is still needed to finish it. A second
+  notification offers to refresh your thumbnails: instead of waiting for Explorer's thumbnail
+  cache to expire on its own, clicking it refreshes them right away. If antivirus, a security
+  policy or GitHub itself gets in the way, it **says so** rather than
   failing quietly, and points you at the releases page. You can still grab the installer from
-  there by hand if you prefer.
+  there by hand if you prefer. The portable copy never installs itself: it points you at the
+  new portable zip.
 - **About:** a compact card: the eye logo, a **version pill that links to the GitHub
   repo** (with the GitHub mark), a live **"Up to date" / update-available pill** that
   re-checks on click, and a **Send feedback** pill, plus the licence, copyright, and the

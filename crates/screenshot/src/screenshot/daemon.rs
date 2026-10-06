@@ -29,8 +29,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOD_SHIFT,
 };
 use windows::Win32::UI::Shell::{
-    ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO,
-    NIIF_WARNING, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
+    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIIF_WARNING, NIM_ADD,
+    NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -187,7 +187,7 @@ fn dispatch_to_worker(work: DaemonWork) {
 /// arbitrary `lparam` and make us reconstruct-and-free an attacker-chosen `Box<String>`.
 /// Keeping the tag process-local and posting only a token means a forged message just finds
 /// nothing to show.
-static UPDATE_TAG: Mutex<Option<String>> = Mutex::new(None);
+static UPDATE_TAG: Mutex<Option<st2k_appkit::update::LatestRelease>> = Mutex::new(None);
 
 /// Spawn a fresh instance of ourselves in the requested mode (capture overlay, or
 /// the Settings window). A separate process keeps the tray alive across captures.
@@ -309,9 +309,9 @@ pub unsafe fn run_daemon(hinst: HINSTANCE) {
 /// posting the message itself.
 unsafe fn kick_update_check(hwnd: HWND) {
     let hwnd_raw = hwnd.0 as isize; // HWND isn't Send; ferry the raw handle to the worker.
-    st2k_appkit::update::lazy_check_worker(move |tag| {
+    st2k_appkit::update::lazy_check_worker(move |latest| {
         if let Ok(mut slot) = UPDATE_TAG.lock() {
-            *slot = Some(tag);
+            *slot = Some(latest);
         }
         // PostMessageW is safe cross-thread.
         unsafe {
@@ -517,7 +517,7 @@ unsafe fn on_tray(hwnd: HWND, lparam: LPARAM) {
         match LAST_BALLOON.swap(BALLOON_NONE, Ordering::Relaxed) {
             BALLOON_ELEVATED => spawn(None), // open Settings to bind a hotkey
             BALLOON_LICENCE => open_licence_settings(),
-            _ => open_releases(), // the "update available" toast
+            _ => open_update_click(), // the "update available" toast
         }
     }
 }
@@ -566,9 +566,9 @@ unsafe fn on_taskbar_created(hwnd: HWND) {
 /// `FindWindowW`-discoverable constant, postable by any same-desktop process) just finds
 /// nothing to show instead of us reconstructing-and-freeing an attacker-chosen pointer.
 unsafe fn on_update_found(hwnd: HWND, _lparam: LPARAM) {
-    let tag = UPDATE_TAG.lock().ok().and_then(|mut slot| slot.take());
-    if let Some(tag) = tag {
-        show_update_toast(hwnd, &tag);
+    let latest = UPDATE_TAG.lock().ok().and_then(|mut slot| slot.take());
+    if let Some(latest) = latest {
+        show_update_toast(hwnd, &latest);
     }
 }
 

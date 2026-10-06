@@ -68,17 +68,15 @@ pub(super) unsafe fn on_create(hwnd: HWND) -> LRESULT {
     // to quietly nudge (no popup). See `update::lazy_check`.
     let target = hwnd.0 as isize;
     st2k_appkit::update::lazy_check(move |tag| {
-        let raw = Box::into_raw(Box::new(tag));
-        let posted = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+        if let Ok(mut slot) = FOUND_TAG.lock() {
+            *slot = Some(tag);
+        }
+        let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
             Some(HWND(target as *mut core::ffi::c_void)),
             st2k_appkit::update::WM_APP_UPDATE,
             WPARAM(0),
-            LPARAM(raw as isize),
+            LPARAM(0),
         );
-        if posted.is_err() {
-            // The window vanished before delivery — reclaim the boxed tag.
-            drop(Box::from_raw(raw));
-        }
     });
     // If already signed in for settings sync, pull the cloud copy in the
     // background (applies to HKCU; takes effect for new thumbnails). No-op and
@@ -87,21 +85,26 @@ pub(super) unsafe fn on_create(hwnd: HWND) -> LRESULT {
     LRESULT(0)
 }
 
+/// The tag the lazy check found, for [`on_update_available`] to take. The message carries no
+/// pointer: the Settings window's class is `FindWindowW`-discoverable, so a `Box` in `LPARAM`
+/// let any same-desktop process post one of its own and have us free memory it chose (the
+/// About card and the tray helper hand theirs over the same way).
+static FOUND_TAG: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 pub(super) unsafe fn on_update_available(hwnd: HWND, lparam: LPARAM) -> LRESULT {
-    // A lazy background check found a newer release. Reclaim the boxed tag and
-    // NON-intrusively relabel the "Check for updates" button into a quiet nudge
-    // (no popup); clicking it still opens the About box, whose status pill shows the
-    // update and offers the one-click install.
-    let tag = if lparam.0 != 0 {
-        *Box::from_raw(lparam.0 as *mut String)
-    } else {
-        String::new()
+    // A lazy background check found a newer release. NON-intrusively relabel the "Check for
+    // updates" button into a quiet nudge (no popup); clicking it still opens the About box,
+    // whose status pill shows the update and offers the one-click install.
+    let _ = lparam;
+    // A repeated or forged message finds the slot empty and changes nothing.
+    let Some(tag) = FOUND_TAG.lock().ok().and_then(|mut slot| slot.take()) else {
+        return LRESULT(0);
     };
     if let Ok(btn) = GetDlgItem(Some(hwnd), ID_CHECK_UPDATES) {
         let label = if tag.is_empty() {
-            wide("Update available")
+            wide(t("upd_btn_available"))
         } else {
-            wide(&format!("Update to v{tag}"))
+            wide(&format!("{} v{tag}", t("about_update")))
         };
         let _ = SetWindowTextW(btn, PCWSTR(label.as_ptr()));
     }

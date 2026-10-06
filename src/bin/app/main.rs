@@ -180,6 +180,8 @@ fn update_piggyback_wanted(args: &[String]) -> bool {
         "--update-selftest",
         "--first-run-seen",
         "--updated",
+        // The detached post-update notice `--updated` hands its balloons to.
+        "--updated-notice",
         "--heal-hotkeys",
         // Restarts Explorer and exits; piggybacking an update check onto that would leave a
         // network call running out of a process whose whole job was one `cmd` line.
@@ -214,18 +216,20 @@ fn update_piggyback_wanted(args: &[String]) -> bool {
 
 /// Say so when the last self-update did not install (issue #60): it used to end with the old
 /// version back on screen and not one word about why. Once per attempt, with setup's own
-/// reason; Yes opens the releases page for a manual install.
+/// reason; Yes opens the releases page for a manual install. Shown before the Settings window
+/// exists, so it has no owner: it asks to come to the front and stay there, or it could open
+/// behind whatever launched Settings and leave Settings looking like it never opened.
 unsafe fn report_failed_update() {
     let Some(body) = st2k_appkit::update::failed_update_report() else {
         return;
     };
     let text = win::wide(&body);
-    let cap = win::wide("SageThumbs 2K update");
+    let cap = win::wide(t("upd_box_title"));
     let answer = MessageBoxW(
         None,
         windows::core::PCWSTR(text.as_ptr()),
         windows::core::PCWSTR(cap.as_ptr()),
-        MB_YESNO | MB_ICONWARNING,
+        MB_YESNO | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST,
     );
     if answer == IDYES {
         win::open_url(st2k_appkit::update::RELEASES_URL);
@@ -285,7 +289,6 @@ fn main() {
         // Placed after every headless/one-shot mode has returned, so only a real, visible
         // launch can ever raise it.
         crate::first_run::show_if_first_run();
-        report_failed_update();
 
         // Opening the Settings window is the natural moment to self-heal the hotkey service:
         // if it's enabled (or a custom hotkey is bound) but not running — e.g. it was
@@ -305,9 +308,15 @@ fn main() {
         if handle_single_instance(want_tab) {
             return;
         }
+        // After the single-instance check: two quick launches both read the attempt record
+        // before either removed it, and both showed the report.
+        report_failed_update();
 
         let hwnd = create_and_show_settings_window(hinst, dark, want_tab);
         run_message_loop(hwnd);
+        // Settings closed while an update was downloading: let it finish and say how it went,
+        // instead of ending the process under it.
+        about::wait_for_install();
     }
 }
 

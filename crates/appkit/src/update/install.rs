@@ -2,6 +2,7 @@
 
 use super::*;
 
+use crate::win::t;
 use windows::Win32::UI::Shell::IProgressDialog;
 
 /// Why a one-click update didn't complete. This used to be a bare `String` that every
@@ -36,15 +37,81 @@ impl UpdateError {
     }
 }
 
+/// `cause`, then where to get the update by hand (the caller opens the releases page next).
+fn by_hand(cause: &str) -> String {
+    format!("{cause} {}", t("upd_err_by_hand"))
+}
+
 /// The refusal used for every signature-trust failure - missing `.sig` asset, an unreadable
 /// download, or a signature that doesn't verify. One message for all three: the caller can't
 /// usefully act differently on any of them, and naming a moving GitHub-hosted trust anchor as
 /// the culprit is more honest than trying to distinguish "attacker" from "network hiccup".
 pub(super) fn unverified_release_error() -> UpdateError {
-    UpdateError::Unverified(format!(
-        "This update's signature couldn't be verified, so SageThumbs 2K didn't install it. \
-         Download it by hand from {RELEASES_URL} instead."
+    UpdateError::Unverified(by_hand(t("upd_err_signature")))
+}
+
+/// The message key for a failed fetch from GitHub: its rate limit (403/429), any other
+/// refusal, or `no_answer` when nothing answered at all. Rate limiting used to read as "check
+/// your internet connection", or as the release having no installer for this PC.
+pub(super) fn fetch_failure_key(status: Option<u16>, no_answer: &'static str) -> &'static str {
+    match status {
+        Some(403 | 429) => "upd_err_busy",
+        Some(_) => "upd_err_http",
+        None => no_answer,
+    }
+}
+
+/// [`fetch_failure_key`] as the error the user reads.
+fn fetch_failure(status: Option<u16>, no_answer: &'static str) -> UpdateError {
+    let code = status.map(|c| c.to_string()).unwrap_or_default();
+    UpdateError::Failed(by_hand(
+        &t(fetch_failure_key(status, no_answer)).replace("{code}", &code),
     ))
+}
+
+/// The installer lookup's failure as the error the user reads.
+fn lookup_failure(why: AssetLookup) -> UpdateError {
+    match why {
+        AssetLookup::Unreachable => fetch_failure(None, "upd_err_unreachable"),
+        AssetLookup::Refused(status) => fetch_failure(Some(status), "upd_err_unreachable"),
+        AssetLookup::NoInstaller => UpdateError::Failed(by_hand(t("upd_err_no_installer"))),
+    }
+}
+
+/// Is this a standard account, one that cannot approve the elevation prompt itself? An
+/// administrator runs with a split (limited) token or already elevated; a standard user's
+/// token is neither. A refused query answers "no": the answer only picks which refusal to
+/// explain, and the plain "cancelled" one says nothing at all.
+fn standard_user() -> bool {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::{
+        GetTokenInformation, TokenElevationType, TokenElevationTypeDefault, TOKEN_ELEVATION_TYPE,
+        TOKEN_QUERY,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    if st2k_base::host::is_elevated() {
+        return false;
+    }
+    // SAFETY: a token handle we open and close here, and a plain-data out parameter of the
+    // exact size passed.
+    unsafe {
+        let mut token = HANDLE::default();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+            return false;
+        }
+        let mut kind = TOKEN_ELEVATION_TYPE::default();
+        let mut len = 0u32;
+        let read = GetTokenInformation(
+            token,
+            TokenElevationType,
+            Some(core::ptr::addr_of_mut!(kind).cast()),
+            core::mem::size_of::<TOKEN_ELEVATION_TYPE>() as u32,
+            &mut len,
+        )
+        .is_ok();
+        let _ = CloseHandle(token);
+        read && kind == TokenElevationTypeDefault
+    }
 }
 
 /// Is Smart App Control on and ENFORCING? SAC blocks unsigned executables outright and is
@@ -58,19 +125,39 @@ pub(super) fn smart_app_control_enforcing() -> bool {
         .is_ok_and(|v| v == 1)
 }
 
+/// Why the elevated launch of the verified installer failed: the decision
+/// [`classify_launch_failure`] makes, before any of it is put into words.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum LaunchFailure {
+    /// The user declined the elevation prompt. The one case that stays silent.
+    Cancelled,
+    /// A standard account closed the prompt it had no administrator to satisfy: silence here
+    /// left them clicking Update into the same dead end every day.
+    NeedsAdmin,
+    /// The setup vanished between our write and the launch: a scanner quarantined it.
+    AvRemoved,
+    /// Access denied with nothing cancelled: antivirus, Smart App Control or a policy.
+    Refused,
+    /// Another program holds the setup file open.
+    Share,
+    /// Anything else, by its `ShellExecuteW` code.
+    Other(u32),
+}
+
 /// Turn a failed `ShellExecuteW` into an honest, distinguishable reason. Pure so the whole
 /// mapping is unit-testable without a UAC prompt.
 ///
 /// `se_code` is the `<= 32` return value, `last_error` whatever `GetLastError` held right
 /// after it, and `installer_gone` whether the verified setup we just wrote has vanished
 /// from `%TEMP%` — the strongest available signal that antivirus quarantined it, since
-/// nothing else deletes that file between the write and the launch.
+/// nothing else deletes that file between the write and the launch. `standard_user` says
+/// whether this account could have approved the prompt at all.
 pub(super) fn classify_launch_failure(
     se_code: u32,
     last_error: u32,
     installer_gone: bool,
-    sac_enforcing: bool,
-) -> UpdateError {
+    standard_user: bool,
+) -> LaunchFailure {
     const SE_ERR_FNF: u32 = 2;
     const SE_ERR_PNF: u32 = 3;
     const SE_ERR_ACCESSDENIED: u32 = 5;
@@ -79,58 +166,61 @@ pub(super) fn classify_launch_failure(
     const ERROR_VIRUS_DELETED: u32 = 226;
     const ERROR_CANCELLED: u32 = 1223;
 
-    let sac_note = if sac_enforcing {
-        " Windows Smart App Control is switched on, and it blocks apps it hasn't seen \
-         signed before — that is the most likely cause here."
-    } else {
-        ""
-    };
-
     // The setup file disappearing between our own verified write and this launch is not
     // something Windows or the user does — that is a scanner quarantining it.
     if installer_gone
         || matches!(se_code, SE_ERR_FNF | SE_ERR_PNF)
         || matches!(last_error, ERROR_VIRUS_INFECTED | ERROR_VIRUS_DELETED)
     {
-        return UpdateError::Blocked(format!(
-            "Your antivirus removed the downloaded installer before it could run.{sac_note} \
-             Download SageThumbs 2K from the releases page instead."
-        ));
+        return LaunchFailure::AvRemoved;
+    }
+    // A declined UAC prompt reports ERROR_CANCELLED behind it (access-denied as a rule); a
+    // policy/scanner block reports access-denied with something else (or nothing).
+    if last_error == ERROR_CANCELLED {
+        return if standard_user {
+            LaunchFailure::NeedsAdmin
+        } else {
+            LaunchFailure::Cancelled
+        };
     }
     if se_code == SE_ERR_ACCESSDENIED {
-        // A declined UAC prompt reports access-denied with ERROR_CANCELLED behind it; a
-        // policy/scanner block reports access-denied with something else (or nothing).
-        if last_error == ERROR_CANCELLED {
-            return UpdateError::Cancelled;
-        }
-        return UpdateError::Blocked(format!(
-            "Windows refused to start the update installer.{sac_note} This is usually \
-             antivirus or an administrator policy. You can download SageThumbs 2K from the \
-             releases page instead."
-        ));
+        return LaunchFailure::Refused;
     }
     // Something else has the setup file open for writing. We no longer do that to ourselves
     // (see `write_locked_installer`), so this now means a real outside holder — a scanner,
     // a backup agent, or the search indexer that woke up on a new .exe in %TEMP%.
     if se_code == SE_ERR_SHARE {
-        return UpdateError::Blocked(format!(
-            "Another program is holding the downloaded update open, so Windows wouldn't start \
-             it.{sac_note} That is usually antivirus, a backup tool, or the search indexer \
-             scanning the new file. Try again in a moment, or download SageThumbs 2K from the \
-             releases page."
-        ));
-    }
-    if last_error == ERROR_CANCELLED {
-        return UpdateError::Cancelled;
+        return LaunchFailure::Share;
     }
     // No administrator claim here. A user who declined (or could not satisfy) the elevation
-    // prompt is already handled above as Cancelled/Blocked, so blaming permissions for every
-    // OTHER failure code is simply a guess — and it was the wrong guess for the whole of the
-    // SE_ERR_SHARE era, sending people to hunt for an admin account over our own file lock.
-    UpdateError::Failed(format!(
-        "Windows wouldn't start the update installer (error {se_code}). You can download \
-         SageThumbs 2K from the releases page instead."
-    ))
+    // prompt is already handled above, so blaming permissions for every OTHER failure code is
+    // simply a guess — and it was the wrong guess for the whole of the SE_ERR_SHARE era,
+    // sending people to hunt for an admin account over our own file lock.
+    LaunchFailure::Other(se_code)
+}
+
+/// [`LaunchFailure`] as the error the user reads: the cause, the Smart App Control sentence
+/// when SAC is enforcing (it blocks unsigned setups outright, so it is the likeliest culprit
+/// of every refusal but a cancel), then where to get the update by hand.
+pub(super) fn launch_error(why: LaunchFailure, sac_enforcing: bool) -> UpdateError {
+    let say = |key: &str| {
+        let cause = if sac_enforcing {
+            format!("{} {}", t(key), t("upd_err_sac"))
+        } else {
+            t(key).to_string()
+        };
+        by_hand(&cause)
+    };
+    match why {
+        LaunchFailure::Cancelled => UpdateError::Cancelled,
+        LaunchFailure::NeedsAdmin => UpdateError::Blocked(t("upd_err_needs_admin").to_string()),
+        LaunchFailure::AvRemoved => UpdateError::Blocked(say("upd_err_av_removed")),
+        LaunchFailure::Refused => UpdateError::Blocked(say("upd_err_refused")),
+        LaunchFailure::Share => UpdateError::Blocked(say("upd_err_share")),
+        LaunchFailure::Other(code) => UpdateError::Failed(by_hand(
+            &t("upd_err_launch").replace("{code}", &code.to_string()),
+        )),
+    }
 }
 
 /// Launch the freshly-verified installer SILENTLY + ELEVATED (one UAC prompt), with the
@@ -169,10 +259,8 @@ pub(super) fn launch_installer_silent(
     if se_code > 32 {
         return Ok(());
     }
-    let err = classify_launch_failure(
-        se_code as u32,
-        last_error,
-        !path.exists(),
+    let err = launch_error(
+        classify_launch_failure(se_code as u32, last_error, !path.exists(), standard_user()),
         smart_app_control_enforcing(),
     );
     st2k_base::safety::log(&format!(
@@ -193,9 +281,21 @@ pub(super) unsafe fn set_line(dlg: &IProgressDialog, line: u32, text: &str) {
     let _ = dlg.SetLine(line, PCWSTR(w.as_ptr()), false, None);
 }
 
-/// Human-readable size for the progress sub-line (e.g. 9_223_820 → "8.8 MB").
+/// The number of megabytes in `bytes` for the progress sub-line (e.g. 9_223_820 → "8.8").
 pub(super) fn human_mb(bytes: u64) -> String {
-    format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    format!("{:.1}", bytes as f64 / (1024.0 * 1024.0))
+}
+
+/// The progress sub-line: "x MB of y MB", or only "x MB downloaded" when the release did not
+/// say how big the file is (it used to read "3.2 MB of 0.0 MB").
+fn progress_line(done: u64, total: u64) -> String {
+    if total == 0 {
+        t("upd_dlg_progress_unknown").replace("{done}", &human_mb(done))
+    } else {
+        t("upd_dlg_progress")
+            .replace("{done}", &human_mb(done))
+            .replace("{total}", &human_mb(total))
+    }
 }
 
 /// The shell progress dialog for the download, already showing "Downloading update" under
@@ -212,17 +312,16 @@ fn open_progress_dialog(parent: HWND) -> Result<IProgressDialog, UpdateError> {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     }
     let dlg: IProgressDialog =
-        unsafe { CoCreateInstance(&CLSID_ProgressDialog, None, CLSCTX_INPROC_SERVER) }.map_err(
-            |_| UpdateError::Failed("Couldn't open the download progress dialog.".into()),
-        )?;
-    let title = crate::win::wide("Updating SageThumbs 2K");
+        unsafe { CoCreateInstance(&CLSID_ProgressDialog, None, CLSCTX_INPROC_SERVER) }
+            .map_err(|_| UpdateError::Failed(by_hand(t("upd_err_dialog"))))?;
+    let title = crate::win::wide(t("upd_dlg_title"));
     unsafe {
         let _ = dlg.SetTitle(PCWSTR(title.as_ptr()));
         // A dialog that fails to open only costs the progress display: the download and the
         // cancel check both still work, so it is no reason to refuse the update.
         let _ =
             dlg.StartProgressDialog(Some(parent), None, PROGDLG_NORMAL | PROGDLG_AUTOTIME, None);
-        set_line(&dlg, 1, "Downloading update\u{2026}");
+        set_line(&dlg, 1, t("upd_dlg_downloading"));
     }
     Ok(dlg)
 }
@@ -236,11 +335,9 @@ fn verify_and_stage(
     sig_url: &str,
     tag: &str,
 ) -> Result<(PathBuf, std::fs::File), UpdateError> {
-    unsafe { set_line(dlg, 1, "Verifying\u{2026}") };
+    unsafe { set_line(dlg, 1, t("upd_dlg_verifying")) };
     if !verify_installer_bytes(&bytes, asset) {
-        return Err(UpdateError::Failed(
-            "The downloaded update failed its integrity check, so it was not run.".into(),
-        ));
+        return Err(UpdateError::Failed(by_hand(t("upd_err_integrity"))));
     }
     // The size + sha256 above only prove the download matches what the GitHub API's JSON
     // claimed - the same response an attacker who controlled that endpoint (or the asset
@@ -256,8 +353,10 @@ fn verify_and_stage(
     if !signed {
         return Err(unverified_release_error());
     }
-    let written = write_locked_installer(tag, &bytes, asset)
-        .map_err(|m| UpdateError::Failed(format!("The update couldn't be prepared: {m}.")))?;
+    let written = write_locked_installer(tag, &bytes, asset).map_err(|e| {
+        st2k_base::safety::log(&format!("update: staging failed: {}", e.detail()));
+        UpdateError::Failed(by_hand(e.message()))
+    })?;
     // The signature proves these bytes are a release WE signed; it does not say which
     // one. A feed that hands out a genuine, older installer under a newer tag would
     // pass everything above and downgrade the machine (2026-09-19 audit concern 3).
@@ -269,10 +368,10 @@ fn verify_and_stage(
     {
         drop(written.1);
         cleanup_installer_payload(&written.0);
-        return Err(UpdateError::Failed(why));
+        return Err(UpdateError::Failed(by_hand(&why.message())));
     }
     unsafe {
-        set_line(dlg, 1, "Installing update\u{2026}");
+        set_line(dlg, 1, t("upd_dlg_installing"));
         let _ = dlg.SetProgress64(1, 1); // full bar; Inno's silent bar now shows the install
     }
     Ok(written)
@@ -292,19 +391,11 @@ pub fn download_and_install(parent: HWND) -> Result<String, UpdateError> {
     // check — `launch_installer_silent` below is what elevates and writes Program Files, and
     // it must never run for a portable copy on a PC the user may not have admin rights to.
     if st2k_base::settings::portable() {
-        return Err(UpdateError::Blocked(format!(
-            "This is the portable copy of SageThumbs 2K, which never installs itself or asks \
-             for administrator rights. Download the latest portable zip from {RELEASES_URL} \
-             and replace the old files with the new ones."
-        )));
+        return Err(UpdateError::Blocked(t("upd_err_portable").to_string()));
     }
     sweep_stale_installers();
 
-    let (tag, asset) = latest_installer_asset().ok_or_else(|| {
-        UpdateError::Failed(
-            "Couldn't find the installer for this PC on the GitHub releases page.".into(),
-        )
-    })?;
+    let (tag, asset) = latest_installer_asset().map_err(lookup_failure)?;
     // Fail fast on an unsigned release BEFORE spending a multi-MB download on it: the size +
     // sha256 the JSON also carries come from the same response an attacker who controlled it
     // would control too, so a missing signature is refused exactly like a bad one.
@@ -319,19 +410,16 @@ pub fn download_and_install(parent: HWND) -> Result<String, UpdateError> {
         &asset.url,
         MAX_INSTALLER_BYTES,
         DOWNLOAD_TIMEOUT_SECS,
+        installer_download_deadline_secs(total),
         &mut |done| download_progress_tick(&dlg, total, done, &mut cancelled),
     );
 
     // Everything up to (but NOT including) the elevated launch happens under the dialog.
-    let downloaded = bytes.ok_or_else(|| {
+    let downloaded = bytes.map_err(|status| {
         if cancelled {
             UpdateError::Cancelled
         } else {
-            UpdateError::Failed(
-                "The update download didn't finish. Check your internet connection and \
-                 try again."
-                    .into(),
-            )
+            fetch_failure(status, "upd_err_download")
         }
     });
     let prepared =
@@ -350,7 +438,15 @@ pub fn download_and_install(parent: HWND) -> Result<String, UpdateError> {
     // starts. The next Settings launch reads it back with the log (issue #60).
     let log = fresh_setup_log();
     record_attempt(&tag, log.is_some());
-    let launched = launch_installer_silent(&path, parent, log.as_deref());
+    // The window that asked may have closed during the download (the result is then handled
+    // without it); a destroyed owner must not take the elevation prompt down with it.
+    let owner =
+        if unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindow(Some(parent)) }.as_bool() {
+            parent
+        } else {
+            HWND::default()
+        };
+    let launched = launch_installer_silent(&path, owner, log.as_deref());
     if launched.is_err() {
         forget_update_attempt(); // the caller says why; there is nothing for Settings to report
     }
@@ -383,11 +479,7 @@ fn download_progress_tick(
         }
         let denom = if total != 0 { total } else { done.max(1) };
         let _ = dlg.SetProgress64(done, denom);
-        set_line(
-            dlg,
-            2,
-            &format!("{} of {}", human_mb(done), human_mb(total)),
-        );
+        set_line(dlg, 2, &progress_line(done, total));
         true
     }
 }

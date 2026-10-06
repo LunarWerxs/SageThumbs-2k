@@ -18,7 +18,10 @@ use attempt::*;
 pub use attempt::{failed_update_report, forget_update_attempt, remove_update_records};
 use install::*;
 pub use install::{download_and_install, UpdateError};
-pub use task::{remove_update_task, run_one_shot_check, spawn_due_check, sync_update_task};
+pub use task::{
+    open_toast_click, remove_update_task, run_one_shot_check, spawn_due_check, sync_update_task,
+    update_toast, ToastClick,
+};
 pub use verify::{pe_stamped_version, UPDATE_PUBLIC_KEY};
 
 use windows::core::PCWSTR;
@@ -31,7 +34,7 @@ use windows::Win32::System::SystemInformation::{
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
-use crate::sponsors::{http_fetch, http_fetch_capped, os_tag, BANNER_URL};
+use crate::sponsors::{http_fetch, http_fetch_capped, http_fetch_status, os_tag, BANNER_URL};
 
 /// The GitHub "latest release" endpoint for this repo.
 const RELEASES_API: &str = "https://api.github.com/repos/LunarWerxs/SageThumbs-2k/releases/latest";
@@ -124,6 +127,32 @@ pub fn check() -> UpdateCheck {
         (Some(_), Some(_)) => UpdateCheck::UpToDate,
         _ => UpdateCheck::Failed, // unparseable tag — don't guess
     }
+}
+
+/// An unthrottled check, for the About card and the Settings open: GitHub first, because a
+/// person who just heard a release is out must not be told "up to date" by an edge-cached
+/// answer; the Worker when GitHub can't be reached or is rate-limiting this network (60
+/// unauthenticated requests an hour per address, soon spent behind a shared one). A definite
+/// answer refreshes the throttle cache, so the scheduled check doesn't repeat it the same day.
+pub fn check_now() -> UpdateCheck {
+    let now = now_secs();
+    let result = match check() {
+        UpdateCheck::Failed => match latest_from_worker() {
+            Some(latest) if is_newer(&latest.tag) => UpdateCheck::Available(latest),
+            Some(_) => UpdateCheck::UpToDate,
+            None => UpdateCheck::Failed,
+        },
+        definite => definite,
+    };
+    match &result {
+        UpdateCheck::Available(latest) => write_cache(now, latest),
+        UpdateCheck::UpToDate => write_cache(
+            now,
+            &LatestRelease::bare(env!("CARGO_PKG_VERSION").to_string()),
+        ),
+        UpdateCheck::Failed => {}
+    }
+    result
 }
 
 /// The literal marker a security release puts in its notes, matched case-insensitively as
@@ -246,6 +275,14 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// Is a check stamped at `last` due again at `now`? A stamp from the FUTURE counts as due: it
+/// was written while the clock was wrong (a dead CMOS battery, a restored VM snapshot, a
+/// hand-set date), and reading it as "checked a moment ago" silenced every update check on the
+/// machine until the clock caught up with it, which could be years.
+fn throttle_expired(last: u64, now: u64) -> bool {
+    last > now || now - last >= CHECK_INTERVAL.as_secs()
+}
+
 /// The tiny throttle/cache file ("`<unix_secs>\n<latest_tag>\n<published_unix_or_0>\n<security_0_or_1>\n`";
 /// lines 3 and 4 are optional, omitted by pre-2026-09-10 builds). Beside the portable ini
 /// when running portable (issue #118/G118 — a portable copy must not leave anything in the
@@ -325,26 +362,19 @@ pub fn lazy_check<F: FnOnce(String) + Send + 'static>(on_newer: F) {
         // Within the interval: answer from the cache (no network), but still nudge about a
         // previously-found update so the user isn't left unaware between checks.
         if let Some((last, latest)) = read_cache() {
-            if now.saturating_sub(last) < CHECK_INTERVAL.as_secs() {
+            if !throttle_expired(last, now) {
                 if is_newer(&latest.tag) {
                     on_newer(latest.tag);
                 }
                 return;
             }
         }
-        // Stale or first run: one real check. Cache a definitive result (up-to-date or a
-        // newer tag) so we don't re-hit for a day; on a transient failure leave the cache
-        // untouched so the NEXT Settings open retries instead of waiting out the interval.
-        match check() {
-            UpdateCheck::Available(latest) => {
-                write_cache(now, &latest);
-                on_newer(latest.tag);
-            }
-            UpdateCheck::UpToDate => write_cache(
-                now,
-                &LatestRelease::bare(env!("CARGO_PKG_VERSION").to_string()),
-            ),
-            UpdateCheck::Failed => {}
+        // Stale or first run: one real check. `check_now` caches a definitive result
+        // (up-to-date or a newer tag) so we don't re-hit for a day; on a transient failure it
+        // leaves the cache untouched so the NEXT Settings open retries instead of waiting out
+        // the interval.
+        if let UpdateCheck::Available(latest) = check_now() {
+            on_newer(latest.tag);
         }
     });
 }
@@ -389,7 +419,7 @@ fn latest_from_worker() -> Option<LatestRelease> {
 /// read on all but the first launch of the day.
 fn check_due() -> bool {
     match read_cache() {
-        Some((last, _)) => now_secs().saturating_sub(last) >= CHECK_INTERVAL.as_secs(),
+        Some((last, _)) => throttle_expired(last, now_secs()),
         None => true,
     }
 }
@@ -428,7 +458,9 @@ fn check_throttled() -> Option<LatestRelease> {
 }
 
 /// [`check_throttled`] on a background thread — the resident screenshot helper's timer path.
-pub fn lazy_check_worker<F: FnOnce(String) + Send + 'static>(on_newer: F) {
+/// `on_newer` gets the whole release, so the helper's balloon makes the same updates-window
+/// decision ([`update_toast`]) as the scheduled one-shot's.
+pub fn lazy_check_worker<F: FnOnce(LatestRelease) + Send + 'static>(on_newer: F) {
     std::thread::spawn(move || {
         let latest = check_throttled();
         // The licence entitlement re-check rides this same worker thread and cadence rather
@@ -446,7 +478,7 @@ pub fn lazy_check_worker<F: FnOnce(String) + Send + 'static>(on_newer: F) {
         // discarded here exactly like a skipped (not-due) check — nothing to log or react to.
         let _ = crate::license::refresh_entitlement();
         if let Some(latest) = latest {
-            on_newer(latest.tag);
+            on_newer(latest);
         }
     });
 }
@@ -479,6 +511,19 @@ const MAX_INSTALLER_BYTES: usize = 128 * 1024 * 1024;
 /// Receive window (seconds) for the installer download — far longer than the manifest's 5 s
 /// since this pulls multiple MB over whatever connection the user has.
 const DOWNLOAD_TIMEOUT_SECS: u64 = 120;
+
+/// The slowest connection the installer download must still be able to finish on, in bytes per
+/// second (about 64 kbit/s: a throttled mobile plan, a busy satellite link).
+const SLOWEST_DOWNLOAD_BYTES_PER_SEC: u64 = 8 * 1024;
+
+/// The wall-clock budget for downloading an installer of `size` bytes. It used to be a flat
+/// `overall_timeout_secs(120)` = 480 s whatever the file, so a ~15 MB setup needed ~31 KB/s
+/// sustained, and below that every attempt threw the bytes away at the eight-minute mark and
+/// failed the same way again. Sized from the file now, never below that old floor; a dead link
+/// is still caught by the receive timeout, and a slow one can be stopped with Cancel.
+fn installer_download_deadline_secs(size: u64) -> u64 {
+    (size / SLOWEST_DOWNLOAD_BYTES_PER_SEC).max(DOWNLOAD_TIMEOUT_SECS * 4)
+}
 
 /// The detached signature file is 128 hex characters plus a little slack for whitespace -
 /// this cap is generous by three orders of magnitude, purely to bound a hostile response.
@@ -524,11 +569,25 @@ pub fn run_selftest(setup: &Path) -> bool {
     }
     let (path, lock) = match write_locked_installer("selftest", &bytes, &asset) {
         Ok(pair) => pair,
-        Err(m) => {
-            log(m);
+        Err(e) => {
+            log(e.detail());
             return false;
         }
     };
+    // The stamp the real updater binds every download to (`version_binding`), read off a REAL
+    // setup. The harness builds the setup and this app from one tree, so the two must agree; a
+    // stamp Windows can't read, or a wrong one, would refuse every real update while the rest
+    // of this smoke still passed.
+    let stamped = pe_stamped_version(&path);
+    if stamped != parse_ver(env!("CARGO_PKG_VERSION")) {
+        drop(lock);
+        let _ = std::fs::remove_file(&path);
+        log(&format!(
+            "the setup's version stamp {stamped:?} is not this build's {}",
+            env!("CARGO_PKG_VERSION")
+        ));
+        return false;
+    }
     // The same setup log the real updater asks for, so the harness can show setup's own
     // account when the upgrade does not land.
     let launched = launch_installer_silent(&path, HWND::default(), fresh_setup_log().as_deref());
@@ -558,36 +617,66 @@ pub fn run_selftest(setup: &Path) -> bool {
 /// is still the OLD binary when this relaunch fires. Claiming "you're now on <installed>"
 /// there is simply false, and it's exactly what makes a stuck update look like a mystery
 /// ("it said it updated and it's still on the old version"), so report what's true instead.
-pub fn show_updated_toast(installed: &str) {
-    let (title, body) = updated_toast_text(installed, env!("CARGO_PKG_VERSION"));
+///
+/// `restart_pending` is the installer's own `--restart-pending`: setup queued a file it could
+/// not replace (an ImageMagick DLL, the icon, ...) for the next restart while the EXE did land,
+/// so the versions match and only setup knows the update is not finished. Returns whether the
+/// update is complete now, without a restart.
+pub fn show_updated_toast(installed: &str, restart_pending: bool) -> bool {
+    use crate::win::t;
+    let running = env!("CARGO_PKG_VERSION");
+    let notice = updated_notice(installed, running, restart_pending);
+    let (title, body, linger) = match notice {
+        UpdatedNotice::Done => (
+            t("upd_done_title"),
+            t("upd_done_body").replace("{ver}", running),
+            6,
+        ),
+        UpdatedNotice::StillOld => (
+            t("upd_restart_title"),
+            t("upd_restart_old")
+                .replace("{ver}", installed)
+                .replace("{running}", running),
+            15,
+        ),
+        UpdatedNotice::RestartToFinish => (
+            t("upd_restart_title"),
+            t("upd_restart_pending").replace("{ver}", running),
+            15,
+        ),
+    };
     unsafe {
-        crate::win::notify_toast(title, &body, std::time::Duration::from_secs(6));
+        crate::win::notify_toast(title, &body, std::time::Duration::from_secs(linger));
     }
+    notice == UpdatedNotice::Done
+}
+
+/// What the post-update notice says.
+#[derive(Debug, PartialEq, Eq)]
+enum UpdatedNotice {
+    /// Installed and running: "you're now on <ver>".
+    Done,
+    /// The EXE itself is waiting for a restart, so this is still the old version.
+    StillOld,
+    /// This is the new version, but setup left other files for the restart.
+    RestartToFinish,
 }
 
 /// Pure message choice for [`show_updated_toast`] — split out so the "don't claim a version
-/// we aren't running" rule is unit-tested without a tray icon. An unparseable `installed`
-/// (never seen from our own installer) falls back to the success wording rather than
-/// alarming the user about a restart that isn't needed.
-fn updated_toast_text(installed: &str, running: &str) -> (&'static str, String) {
+/// we aren't running" and "don't call a half-replaced install finished" rules are unit-tested
+/// without a tray icon. An unparseable `installed` (never seen from our own installer) falls
+/// back to the success wording rather than alarming the user about a restart that isn't needed.
+fn updated_notice(installed: &str, running: &str, restart_pending: bool) -> UpdatedNotice {
     let mismatch = matches!(
         (parse_ver(installed), parse_ver(running)),
         (Some(i), Some(r)) if i != r
     );
     if mismatch {
-        (
-            "SageThumbs 2K update needs a restart",
-            format!(
-                "Version {installed} was downloaded, but Windows couldn't replace files that \
-                 were still in use. Restart Windows to finish - you're still on {running} \
-                 until then."
-            ),
-        )
+        UpdatedNotice::StillOld
+    } else if restart_pending {
+        UpdatedNotice::RestartToFinish
     } else {
-        (
-            "SageThumbs 2K updated",
-            format!("You're now on version {running}."),
-        )
+        UpdatedNotice::Done
     }
 }
 

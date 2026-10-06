@@ -11,6 +11,11 @@
 # it is also a GATE: release.ps1 dispatches it against the DRAFT release at step [5a/6] and
 # publishes only on green, so a broken ARM64 payload never becomes downloadable. The
 # `release: published` trigger stays as the record for anything published another way.
+#
+# The second job does the same for the ARM64 INSTALLER, which nothing ever ran either: it
+# installs the published ARM64 setup on ARM64 silicon, then has the installed app update itself
+# in place through the same `test-self-update.ps1` harness ci.yml runs on x64 (the in-app
+# updater picks the `-arm64.exe` asset on these machines, so this is the update they get).
 name: ARM64 portable verify
 # The dispatched run is titled with the tag it verifies, so release.ps1 can pick OUR run by
 # commit AND tag rather than by "the first run after we dispatched" (2026-09-19 audit).
@@ -237,3 +242,56 @@ jobs:
             throw 'portable ini was ignored: doctor did not report the ini values'
           }
           Write-Host 'portable ini honoured on ARM64'
+
+  installer:
+    timeout-minutes: 30
+    name: install the ARM64 setup and update it in place on ARM64
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Confirm this really is ARM64 silicon
+        shell: pwsh
+        run: |
+          $arch = $env:PROCESSOR_ARCHITECTURE
+          Write-Host "PROCESSOR_ARCHITECTURE = $arch"
+          if ($arch -ne 'ARM64') { throw "expected ARM64 host, got '$arch'" }
+
+      - name: Download the ARM64 setup (draft or published release)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ inputs.tag }}' } else { '${{ github.event.release.tag_name }}' }
+          if (-not $tag) { throw 'no tag resolved' }
+          $ver = $tag.TrimStart('v')
+          $asset = "SageThumbs2K-Setup-$ver-arm64.exe"
+          $repo = '${{ github.repository }}'
+          # By asset id from the release list, for the same draft reason as the portable job.
+          $assetId = gh api "repos/$repo/releases?per_page=30" `
+            --jq ".[] | select(.tag_name == `"$tag`") | .assets[] | select(.name == `"$asset`") | .id" 2>&1
+          if ($LASTEXITCODE -ne 0 -or -not "$assetId".Trim()) { throw "no asset $asset on release $tag (draft or published): $assetId" }
+          $assetId = ("$assetId" -split "`n")[0].Trim()
+          $setup = Join-Path $env:RUNNER_TEMP $asset
+          foreach ($try in 1..4) {
+            try {
+              Invoke-WebRequest -Uri "https://api.github.com/repos/$repo/releases/assets/$assetId" `
+                -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/octet-stream'; 'X-GitHub-Api-Version' = '2022-11-28' } `
+                -OutFile $setup -MaximumRedirection 5
+              break
+            }
+            catch { if ($try -eq 4) { throw }; Write-Warning "download attempt $try failed: $($_.Exception.Message)"; Start-Sleep -Seconds (15 * $try) }
+          }
+          if (-not (Test-Path $setup) -or (Get-Item $setup).Length -lt 1MB) { throw "could not download asset $assetId ($asset) from $tag" }
+          "setup=$setup" >> $env:GITHUB_ENV
+          Write-Host ("downloaded {0:N2} MB" -f ((Get-Item $setup).Length / 1MB))
+
+      - name: Install it, then let the installed app update itself in place
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath $env:setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+          if ($p.ExitCode) { throw "the ARM64 setup failed to install (exit $($p.ExitCode))" }
+          $app = Join-Path $env:ProgramFiles 'SageThumbs2K\SageThumbs2K.exe'
+          $machine = (Get-Item -LiteralPath $app).VersionInfo
+          Write-Host "installed $($machine.FileVersion)"
+          ./scripts/test-self-update.ps1 -Setup $env:setup -App $app

@@ -96,6 +96,9 @@ pub(super) unsafe fn status_display(st: *mut About) -> (COLORREF, String) {
     if st.is_null() {
         return (rgb(150, 150, 150), t("about_checking").to_string());
     }
+    if (*st).installing {
+        return (rgb(210, 153, 34), t("upd_pill_installing").to_string());
+    }
     match &(*st).status {
         Status::Idle => (rgb(150, 150, 150), t("about_check_now").to_string()),
         Status::Checking => (rgb(150, 150, 150), t("about_checking").to_string()),
@@ -155,7 +158,7 @@ pub(super) unsafe fn draw_status_pill(hwnd: HWND, d: &DRAWITEMSTRUCT) {
 
     let st = about_state(hwnd);
     let (dot, text) = status_display(st);
-    let checking = !st.is_null() && matches!((*st).status, Status::Checking);
+    let checking = !st.is_null() && ((*st).installing || matches!((*st).status, Status::Checking));
     let frame = if st.is_null() { 0 } else { (*st).spin_frame };
     let dotd = s(hwnd, 10);
     let gap = s(hwnd, 8);

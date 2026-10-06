@@ -29,12 +29,28 @@ pub(super) struct InstallerAsset {
     pub(super) sig_url: Option<String>,
 }
 
+/// Why the latest release's installer could not be looked up. Kept apart because each one
+/// tells the user something different: a 403/429 is GitHub's rate limit ("try again in a
+/// while"), which used to be reported as the release having no installer for this PC.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum AssetLookup {
+    /// No answer at all: offline, DNS, a timeout.
+    Unreachable,
+    /// GitHub answered with this non-2xx status.
+    Refused(u16),
+    /// The release was read, but carries no installer for this PC.
+    NoInstaller,
+}
+
 /// Pull the Windows installer asset out of GitHub's latest-release JSON — the exact versioned
-/// setup executable — returning its tag + download URL + size + sha256, or None on
-/// any failure (offline, no release, no matching asset).
-pub(super) fn latest_installer_asset() -> Option<(String, InstallerAsset)> {
-    let bytes = http_fetch(RELEASES_API, true)?;
-    installer_asset_from_json(&serde_json::from_slice(&bytes).ok()?)
+/// setup executable — returning its tag + download URL + size + sha256.
+pub(super) fn latest_installer_asset() -> Result<(String, InstallerAsset), AssetLookup> {
+    let bytes = http_fetch_status(RELEASES_API, true)
+        .map_err(|status| status.map_or(AssetLookup::Unreachable, AssetLookup::Refused))?;
+    serde_json::from_slice(&bytes)
+        .ok()
+        .and_then(|json| installer_asset_from_json(&json))
+        .ok_or(AssetLookup::NoInstaller)
 }
 
 /// Pure parse of GitHub's latest-release JSON → (tag, installer asset). Split from the fetch
@@ -204,39 +220,60 @@ pub fn pe_stamped_version(path: &Path) -> Option<(u32, u32, u32)> {
     }
 }
 
+/// Why [`version_binding`] refused an installer.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum VersionRefusal {
+    /// The file carries no version resource Windows can read.
+    NoStamp,
+    /// The feed's tag is not a version.
+    BadTag,
+    /// The file is a different version from the one the feed offered.
+    NotTheOffered {
+        stamped: (u32, u32, u32),
+        offered: (u32, u32, u32),
+    },
+    /// The file is the offered version, but that is not newer than this build.
+    NotNewer {
+        stamped: (u32, u32, u32),
+        running: (u32, u32, u32),
+    },
+}
+
+impl VersionRefusal {
+    /// The user-facing refusal, in the app's language.
+    pub(super) fn message(&self) -> String {
+        use crate::win::t;
+        let fmt = |(a, b, c): (u32, u32, u32)| format!("{a}.{b}.{c}");
+        match self {
+            Self::NoStamp => t("upd_err_no_stamp").to_string(),
+            Self::BadTag => t("upd_err_bad_tag").to_string(),
+            Self::NotTheOffered { stamped, offered } => t("upd_err_wrong_version")
+                .replace("{ver}", &fmt(*stamped))
+                .replace("{offered}", &fmt(*offered)),
+            Self::NotNewer { stamped, running } => t("upd_err_not_newer")
+                .replace("{ver}", &fmt(*stamped))
+                .replace("{running}", &fmt(*running)),
+        }
+    }
+}
+
 /// Bind the signed installer to the update it claims to be: the version stamped inside the
-/// file must equal `advertised` (the feed's tag) and be newer than `running`. `Err` carries
-/// the user-facing refusal. Pure in `stamped`; [`pe_stamped_version`] supplies it.
+/// file must equal `advertised` (the feed's tag) and be newer than `running`. Pure in
+/// `stamped`; [`pe_stamped_version`] supplies it.
 pub(super) fn version_binding(
     stamped: Option<(u32, u32, u32)>,
     advertised: &str,
     running: &str,
-) -> Result<(), String> {
-    let Some(stamped) = stamped else {
-        return Err("The downloaded update carries no version stamp, so it was not run.".into());
-    };
-    let Some(advertised) = parse_ver(advertised) else {
-        return Err("The update's advertised version could not be read, so it was not run.".into());
-    };
-    let fmt = |(a, b, c): (u32, u32, u32)| format!("{a}.{b}.{c}");
-    if stamped != advertised {
-        return Err(format!(
-            "The downloaded update is version {} but was offered as {}, so it was not run.",
-            fmt(stamped),
-            fmt(advertised)
-        ));
+) -> Result<(), VersionRefusal> {
+    let stamped = stamped.ok_or(VersionRefusal::NoStamp)?;
+    let offered = parse_ver(advertised).ok_or(VersionRefusal::BadTag)?;
+    if stamped != offered {
+        return Err(VersionRefusal::NotTheOffered { stamped, offered });
     }
-    if let Some(running) = parse_ver(running) {
-        if stamped <= running {
-            return Err(format!(
-                "The downloaded update is version {}, not newer than the installed {}, so it \
-                 was not run.",
-                fmt(stamped),
-                fmt(running)
-            ));
-        }
+    match parse_ver(running) {
+        Some(running) if stamped <= running => Err(VersionRefusal::NotNewer { stamped, running }),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 /// [`version_binding`] for the installer saved at `path`.
@@ -244,8 +281,35 @@ pub(super) fn stamped_version_is_the_advertised_upgrade(
     path: &Path,
     advertised: &str,
     running: &str,
-) -> Result<(), String> {
+) -> Result<(), VersionRefusal> {
     version_binding(pe_stamped_version(path), advertised, running)
+}
+
+/// Why [`write_locked_installer`] produced no file.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum StageError {
+    /// It could not be written, locked or named; the detail is for the log.
+    Write(&'static str),
+    /// What was written did not read back as the verified bytes.
+    Reverify,
+}
+
+impl StageError {
+    /// The English detail for the log.
+    pub(super) fn detail(&self) -> &'static str {
+        match self {
+            Self::Write(d) => d,
+            Self::Reverify => "the saved installer failed re-verification",
+        }
+    }
+
+    /// The user-facing refusal, in the app's language.
+    pub(super) fn message(&self) -> &'static str {
+        match self {
+            Self::Write(_) => crate::win::t("upd_err_save"),
+            Self::Reverify => crate::win::t("upd_err_integrity"),
+        }
+    }
 }
 
 /// Validate downloaded installer bytes before we ever run them elevated: a real PE, the
@@ -283,7 +347,7 @@ pub(super) fn write_locked_installer(
     tag: &str,
     bytes: &[u8],
     asset: &InstallerAsset,
-) -> Result<(PathBuf, std::fs::File), &'static str> {
+) -> Result<(PathBuf, std::fs::File), StageError> {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -303,13 +367,13 @@ pub(super) fn write_locked_installer(
         let mut file = match opened {
             Ok(file) => file,
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(_) => return Err("couldn't save the installer"),
+            Err(_) => return Err(StageError::Write("couldn't save the installer")),
         };
         let written = file.write_all(bytes).and_then(|()| file.sync_all());
         drop(file); // the write handle is gone before anything tries to run the image
         if written.is_err() {
             let _ = std::fs::remove_file(&path);
-            return Err("couldn't save the installer");
+            return Err(StageError::Write("couldn't save the installer"));
         }
         // Re-open read-only and verify through THIS handle — the one held across the launch.
         let Ok(mut file) = std::fs::OpenOptions::new()
@@ -318,15 +382,17 @@ pub(super) fn write_locked_installer(
             .open(&path)
         else {
             let _ = std::fs::remove_file(&path);
-            return Err("couldn't lock the saved installer");
+            return Err(StageError::Write("couldn't lock the saved installer"));
         };
         let mut on_disk = Vec::with_capacity(bytes.len());
         if file.read_to_end(&mut on_disk).is_err() || !verify_installer_bytes(&on_disk, asset) {
             drop(file);
             let _ = std::fs::remove_file(&path);
-            return Err("the saved installer failed re-verification");
+            return Err(StageError::Reverify);
         }
         return Ok((path, file));
     }
-    Err("couldn't reserve a temporary installer path")
+    Err(StageError::Write(
+        "couldn't reserve a temporary installer path",
+    ))
 }

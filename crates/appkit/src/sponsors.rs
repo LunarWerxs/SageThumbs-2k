@@ -334,8 +334,24 @@ pub fn http_fetch_capped(
     max_bytes: usize,
     timeout_secs: u64,
 ) -> Option<Vec<u8>> {
+    http_fetch_capped_status(url, reload, max_bytes, timeout_secs).ok()
+}
+
+/// [`http_fetch`] that keeps the server's refusal: `Err(Some(status))` for a non-2xx answer,
+/// `Err(None)` for no usable answer at all. The self-updater needs the difference, because
+/// GitHub's 403/429 rate limit is "try again later", not "check your connection".
+pub(crate) fn http_fetch_status(url: &str, reload: bool) -> Result<Vec<u8>, Option<u16>> {
+    http_fetch_capped_status(url, reload, MAX_REMOTE_BYTES, MANIFEST_TIMEOUT_SECS)
+}
+
+fn http_fetch_capped_status(
+    url: &str,
+    reload: bool,
+    max_bytes: usize,
+    timeout_secs: u64,
+) -> Result<Vec<u8>, Option<u16>> {
     if !is_https_url(url) {
-        return None;
+        return Err(None);
     }
     let resp = crate::http::request_ex(
         "GET",
@@ -345,13 +361,23 @@ pub fn http_fetch_capped(
         overall_timeout_secs(timeout_secs),
         max_bytes,
         None,
-    )?;
-    // A non-2xx response (error page, auth wall, a redirect WinINet didn't chase, …) must
-    // not be treated as a good manifest/image — same status-aware contract `http.rs`
-    // already gives its own (Connections) callers.
-    is_success_status(resp.status)
-        .then_some(resp.body)
-        .filter(|b| !b.is_empty())
+    )
+    .ok_or(None)?;
+    body_or_status(resp.status, resp.body)
+}
+
+/// A non-2xx response (error page, auth wall, a redirect WinINet didn't chase, …) must not be
+/// treated as a good manifest/image/installer — same status-aware contract `http.rs` already
+/// gives its own (Connections) callers. A status of 0 is `query_status`'s "couldn't read it",
+/// which says nothing about the server, so it reads as no answer.
+fn body_or_status(status: u16, body: Vec<u8>) -> Result<Vec<u8>, Option<u16>> {
+    if !is_success_status(status) {
+        return Err((status != 0).then_some(status));
+    }
+    if body.is_empty() {
+        return Err(None);
+    }
+    Ok(body)
 }
 
 /// Stream an HTTPS download into memory on a background thread, polling
@@ -363,22 +389,25 @@ pub fn http_fetch_capped(
 /// to abandon the wait: this call returns `None` immediately, while the network thread keeps
 /// running to completion (bounded by `max_bytes` + the timeouts below) and its eventual result
 /// is simply discarded — the same abandon-on-timeout shape [`manifest_bytes`] already uses.
-/// Always reloads (no cache), bounded by `max_bytes` + per-phase timeouts + an overall
-/// wall-clock budget (see [`http_fetch_capped`]'s doc for why the latter matters). None on a
-/// non-HTTPS URL, any WinINet failure, a non-2xx status, an abandon, or an over-cap/empty body.
+/// Always reloads (no cache), bounded by `max_bytes` + per-phase timeouts + the caller's
+/// `overall_secs` wall-clock budget (see [`http_fetch_capped`]'s doc for why the latter
+/// matters; the installer sizes it from the file, see `update::installer_download_deadline_secs`).
+/// `Err(Some(status))` for a non-2xx answer; `Err(None)` on a non-HTTPS URL, any WinINet
+/// failure, an abandon, or an over-cap/empty body.
 pub(crate) fn http_download_streaming(
     url: &str,
     max_bytes: usize,
     timeout_secs: u64,
+    overall_secs: u64,
     on_progress: &mut dyn FnMut(u64) -> bool,
-) -> Option<Vec<u8>> {
+) -> Result<Vec<u8>, Option<u16>> {
     if !is_https_url(url) {
-        return None;
+        return Err(None);
     }
     let url = url.to_string();
     let progress = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let progress_writer = progress.clone();
-    let overall = overall_timeout_secs(timeout_secs);
+    let overall = overall_secs;
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let resp = crate::http::request_ex(
@@ -397,18 +426,16 @@ pub(crate) fn http_download_streaming(
     loop {
         match rx.recv_timeout(std::time::Duration::from_millis(100)) {
             Ok(resp) => {
-                return resp
-                    .filter(|r| is_success_status(r.status))
-                    .map(|r| r.body)
-                    .filter(|b| !b.is_empty());
+                let resp = resp.ok_or(None)?;
+                return body_or_status(resp.status, resp.body);
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 let done = progress.load(std::sync::atomic::Ordering::Relaxed);
                 if !on_progress(done) {
-                    return None; // abandoned — the network thread finishes on its own
+                    return Err(None); // abandoned — the network thread finishes on its own
                 }
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Err(None),
         }
     }
 }
@@ -726,6 +753,22 @@ mod tests {
         assert!(!is_success_status(300));
         assert!(!is_success_status(404));
         assert!(!is_success_status(500));
+    }
+
+    /// The self-updater tells GitHub's rate limit (403/429: "try again in a while") apart from
+    /// a dead connection, which it can only do if the refusal's status survives the fetch. It
+    /// used to be dropped with the body, so a rate-limited network was told the release had no
+    /// installer for this PC.
+    #[test]
+    fn a_refusal_keeps_its_status_and_no_answer_has_none() {
+        assert_eq!(
+            body_or_status(403, b"rate limited".to_vec()),
+            Err(Some(403))
+        );
+        assert_eq!(body_or_status(429, Vec::new()), Err(Some(429)));
+        assert_eq!(body_or_status(0, b"x".to_vec()), Err(None));
+        assert_eq!(body_or_status(200, Vec::new()), Err(None));
+        assert_eq!(body_or_status(200, b"ok".to_vec()), Ok(b"ok".to_vec()));
     }
 
     /// A123: the two fetch helpers used to bound only WinINet's per-phase timeouts, each of

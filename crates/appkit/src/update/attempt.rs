@@ -219,18 +219,21 @@ pub(super) fn report_text(
     reason: Option<&str>,
     log: Option<&Path>,
 ) -> String {
-    let mut text = format!(
-        "The update to SageThumbs 2K {tag} didn't install, so this PC is still on {running}."
-    );
+    use crate::win::t;
+    // Setup's own reason is quoted as setup logged it, in setup's language.
+    let mut text = t("upd_failed_body")
+        .replace("{ver}", tag)
+        .replace("{running}", running);
     if let Some(r) = reason {
-        text.push_str(&format!("\n\nSetup reported: {r}"));
+        text.push_str("\n\n");
+        text.push_str(&t("upd_failed_reason").replace("{reason}", r));
     }
     if let Some(p) = log {
-        text.push_str(&format!("\n\nSetup's full log: {}", p.display()));
+        text.push_str("\n\n");
+        text.push_str(&t("upd_failed_log").replace("{path}", &p.display().to_string()));
     }
-    text.push_str(&format!(
-        "\n\nOpen the releases page to install {tag} by hand?"
-    ));
+    text.push_str("\n\n");
+    text.push_str(&t("upd_failed_ask").replace("{ver}", tag));
     text
 }
 

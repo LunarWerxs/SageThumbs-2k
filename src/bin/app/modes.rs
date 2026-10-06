@@ -560,11 +560,12 @@ pub(super) unsafe fn dispatch_folder_modes(hinst: HINSTANCE, args: &[String]) ->
     false
 }
 
-/// The install-time heal flags: `--updated <ver>` (launched by the installer's [Run] step
-/// right after a SILENT self-update finishes — heals the hotkey daemon the installer had
-/// to kill, then pops a non-blocking "you're now on <ver>" toast) and `--heal-hotkeys` (run
-/// after EVERY install, including manual/silent reinstalls that never pass `/UPDATED`).
-/// Returns `true` if a flag fired (caller should return).
+/// The install-time heal flags: `--updated <ver> [--restart-pending]` (launched by the
+/// installer's [Run] step right after a SILENT self-update finishes — heals the hotkey daemon
+/// the installer had to kill, then hands the "you're now on <ver>" notice to a detached
+/// `--updated-notice` and returns) and `--heal-hotkeys` (run after EVERY install, including
+/// manual/silent reinstalls that never pass `/UPDATED`). Returns `true` if a flag fired
+/// (caller should return).
 pub(super) unsafe fn dispatch_heal_modes(args: &[String]) -> bool {
     if let Some(pos) = args.iter().position(|a| a == "--updated") {
         // The update reported on itself, so the next Settings launch has nothing to say.
@@ -573,8 +574,24 @@ pub(super) unsafe fn dispatch_heal_modes(args: &[String]) -> bool {
         let ver = args
             .get(pos + 1)
             .map_or(env!("CARGO_PKG_VERSION"), String::as_str);
-        st2k_appkit::update::show_updated_toast(ver);
-        offer_thumbnail_refresh(ver);
+        let restart_pending = args.iter().any(|a| a == "--restart-pending");
+        // Setup waits for this step when it runs it as another account's user (up to three
+        // minutes), with its progress bar sitting at 100% the whole time. The balloons take
+        // 14 s or more, so they go to a child of their own.
+        let mut notice = vec!["--updated-notice", ver];
+        if restart_pending {
+            notice.push("--restart-pending");
+        }
+        if !st2k_appkit::win::spawn_self(&notice) {
+            show_update_notice(ver, restart_pending);
+        }
+        return true;
+    }
+    if let Some(pos) = args.iter().position(|a| a == "--updated-notice") {
+        let ver = args
+            .get(pos + 1)
+            .map_or(env!("CARGO_PKG_VERSION"), String::as_str);
+        show_update_notice(ver, args.iter().any(|a| a == "--restart-pending"));
         return true;
     }
     if args.iter().any(|a| a == "--heal-hotkeys") {
@@ -582,6 +599,15 @@ pub(super) unsafe fn dispatch_heal_modes(args: &[String]) -> bool {
         return true;
     }
     false
+}
+
+/// The post-update balloons: what was installed, then, when it is all in place now, the offer
+/// to refresh thumbnails. Not while a restart is pending: Explorer would reload the files the
+/// restart has yet to replace, and setup queues the cache rebuild for after it already.
+unsafe fn show_update_notice(ver: &str, restart_pending: bool) {
+    if st2k_appkit::update::show_updated_toast(ver, restart_pending) {
+        offer_thumbnail_refresh();
+    }
 }
 
 /// Re-spawn this EXE with `--rebuild-thumbnail-cache-now` (detached — no wait, no window)
@@ -608,24 +634,20 @@ pub(super) fn detach_rebuild_thumbnail_cache() {
 /// After a silent self-update relaunch, a decoder/format fix shows no difference for any
 /// file Explorer already thumbnailed — only clearing `thumbcache_*.db` does, and until now
 /// the only UI for that was a postinstall checkbox `/UPDATED` deliberately skips (see G88 /
-/// review #88: "silent self-update never invalidates the thumbcache"). Records
-/// `CacheStaleSince=<ver>` in HKCU so the state is visible even if the toast is missed or
-/// dismissed unread, offers a one-click fix, and clears the marker once the refresh
-/// actually completes. The restart runs INSIDE the click handler, on this thread: this is
-/// the short-lived relaunch process `show_updated_toast` pops its balloon from, and it exits
-/// the moment the toast returns, so a detached worker would be torn down mid-restart, its
-/// verify loop and explorer.exe fallback with it. Blocking here for the ~30 s cycle costs
-/// nothing: the process has no other work, and the restart takes the tray icon with it.
-pub(super) unsafe fn offer_thumbnail_refresh(ver: &str) {
-    let _ = st2k_base::settings::set_string("CacheStaleSince", ver);
+/// review #88: "silent self-update never invalidates the thumbcache"). Offers a one-click
+/// fix; missed, it stays one click away in Settings' maintenance page. The restart runs
+/// INSIDE the click handler, on this thread: this is the short-lived `--updated-notice`
+/// process, and it exits the moment the toast returns, so a detached worker would be torn
+/// down mid-restart, its verify loop and explorer.exe fallback with it. Blocking here for the
+/// ~30 s cycle costs nothing: the process has no other work, and the restart takes the tray
+/// icon with it.
+pub(super) unsafe fn offer_thumbnail_refresh() {
     st2k_appkit::win::notify_toast_action(
-        "Refresh thumbnails now?",
-        "New thumbnails won't appear for files Explorer already cached until the cache is \
-         cleared. Click to refresh thumbnails now (restarts Explorer).",
+        t("upd_refresh_title"),
+        t("upd_refresh_body"),
         std::time::Duration::from_secs(8),
         || {
             let _ = st2k_base::shellcmd::restart_explorer_clearing_cache();
-            let _ = st2k_base::settings::set_string("CacheStaleSince", "");
         },
     );
 }

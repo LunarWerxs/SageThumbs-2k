@@ -48,14 +48,86 @@ pub fn remove_update_task() {
     let _ = schtasks(&["/delete", "/f", "/tn", UPDATE_TASK]);
 }
 
+/// What [`sync_update_task`] does to the Scheduled Task.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum TaskAction {
+    Install,
+    Remove,
+    Leave,
+}
+
+/// Pure: a portable copy leaves the task alone. Registering one would leave a task on the
+/// host pointing at a USB stick that is about to leave (the portable promise is that nothing
+/// stays behind; the update cache sits beside its ini for the same reason), and removing one
+/// would delete the task an installed copy on the same PC owns. Its checks ride its own
+/// launches instead ([`spawn_due_check`]). Otherwise the task follows the setting.
+pub(super) fn task_action(portable: bool, auto_check: bool) -> TaskAction {
+    if portable {
+        TaskAction::Leave
+    } else if auto_check {
+        TaskAction::Install
+    } else {
+        TaskAction::Remove
+    }
+}
+
 /// Make the Scheduled Task match the "Automatically check for updates" setting. Called
 /// after every install and whenever the Settings checkbox is applied, so turning the
 /// setting off genuinely removes the task instead of leaving an inert one behind.
 pub fn sync_update_task() {
-    if st2k_base::settings::update_auto_check() {
-        install_update_task();
-    } else {
-        remove_update_task();
+    match task_action(
+        st2k_base::settings::portable(),
+        st2k_base::settings::update_auto_check(),
+    ) {
+        TaskAction::Install => {
+            install_update_task();
+        }
+        TaskAction::Remove => remove_update_task(),
+        TaskAction::Leave => {}
+    }
+}
+
+/// Where a click on the "update available" balloon takes the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastClick {
+    /// Settings, on the page with this nav key: Advanced holds the update button, Licence
+    /// the renewal.
+    Settings(&'static str),
+    /// The releases page, where a portable copy gets its new zip.
+    Releases,
+}
+
+/// The balloon's body key and click target. Pure, so every case is pinned by a test: a
+/// portable copy is never told to "open SageThumbs 2K to install it" (it can't), and a click
+/// always leads somewhere. It used to do nothing at all.
+pub(super) fn toast_choice(offer: &Offer, portable: bool) -> (&'static str, ToastClick) {
+    match offer {
+        Offer::OutsideWindow { .. } => ("upd_outside_toast", ToastClick::Settings("nav_licence")),
+        _ if portable => ("upd_toast_body_portable", ToastClick::Releases),
+        _ => ("upd_toast_body", ToastClick::Settings("nav_advanced")),
+    }
+}
+
+/// The "update available" balloon for `latest` on this machine: title, body, click target.
+/// The updates-window decision is made here for every balloon (the scheduled one-shot's and
+/// the resident helper's), so none promises an install this machine's licence will decline.
+pub fn update_toast(latest: &LatestRelease) -> (&'static str, String, ToastClick) {
+    let offer = offer_for(&crate::license::snapshot(), Some(latest));
+    let (key, click) = toast_choice(&offer, st2k_base::settings::portable());
+    let mut body = crate::win::t(key).replace("{ver}", &latest.tag);
+    if let Offer::OutsideWindow { ends_unix } = offer {
+        body = body.replace("{date}", &crate::license::format_unix_date(ends_unix));
+    }
+    (crate::win::t("upd_toast_title"), body, click)
+}
+
+/// Follow a balloon click.
+pub fn open_toast_click(click: ToastClick) {
+    match click {
+        ToastClick::Settings(tab) => {
+            let _ = crate::win::spawn_self(&["--tab", tab]);
+        }
+        ToastClick::Releases => unsafe { crate::win::open_url(RELEASES_URL) },
     }
 }
 
@@ -96,26 +168,14 @@ pub fn run_one_shot_check() {
     let Some(latest) = check_throttled() else {
         return;
     };
-    // The window decision is made HERE as well as in the About card, because this one-shot
-    // is the only thing many installs ever run - the tray balloon must not promise an
-    // install this machine's licence will then decline to perform.
-    let snap = crate::license::snapshot();
-    let body = match offer_for(&snap, Some(&latest)) {
-        Offer::OutsideWindow { ends_unix } => crate::win::t("upd_outside_toast")
-            .replace("{ver}", &latest.tag)
-            .replace("{date}", &crate::license::format_unix_date(ends_unix)),
-        // `None` is unreachable with a `Some(..)` release, and treating it like Install is
-        // the same "say nothing surprising" direction the rest of this module takes.
-        Offer::Install | Offer::None => {
-            crate::win::t("upd_toast_body").replace("{ver}", &latest.tag)
-        }
-    };
+    // The window decision is made in `update_toast` as well as in the About card, because
+    // this one-shot is the only thing many installs ever run.
+    let (title, body, click) = update_toast(&latest);
+    // Long enough to be seen and clicked: a click lands on the page that installs it.
     unsafe {
-        crate::win::notify_toast(
-            crate::win::t("upd_toast_title"),
-            &body,
-            Duration::from_secs(8),
-        );
+        crate::win::notify_toast_action(title, &body, Duration::from_secs(30), move || {
+            open_toast_click(click)
+        });
     }
 }
 

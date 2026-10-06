@@ -17,6 +17,28 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   the next restart, and never closes your programs. If an update ever does fail, the next time
   you open Settings it tells you, with setup's own reason and its log, and offers the download
   page.
+- **Updating from inside the app, fixed in more places:**
+  - A file an update left for the next restart (because a program was using it) could be put
+    back by that restart after a second update had already replaced it, leaving an older file
+    beside a newer SageThumbs. Setup now cancels what an earlier update left waiting, and an
+    uninstall does too, so nothing comes back after you remove SageThumbs.
+  - The notice after an update says when a restart is still needed to finish it, instead of
+    only "you're now on" the new version.
+  - Cancelling setup while it copied files could leave SageThumbs without its ImageMagick
+    engine. Setup no longer offers Cancel once it has started copying.
+  - The "update available" notification opens Settings where you install it (the portable
+    copy: the download page). Clicking it used to do nothing.
+  - The download no longer gives up after eight minutes on a slow connection.
+  - When GitHub is limiting requests from your network, the updater says so and to try again
+    later, instead of reporting that there is no installer for your PC.
+  - A standard Windows account that cannot approve the administrator prompt is told that an
+    administrator has to install the update. It used to be told nothing.
+  - A PC whose clock was once set ahead no longer stops checking for updates until that date
+    comes round.
+  - The portable copy no longer offers to install an update it cannot install, and no longer
+    leaves a scheduled update check on the PC it ran on.
+  - Closing Settings during an update download no longer stops the update without a word.
+  - The updater's messages, its progress window and its notices are in your language.
 - **Big scanned-book PDFs get their covers** (fixes #59). A PDF over 256 MB with more than about
   190 pages, each page its own scan (most scanned books), never got a thumbnail: Windows' PDF
   engine looks at every page when it opens a document, and SageThumbs ran out of its read

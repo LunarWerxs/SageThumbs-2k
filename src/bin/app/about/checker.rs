@@ -1,6 +1,7 @@
 //! The status pill's life: check for an update, offer it or a renewal, install it and report what happened.
 
 use super::*;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The release the last check found, for [`WM_ABOUT_CHECKED`]'s handler to take. Kept
 /// process-local rather than boxed into the LPARAM: `WM_ABOUT_CHECKED` is a plain `WM_APP`
@@ -31,13 +32,13 @@ fn take<T>(slot: &std::sync::Mutex<Vec<(isize, T)>>, hwnd: isize) -> Option<T> {
     Some(v.swap_remove(i).1)
 }
 
-/// Kick off a fresh GitHub update check on a worker thread; it posts the outcome
+/// Kick off a fresh update check on a worker thread; it posts the outcome
 /// back to `hwnd` via [`WM_ABOUT_CHECKED`]. HWND isn't `Send`, so the raw handle
 /// value crosses the thread boundary and is rebuilt for the (thread-safe) post.
 pub(super) unsafe fn start_check(hwnd: HWND) {
     let raw = hwnd.0 as isize;
     std::thread::spawn(move || {
-        let code = post_code(raw, update::check());
+        let code = post_code(raw, update::check_now());
         // Nothing to reclaim if the post fails: the release sits in `FOUND_RELEASE` until
         // the next check overwrites it.
         let _ = PostMessageW(
@@ -133,8 +134,25 @@ pub(super) unsafe fn offer_update(hwnd: HWND) {
         offer_renewal(hwnd, ends_unix);
         return;
     }
-    let cap = wide(st2k_appkit::win::t("upd_confirm_title"));
-    let prompt = wide(st2k_appkit::win::t("upd_confirm"));
+    // A portable copy never installs itself: say so and open the releases page, instead of
+    // offering the install and refusing it only once it has been accepted.
+    if st2k_base::settings::portable() {
+        show_update_box(
+            Some(hwnd),
+            t("upd_err_portable"),
+            MB_OK | MB_ICONINFORMATION,
+        );
+        open_url(update::RELEASES_URL);
+        return;
+    }
+    // One install per process: About and Check for updates can each have a window open,
+    // and two downloads would mean two elevation prompts and two setups racing.
+    if INSTALL_IN_FLIGHT.load(Ordering::Acquire) {
+        show_update_box(Some(hwnd), t("upd_in_progress"), MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    let cap = wide(t("upd_confirm_title"));
+    let prompt = wide(t("upd_confirm_install"));
     if MessageBoxW(
         Some(hwnd),
         PCWSTR(prompt.as_ptr()),
@@ -144,8 +162,37 @@ pub(super) unsafe fn offer_update(hwnd: HWND) {
     {
         return;
     }
+    if INSTALL_IN_FLIGHT.swap(true, Ordering::AcqRel) {
+        return; // another window started one while this prompt was up
+    }
     (*st).installing = true;
+    // The pill says "Updating…" and spins until the result arrives; the lookup before the
+    // progress window opens takes a few seconds, and nothing on screen moved during it.
+    (*st).spin_frame = 0;
+    let _ = SetTimer(Some(hwnd), SPIN_TIMER_ID, SPIN_INTERVAL_MS, None);
+    invalidate_status(hwnd);
     start_install(hwnd);
+}
+
+/// A download and install is running somewhere in this process. Cleared by the worker once
+/// its result is handled; `main` waits on it before exiting, so closing Settings mid-download
+/// no longer kills the update and its report with the process.
+pub(crate) static INSTALL_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// The updater's message box: its caption, in front even when no window of ours is.
+unsafe fn show_update_box(
+    owner: Option<HWND>,
+    text: &str,
+    style: MESSAGEBOX_STYLE,
+) -> MESSAGEBOX_RESULT {
+    let cap = wide(t("upd_box_title"));
+    let body = wide(text);
+    MessageBoxW(
+        owner,
+        PCWSTR(body.as_ptr()),
+        PCWSTR(cap.as_ptr()),
+        style | MB_SETFOREGROUND,
+    )
 }
 
 /// Is the release this card is currently offering published AFTER this machine's updates
@@ -214,26 +261,22 @@ pub(super) unsafe fn start_install(hwnd: HWND) {
         let owner = HWND(raw as *mut c_void);
         let result = update::download_and_install(owner);
         park(&INSTALL_RESULT, raw, result);
-        // Nothing to reclaim if the post fails: the result waits in the slot.
-        let _ = PostMessageW(Some(owner), WM_ABOUT_INSTALLED, WPARAM(0), LPARAM(0));
+        let posted = PostMessageW(Some(owner), WM_ABOUT_INSTALLED, WPARAM(0), LPARAM(0));
+        if posted.is_err() {
+            // The About window closed during the download. The result is still the user's:
+            // handle it here, ownerless, instead of leaving it in the slot unread.
+            if let Some(result) = take(&INSTALL_RESULT, raw) {
+                finish_install(None, result);
+            }
+        }
+        INSTALL_IN_FLIGHT.store(false, Ordering::Release);
     });
 }
 
-/// [`WM_ABOUT_INSTALLED`] handler: take the install result and do what `offer_update` used
-/// to do inline once the call returned — exit on success (the installer closes us and
+/// What an install's result means to the user: exit on success (the installer closes us and
 /// relaunches), stay silent on a user cancel, or show the failure and fall back to the
 /// releases page.
-pub(super) unsafe fn on_about_installed(hwnd: HWND, lparam: LPARAM) -> LRESULT {
-    // `lparam` carries nothing: the result waits in INSTALL_RESULT. A repeated or forged message
-    // finds the slot empty, or at most takes a result a real install stored.
-    let _ = lparam;
-    let Some(result) = take(&INSTALL_RESULT, hwnd.0 as isize) else {
-        return LRESULT(0);
-    };
-    let st = about_state(hwnd);
-    if !st.is_null() {
-        (*st).installing = false;
-    }
+unsafe fn finish_install(owner: Option<HWND>, result: Result<String, update::UpdateError>) {
     match result {
         // Installer launched: it closes us, upgrades in place, and relaunches — so exit.
         Ok(_) => {
@@ -246,17 +289,30 @@ pub(super) unsafe fn on_about_installed(hwnd: HWND, lparam: LPARAM) -> LRESULT {
         // opening a browser (or, worse, doing nothing at all, which is what a scanner block
         // used to produce) is why "the auto-updater doesn't work" arrived with no detail.
         Err(e) => {
-            let cap = wide("SageThumbs 2K update");
-            let body = wide(e.message());
-            MessageBoxW(
-                Some(hwnd),
-                PCWSTR(body.as_ptr()),
-                PCWSTR(cap.as_ptr()),
-                MB_OK | MB_ICONWARNING,
-            );
+            show_update_box(owner, e.message(), MB_OK | MB_ICONWARNING);
             open_url(update::RELEASES_URL);
         }
     }
+}
+
+/// [`WM_ABOUT_INSTALLED`] handler: take the install result, put the pill back, and
+/// [`finish_install`] it.
+pub(super) unsafe fn on_about_installed(hwnd: HWND, lparam: LPARAM) -> LRESULT {
+    // `lparam` carries nothing: the result waits in INSTALL_RESULT. A repeated or forged message
+    // finds the slot empty, or at most takes a result a real install stored.
+    let _ = lparam;
+    let Some(result) = take(&INSTALL_RESULT, hwnd.0 as isize) else {
+        return LRESULT(0);
+    };
+    let st = about_state(hwnd);
+    if !st.is_null() {
+        (*st).installing = false;
+        if !(*st).checking {
+            let _ = KillTimer(Some(hwnd), SPIN_TIMER_ID);
+        }
+        invalidate_status(hwnd);
+    }
+    finish_install(Some(hwnd), result);
     LRESULT(0)
 }
 

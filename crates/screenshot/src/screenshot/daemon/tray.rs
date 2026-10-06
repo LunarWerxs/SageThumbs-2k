@@ -114,19 +114,35 @@ pub(super) fn set_balloon_text(dst: &mut [u16], text: &str) {
     dst[n] = 0;
 }
 
-/// Pop a tray "update available" balloon (clickable → the releases page). A no-op if the
-/// tray icon is hidden, in which case the next Settings open still surfaces the update.
-pub(super) unsafe fn show_update_toast(hwnd: HWND, tag: &str) {
+/// Where the last "update available" balloon's click goes (see [`open_update_click`]).
+static UPDATE_CLICK: std::sync::Mutex<Option<st2k_appkit::update::ToastClick>> =
+    std::sync::Mutex::new(None);
+
+/// Pop a tray "update available" balloon: the same words and click target as the scheduled
+/// check's (`update::update_toast`), so it too knows a portable copy and an ended updates
+/// window. It used to send everyone to the releases page in English, past the in-app updater
+/// and past the licence decision. A no-op if the tray icon is hidden, in which case the next
+/// Settings open still surfaces the update.
+pub(super) unsafe fn show_update_toast(hwnd: HWND, latest: &st2k_appkit::update::LatestRelease) {
+    let (title, body, click) = st2k_appkit::update::update_toast(latest);
+    if let Ok(mut slot) = UPDATE_CLICK.lock() {
+        *slot = Some(click);
+    }
     LAST_BALLOON.store(BALLOON_UPDATE, Ordering::Relaxed);
     let mut nid = tray_data(hwnd, false);
     nid.uFlags = NIF_INFO;
     nid.dwInfoFlags = NIIF_INFO;
-    set_balloon_text(&mut nid.szInfoTitle, "SageThumbs 2K update available");
-    set_balloon_text(
-        &mut nid.szInfo,
-        &format!("Version {tag} is ready — click to download."),
-    );
+    set_balloon_text(&mut nid.szInfoTitle, title);
+    set_balloon_text(&mut nid.szInfo, &body);
     let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
+/// The "update available" balloon was clicked: follow the target it was shown with.
+pub(super) fn open_update_click() {
+    let click = UPDATE_CLICK.lock().ok().and_then(|mut slot| slot.take());
+    st2k_appkit::update::open_toast_click(
+        click.unwrap_or(st2k_appkit::update::ToastClick::Settings("nav_advanced")),
+    );
 }
 
 /// Pop a tray balloon explaining that Space cannot work over the window now in front.
@@ -152,17 +168,4 @@ pub(super) unsafe fn show_elevated_warning(hwnd: HWND, kind: &str) {
     );
     set_balloon_text(&mut nid.szInfo, st2k_appkit::win::t("admin_warn_body"));
     let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
-}
-
-/// Open the GitHub releases page in the default browser (the update toast's click target).
-pub(super) unsafe fn open_releases() {
-    let url = wide(st2k_appkit::update::RELEASES_URL);
-    ShellExecuteW(
-        None,
-        w!("open"),
-        PCWSTR(url.as_ptr()),
-        PCWSTR::null(),
-        PCWSTR::null(),
-        SW_SHOWNORMAL,
-    );
 }

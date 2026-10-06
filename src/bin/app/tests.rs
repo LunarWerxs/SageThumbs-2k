@@ -40,6 +40,7 @@ fn piggyback_covers_ordinary_launches_and_spares_the_headless_ones() {
         vec!["--update-task", "remove"],
         vec!["--update-selftest", "setup.exe"],
         vec!["--updated", "1.7.0"],
+        vec!["--updated-notice", "1.7.0", "--restart-pending"],
         vec!["--heal-hotkeys"],
         vec!["--rebuild-thumbnail-cache"],
         vec!["--rebuild-thumbnail-cache-now"],

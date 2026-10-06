@@ -52,29 +52,107 @@ fn parses_and_orders_versions() {
 
 #[test]
 fn updated_toast_never_claims_a_version_we_arent_running() {
+    use super::{updated_notice, UpdatedNotice as N};
     // Normal silent update: installer version == this image's version.
-    let (title, body) = super::updated_toast_text("1.3.8", "1.3.8");
-    assert_eq!(title, "SageThumbs 2K updated");
-    assert!(body.contains("now on version 1.3.8"), "{body}");
+    assert_eq!(updated_notice("1.3.8", "1.3.8", false), N::Done);
 
     // Deferred-to-reboot replace: the installer was 1.3.8 but we're still the old EXE.
     // The toast must NOT say "you're now on 1.3.8" — that's the mystery-update report.
-    let (title, body) = super::updated_toast_text("1.3.8", "1.3.7");
-    assert_eq!(title, "SageThumbs 2K update needs a restart");
-    assert!(!body.contains("now on version"), "{body}");
-    assert!(body.contains("Restart Windows"), "{body}");
-    assert!(body.contains("still on 1.3.7"), "{body}");
+    assert_eq!(updated_notice("1.3.8", "1.3.7", false), N::StillOld);
+    assert_eq!(updated_notice("1.3.8", "1.3.7", true), N::StillOld);
+
+    // The EXE landed but setup queued another file for the restart (an ImageMagick DLL held
+    // by a scanner): the versions match, and only setup's --restart-pending knows the update
+    // is not finished. "You're now on 1.3.8" with nothing more was the wrong report there.
+    assert_eq!(updated_notice("1.3.8", "1.3.8", true), N::RestartToFinish);
 
     // A "v"-prefixed tag is the same version, not a mismatch.
-    assert_eq!(
-        super::updated_toast_text("v1.3.8", "1.3.8").0,
-        "SageThumbs 2K updated"
-    );
+    assert_eq!(updated_notice("v1.3.8", "1.3.8", false), N::Done);
 
     // Unparseable installer version → don't cry "restart" at the user.
+    assert_eq!(updated_notice("", "1.3.8", false), N::Done);
+}
+
+/// A throttle stamp from the future (written while the clock was wrong) must not read as
+/// "checked a moment ago": that silenced every update check until the clock caught up.
+#[test]
+fn a_throttle_stamp_from_the_future_is_due() {
+    let now = 1_800_000_000;
+    let day = super::CHECK_INTERVAL.as_secs();
+    assert!(
+        !super::throttle_expired(now - 60, now),
+        "checked a minute ago"
+    );
+    assert!(super::throttle_expired(now - day, now), "a day ago");
+    assert!(
+        super::throttle_expired(now + 365 * day, now),
+        "stamped a year ahead by a wrong clock"
+    );
+}
+
+/// The installer download must be able to finish on a slow link. The budget used to be a flat
+/// eight minutes, so a 15 MB setup over a 16 KiB/s connection (~16 minutes) failed every time.
+#[test]
+fn a_slow_link_can_finish_the_installer_download() {
+    let size: u64 = 15 * 1024 * 1024;
+    let at_16_kib = size / (16 * 1024);
+    assert!(
+        super::installer_download_deadline_secs(size) > at_16_kib,
+        "{} s budget for a download taking {at_16_kib} s",
+        super::installer_download_deadline_secs(size)
+    );
+    // Never below the old floor, whatever the advertised size.
     assert_eq!(
-        super::updated_toast_text("", "1.3.8").0,
-        "SageThumbs 2K updated"
+        super::installer_download_deadline_secs(0),
+        super::DOWNLOAD_TIMEOUT_SECS * 4
+    );
+}
+
+/// GitHub's rate limit (403/429 on the unauthenticated API) is "try again in a while", and a
+/// release that really has no installer for this PC is its own case: both used to read as
+/// "couldn't find the installer for this PC".
+#[test]
+fn a_rate_limited_lookup_is_not_reported_as_a_missing_installer() {
+    use super::fetch_failure_key as key;
+    assert_eq!(key(Some(403), "upd_err_unreachable"), "upd_err_busy");
+    assert_eq!(key(Some(429), "upd_err_download"), "upd_err_busy");
+    assert_eq!(key(Some(404), "upd_err_unreachable"), "upd_err_http");
+    assert_eq!(key(None, "upd_err_unreachable"), "upd_err_unreachable");
+    assert_eq!(key(None, "upd_err_download"), "upd_err_download");
+}
+
+/// A portable copy never registers (or removes) the per-user Scheduled Task: Apply in its
+/// Settings used to leave a task on the host pointing at the USB stick.
+#[test]
+fn a_portable_copy_leaves_the_scheduled_task_alone() {
+    use super::task::{task_action, TaskAction as A};
+    assert_eq!(task_action(true, true), A::Leave);
+    assert_eq!(task_action(true, false), A::Leave);
+    assert_eq!(task_action(false, true), A::Install);
+    assert_eq!(task_action(false, false), A::Remove);
+}
+
+/// Every "update available" balloon leads somewhere on a click, and never promises a portable
+/// copy an install it cannot do. The balloon used to do nothing when clicked.
+#[test]
+fn the_update_balloon_leads_to_what_this_copy_can_do() {
+    use super::task::{toast_choice, ToastClick as C};
+    let outside = Offer::OutsideWindow { ends_unix: 1 };
+    assert_eq!(
+        toast_choice(&Offer::Install, false),
+        ("upd_toast_body", C::Settings("nav_advanced"))
+    );
+    assert_eq!(
+        toast_choice(&Offer::Install, true),
+        ("upd_toast_body_portable", C::Releases)
+    );
+    assert_eq!(
+        toast_choice(&outside, false),
+        ("upd_outside_toast", C::Settings("nav_licence"))
+    );
+    assert_eq!(
+        toast_choice(&outside, true),
+        ("upd_outside_toast", C::Settings("nav_licence"))
     );
 }
 
@@ -101,6 +179,7 @@ fn test_signing_key() -> SigningKey {
 /// bytes, is refused; only the advertised version, newer than the running one, passes.
 #[test]
 fn version_binding_refuses_a_mismatch_and_a_downgrade() {
+    use super::VersionRefusal as R;
     assert_eq!(
         super::version_binding(Some((3, 1, 2)), "v3.1.2", "3.1.1"),
         Ok(())
@@ -110,17 +189,38 @@ fn version_binding_refuses_a_mismatch_and_a_downgrade() {
         Ok(())
     );
     // A genuine, signed 3.0.5 offered as 3.1.2: the stamp gives it away.
-    let err = super::version_binding(Some((3, 0, 5)), "v3.1.2", "3.1.1").unwrap_err();
-    assert!(err.contains("3.0.5") && err.contains("3.1.2"), "{err}");
+    assert_eq!(
+        super::version_binding(Some((3, 0, 5)), "v3.1.2", "3.1.1"),
+        Err(R::NotTheOffered {
+            stamped: (3, 0, 5),
+            offered: (3, 1, 2)
+        })
+    );
     // The advertised tag matches the stamp but is not newer than what runs here.
-    let err = super::version_binding(Some((3, 1, 1)), "v3.1.1", "3.1.1").unwrap_err();
-    assert!(err.contains("not newer"), "{err}");
-    let err = super::version_binding(Some((3, 0, 9)), "v3.0.9", "3.1.1").unwrap_err();
-    assert!(err.contains("not newer"), "{err}");
+    assert_eq!(
+        super::version_binding(Some((3, 1, 1)), "v3.1.1", "3.1.1"),
+        Err(R::NotNewer {
+            stamped: (3, 1, 1),
+            running: (3, 1, 1)
+        })
+    );
+    assert_eq!(
+        super::version_binding(Some((3, 0, 9)), "v3.0.9", "3.1.1"),
+        Err(R::NotNewer {
+            stamped: (3, 0, 9),
+            running: (3, 1, 1)
+        })
+    );
     // No stamp at all is a refusal, never a pass.
-    assert!(super::version_binding(None, "v3.1.2", "3.1.1").is_err());
+    assert_eq!(
+        super::version_binding(None, "v3.1.2", "3.1.1"),
+        Err(R::NoStamp)
+    );
     // An unparseable tag is a refusal too.
-    assert!(super::version_binding(Some((3, 1, 2)), "latest", "3.1.1").is_err());
+    assert_eq!(
+        super::version_binding(Some((3, 1, 2)), "latest", "3.1.1"),
+        Err(R::BadTag)
+    );
 }
 
 /// The stamp reader on real PEs: a Windows system file carries the OS version, and a missing
@@ -365,57 +465,43 @@ fn installer_asset_requires_digest_and_canonical_repo_url() {
 
 #[test]
 fn launch_failures_stay_distinguishable() {
-    use super::{classify_launch_failure as classify, UpdateError as E};
+    use super::{
+        classify_launch_failure as classify, launch_error, LaunchFailure as F, UpdateError as E,
+    };
 
     // A declined UAC prompt: access-denied with ERROR_CANCELLED behind it. The ONLY
     // case the UI is allowed to swallow.
-    assert!(matches!(classify(5, 1223, false, false), E::Cancelled));
+    assert_eq!(classify(5, 1223, false, false), F::Cancelled);
+    assert!(matches!(launch_error(F::Cancelled, true), E::Cancelled));
+
+    // The same prompt closed by a STANDARD account, which had no administrator to type in:
+    // silence there left them clicking Update into the same dead end every day.
+    assert_eq!(classify(5, 1223, false, true), F::NeedsAdmin);
+    assert!(matches!(launch_error(F::NeedsAdmin, false), E::Blocked(_)));
 
     // Same access-denied return, but nothing cancelled — a policy or scanner refusal.
     // This used to be reported as "cancelled at the Windows permission prompt" and then
     // silently discarded, which is the bug: the user saw nothing at all.
-    let blocked = classify(5, 0, false, false);
-    assert!(matches!(blocked, E::Blocked(_)));
-    assert!(!blocked.message().is_empty());
-    assert!(
-        !blocked.message().contains("cancel"),
-        "{}",
-        blocked.message()
-    );
+    assert_eq!(classify(5, 0, false, false), F::Refused);
+    assert!(matches!(launch_error(F::Refused, false), E::Blocked(_)));
 
     // The verified installer vanishing from %TEMP% between write and launch is a
-    // quarantine, whatever ShellExecute claims.
-    assert!(matches!(classify(5, 1223, true, false), E::Blocked(m) if m.contains("antivirus")));
-    assert!(matches!(classify(2, 0, false, false), E::Blocked(_))); // SE_ERR_FNF
-    assert!(matches!(classify(226, 226, false, false), E::Blocked(_))); // ERROR_VIRUS_DELETED
-
-    // Smart App Control is named only when it is actually enforcing.
-    assert!(classify(5, 0, false, true)
-        .message()
-        .contains("Smart App Control"));
-    assert!(!classify(5, 0, false, false)
-        .message()
-        .contains("Smart App Control"));
+    // quarantine, whatever ShellExecute claims (and whoever the user is).
+    assert_eq!(classify(5, 1223, true, true), F::AvRemoved);
+    assert_eq!(classify(2, 0, false, false), F::AvRemoved); // SE_ERR_FNF
+    assert_eq!(classify(226, 226, false, false), F::AvRemoved); // ERROR_VIRUS_DELETED
+    assert!(matches!(launch_error(F::AvRemoved, false), E::Blocked(_)));
 
     // A sharing violation is its own diagnosis now. It used to fall through to the
     // generic branch, which told the user to go find an administrator - for a file our
     // own write handle was holding shut.
-    let shared = classify(26, 0, false, false);
-    assert!(matches!(shared, E::Blocked(_)));
-    assert!(shared.message().contains("holding the downloaded update"));
-    assert!(!shared.message().contains("administrator"));
+    assert_eq!(classify(26, 0, false, false), F::Share);
+    assert!(matches!(launch_error(F::Share, false), E::Blocked(_)));
 
-    // Anything else is a plain failure, and it still says something out loud - without
-    // guessing at permissions, which is a cause the earlier branches already cover.
-    let other = classify(31, 0, false, false);
-    assert!(matches!(other, E::Failed(_)));
-    assert!(other.message().contains("error 31"));
-    assert!(other.message().contains("releases page"));
-    assert!(
-        !other.message().contains("administrator"),
-        "{}",
-        other.message()
-    );
+    // Anything else is a plain failure, by its code - without guessing at permissions,
+    // which is a cause the earlier branches already cover.
+    assert_eq!(classify(31, 0, false, true), F::Other(31));
+    assert!(matches!(launch_error(F::Other(31), false), E::Failed(_)));
 }
 
 #[test]

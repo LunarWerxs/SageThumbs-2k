@@ -68,9 +68,8 @@ const ID_LICENCE_STATE: i32 = 1207;
 const WM_ABOUT_CHECKED: u32 = WM_APP + 1;
 
 /// Posted from the download+install worker thread back to the About window: the
-/// one-click update attempt finished. `LPARAM` is
-/// `Box::into_raw(Box<Result<String, update::UpdateError>>)` — the handler reclaims it.
-/// `WPARAM` is unused. See [`start_install`]: this replaces calling
+/// one-click update attempt finished. `WPARAM` and `LPARAM` are unused: the result waits in
+/// `checker::INSTALL_RESULT`, never in the message. See [`start_install`]: this replaces calling
 /// `update::download_and_install` directly on the UI thread, which used to block the
 /// whole message loop (and everything else on it, including Settings behind it) for
 /// the entire multi-MB download.
@@ -145,6 +144,14 @@ struct About {
     /// bug `gh_icon` was already tracked to avoid. Freed in `WM_NCDESTROY`.
     logo_icon: Option<HBITMAP>,
     lw_icon: Option<HBITMAP>,
+}
+
+/// Block while a one-click update started from an About window is still downloading or
+/// launching. Its worker reports the outcome itself once the window is gone.
+pub(crate) fn wait_for_install() {
+    while INSTALL_IN_FLIGHT.load(std::sync::atomic::Ordering::Acquire) {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
 }
 
 /// Open the About box, owned by `parent`.
