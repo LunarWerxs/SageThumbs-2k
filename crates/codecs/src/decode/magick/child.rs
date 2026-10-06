@@ -87,6 +87,25 @@ pub(crate) fn await_magick_output(
     }
 }
 
+/// Read a decode child's PNG from its stdout to EOF, keeping at most `png_cap + 1` bytes (one
+/// past the cap, so the caller can tell an oversized answer from one exactly at it).
+///
+/// The buffer starts at a fixed [`CHILD_PNG_START`], not empty. From empty, `read_to_end`
+/// sizes its first allocation by whatever the first pipe read returned (a whole 32-byte probe,
+/// or less when the child's first write had not all arrived), and every growth step after that
+/// follows from it, so the same picture cost a different number of allocations from one run
+/// to the next. From a fixed start, the growth depends on the PNG's length alone.
+pub(crate) fn read_child_png(stdout: impl Read, png_cap: usize) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(CHILD_PNG_START);
+    let _ = stdout.take((png_cap + 1) as u64).read_to_end(&mut buf);
+    buf
+}
+
+/// [`read_child_png`]'s starting buffer: the size of the probe `read_to_end` makes into an empty
+/// buffer. With this much room it makes no such probe and doubles from here, through the sizes a
+/// whole first probe led to, so every PNG costs what it did in that common case.
+const CHILD_PNG_START: usize = 32;
+
 /// Read a child pipe to EOF but keep at most ~4 KiB so a flood of magick warnings
 /// can't balloon our memory; the captured head is plenty to diagnose a failure.
 pub(super) fn drain_capped<R: Read>(mut r: R) -> Vec<u8> {

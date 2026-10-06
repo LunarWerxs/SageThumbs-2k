@@ -469,8 +469,14 @@ codegen-units = 1
 [profile.release.package.rav1d]
 opt-level = 3
 
+# Debug builds also run it without debug assertions, i.e. the code every EXE ships. With them
+# on, rav1d checks each borrow of its shared frame buffers against every other live borrow,
+# recording them in vectors whose growth depends on how its worker threads interleave: the
+# same AVIF decode made 1184 to 1215 allocations, and a peak 512 bytes apart, from one run to
+# the next, which `codecs/tests/alloc_ceilings.rs` counts. Overflow checks stay on.
 [profile.dev.package.rav1d]
 opt-level = 3
+debug-assertions = false
 
 # The DjVu codec: its photo-page round-trip tests spend ~30 s of the lib suite in it unoptimised.
 [profile.dev.package.djvu-rs]

@@ -285,8 +285,14 @@ fn add_alpha(file: &Avif<'_>, id: u32, threads: u32, step: u32, canvas: &mut Can
         return;
     };
     let (w, h) = canvas.size();
-    let mut plane = vec![1.0f32; w as usize * h as usize];
+    // Made once the first alpha picture is in hand, when its decoder is gone, not before:
+    // beside the canvas and the decoder's own buffers it made the decode's peak (a 512x384
+    // picture as a 256 px thumbnail peaked at 774 KB, and peaks at 595 KB this way).
+    let mut plane = Vec::new();
     let mut paint = |frame: &av1::Frame, left: u32, top: u32| {
+        if plane.is_empty() {
+            plane = vec![1.0f32; w as usize * h as usize];
+        }
         let full = frame.sequence_colour().is_none_or(|c| c.full_range);
         yuv::convert_alpha(frame, full, step, |x, y, a| {
             let (x, y) = (x + left, y + top);

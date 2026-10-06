@@ -133,6 +133,9 @@ st2k_base = { package = "sagethumbs2k-base", path = "../base" }
 sevenz-rust2 = { version = "0.23", default-features = false, features = ["compress"] }
 # This crate's own tests decode AVIF in process whatever the features (see `decode/avif.rs`).
 rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
+# rav1d's own locks, the version it already brings: `tests/alloc_ceilings.rs` sets up their
+# process-wide table before it measures anything.
+parking_lot = "0.12"
 
 [features]
 # Test fixtures and seams the layers above use from their own tests (a crate's `cfg(test)`

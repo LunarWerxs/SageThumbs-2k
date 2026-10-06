@@ -520,10 +520,8 @@ pub(crate) fn child_frame_png(
     // stdin fed and stdout read on their own threads, so a full pipe can't deadlock us.
     let (tx, rx) = std::sync::mpsc::channel();
     let (writer, reader) =
-        st2k_base::safety::start_child_pipes(&mut child, input.to_vec(), move |mut stdout| {
-            let mut buf = Vec::new();
-            let _ = std::io::Read::take(&mut stdout, (png_cap + 1) as u64).read_to_end(&mut buf);
-            let _ = tx.send(buf);
+        st2k_base::safety::start_child_pipes(&mut child, input.to_vec(), move |stdout| {
+            let _ = tx.send(crate::decode::read_child_png(stdout, png_cap));
         })?;
 
     let png = crate::decode::await_child_output(&mut child, &rx, cpu_budget, wall_ceiling);

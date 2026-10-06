@@ -35,16 +35,55 @@ pub fn debug_logging_on() -> bool {
     let packed = CACHE.load(Ordering::Relaxed);
     let last_ms = packed >> 1;
     if packed == 0 || now_ms.wrapping_sub(last_ms) >= DEBUG_TTL_MS {
-        let fresh = CURRENT_USER
-            .open(crate::settings::ROOT)
-            .and_then(|k| k.get_u32("Debug"))
-            .map(|v| v == 1)
-            .unwrap_or(false);
+        let fresh = read_debug_flag();
         CACHE.store((now_ms << 1) | (fresh as u64), Ordering::Relaxed);
         fresh
     } else {
         packed & 1 != 0
     }
+}
+
+/// The registry read behind [`debug_logging_on`], with no heap allocation: the key path and
+/// value name are UTF-16 constants and the DWORD lands on the stack. The refresh runs on
+/// whichever thread first finds the cache stale, once a second, in the middle of whatever
+/// that thread is doing; the `windows_registry` helpers it used before built their wide
+/// strings on the heap, five allocations dropped into a random decode
+/// (`codecs/tests/alloc_ceilings.rs` counts every one).
+fn read_debug_flag() -> bool {
+    use windows::core::PCWSTR;
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+    const KEY: [u16; crate::settings::ROOT.len() + 1] = ascii_wide(crate::settings::ROOT);
+    const VALUE: [u16; 6] = ascii_wide("Debug");
+    let mut value = 0u32;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    // SAFETY: both names are NUL-terminated constants, and `value`/`size` describe one live DWORD.
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            PCWSTR(KEY.as_ptr()),
+            PCWSTR(VALUE.as_ptr()),
+            RRF_RT_REG_DWORD,
+            None,
+            Some((&mut value as *mut u32).cast::<c_void>()),
+            Some(&mut size),
+        )
+    };
+    status.is_ok() && value == 1
+}
+
+/// `s` as NUL-terminated UTF-16, at compile time. `N` is `s.len() + 1`; a non-ASCII `s`
+/// fails the build.
+const fn ascii_wide<const N: usize>(s: &str) -> [u16; N] {
+    let b = s.as_bytes();
+    assert!(b.len() + 1 == N, "N is the length plus the terminator");
+    let mut out = [0u16; N];
+    let mut i = 0;
+    while i < b.len() {
+        assert!(b[i].is_ascii(), "ASCII only");
+        out[i] = b[i] as u16;
+        i += 1;
+    }
+    out
 }
 
 /// Append a line to `%LOCALAPPDATA%\SageThumbs2K.log`. Handlers run inside

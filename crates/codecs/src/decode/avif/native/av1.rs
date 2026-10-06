@@ -14,6 +14,8 @@ use rav1d::src::lib::{
 };
 use std::mem::MaybeUninit;
 use std::ptr::NonNull;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use super::super::container::Nclx;
 
@@ -127,8 +129,30 @@ pub(super) fn decode(obus: &[u8], threads: u32, max_pixels: u32) -> Option<Frame
             return None;
         }
         let frame = receive(ctx, obus);
-        dav1d_close(NonNull::new(&mut ctx));
+        close(ctx);
         frame
+    }
+}
+
+/// Close a decoder and free it on this thread, once its worker threads have let go of it.
+///
+/// `dav1d_close` only tells rav1d's workers to stop (dav1d's own close joins them). Each holds
+/// the decoder until it has stopped, and the last one frees the decoder with its frame buffers
+/// and task queues (some 170 KB for a 512x384 picture) on its own thread, whenever it gets
+/// there: in the middle of whatever this thread does next. Holding a reference of our own
+/// through the close leaves that free to us. The wait is bounded like `spawn_budgeted`'s, for a
+/// worker the OS holds up; past it the decoder is freed by whichever thread lets go last.
+unsafe fn close(ctx: Option<Dav1dContext>) {
+    const WORKERS_WAIT: Duration = Duration::from_millis(500);
+    let Some(raw) = ctx else { return };
+    // `raw` is `dav1d_open`'s and used for nothing after this: the one reference it held goes
+    // to `dav1d_close` below, and `ours` is a second.
+    let decoder = raw.into_arc();
+    let ours = Arc::clone(&decoder);
+    dav1d_close(NonNull::new(&mut Some(Dav1dContext::from_arc(decoder))));
+    let start = Instant::now();
+    while Arc::strong_count(&ours) > 1 && start.elapsed() < WORKERS_WAIT {
+        std::thread::yield_now();
     }
 }
 

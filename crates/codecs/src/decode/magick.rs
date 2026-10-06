@@ -15,8 +15,8 @@ mod child;
 mod scratch;
 pub(super) use budget::add_magick_limits;
 pub(crate) use budget::Fidelity;
-pub(crate) use child::await_magick_output;
 use child::*;
+pub(crate) use child::{await_magick_output, read_child_png};
 pub use encode::{
     encode_via_magick, encode_via_magick_png, magick_output_extensions, magick_output_supported,
     magick_png_bytes,
@@ -438,11 +438,9 @@ fn decode_via_magick_spec_alloc(
     let (tx, rx) = std::sync::mpsc::channel();
     let Some((writer, reader)) =
         st2k_base::safety::start_child_pipes(&mut child, bytes.to_vec(), move |stdout| {
-            let mut buf = Vec::new();
             // Capped so a hostile/misbehaving child can't balloon our memory before the
             // CPU/wall watchdog below gets a chance to kill it (see MAGICK_PNG_CAP).
-            let _ = stdout.take((png_cap + 1) as u64).read_to_end(&mut buf);
-            let _ = tx.send(buf);
+            let _ = tx.send(read_child_png(stdout, png_cap));
         })
     else {
         st2k_base::safety::log_debug("magick decode: the child's pipes or pipe threads failed");

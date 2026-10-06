@@ -28,36 +28,65 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
 use std::time::Instant;
 
-static LIVE: AtomicUsize = AtomicUsize::new(0);
-static PEAK: AtomicUsize = AtomicUsize::new(0);
-static COUNT: AtomicUsize = AtomicUsize::new(0);
+/// Live bytes, signed: a counted thread freeing what the uncounted harness allocated takes it
+/// below its true value, harmlessly, since a peak is measured from where its decode started.
+static LIVE: AtomicIsize = AtomicIsize::new(0);
+static PEAK: AtomicIsize = AtomicIsize::new(0);
+/// Allocations made on the measuring thread, and on every other thread (a decoder's own
+/// workers, a child process's pipe threads): their sum is the banked count.
+static ON_THREAD: AtomicUsize = AtomicUsize::new(0);
+static OFF_THREAD: AtomicUsize = AtomicUsize::new(0);
 static TOTAL: AtomicUsize = AtomicUsize::new(0);
+/// Set once the test starts measuring; a thread that had allocated before then is the harness's.
+static STARTED: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
-    /// Set on the helper thread that keeps the Debug-flag cache warm; its allocations are not
-    /// counted (const-initialised and destructor-free, so reading it never allocates).
-    static UNCOUNTED: Cell<bool> = const { Cell::new(false) };
+    /// Set on the thread that runs the decodes. Both are const-initialised and destructor-free,
+    /// so reading them never allocates, even while a thread is being torn down.
+    static MEASURING: Cell<bool> = const { Cell::new(false) };
+    /// Whether this thread first allocated before the test started measuring: the test
+    /// harness's own threads, never a decode's. libtest's main thread prints "has been running
+    /// for over 60 seconds" once a slow run passes the minute, two allocations that landed in
+    /// whichever format was being measured. Decodes run on the measuring thread and on threads
+    /// they start, all of which first allocate after `STARTED`.
+    static HARNESS: Cell<Option<bool>> = const { Cell::new(None) };
 }
 
 struct Counting;
 
 impl Counting {
     #[inline]
+    fn harness() -> bool {
+        HARNESS.with(|h| match h.get() {
+            Some(harness) => harness,
+            None => {
+                let harness = !STARTED.load(Ordering::Relaxed);
+                h.set(Some(harness));
+                harness
+            }
+        })
+    }
+
+    /// Whether this thread's allocations are counted: everything but the harness's.
+    #[inline]
     fn counted() -> bool {
-        !UNCOUNTED.with(Cell::get)
+        MEASURING.with(Cell::get) || !Counting::harness()
     }
 
     #[inline]
     fn grew(by: usize) {
-        if !Counting::counted() {
+        if MEASURING.with(Cell::get) {
+            ON_THREAD.fetch_add(1, Ordering::Relaxed);
+        } else if Counting::harness() {
             return;
+        } else {
+            OFF_THREAD.fetch_add(1, Ordering::Relaxed);
         }
-        COUNT.fetch_add(1, Ordering::Relaxed);
         TOTAL.fetch_add(by, Ordering::Relaxed);
-        let live = LIVE.fetch_add(by, Ordering::Relaxed) + by;
+        let live = LIVE.fetch_add(by as isize, Ordering::Relaxed) + by as isize;
         PEAK.fetch_max(live, Ordering::Relaxed);
     }
 }
@@ -79,7 +108,7 @@ unsafe impl GlobalAlloc for Counting {
     }
     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
         if Counting::counted() {
-            LIVE.fetch_sub(l.size(), Ordering::Relaxed);
+            LIVE.fetch_sub(l.size() as isize, Ordering::Relaxed);
         }
         unsafe { System.dealloc(p, l) }
     }
@@ -89,7 +118,7 @@ unsafe impl GlobalAlloc for Counting {
             if new >= l.size() {
                 Counting::grew(new - l.size());
             } else if Counting::counted() {
-                LIVE.fetch_sub(l.size() - new, Ordering::Relaxed);
+                LIVE.fetch_sub((l.size() - new) as isize, Ordering::Relaxed);
             }
         }
         q
@@ -132,8 +161,13 @@ fn seed_cmd() -> String {
     )
 }
 
-/// Run-to-run noise that is not a regression: a few allocations from other threads (the
-/// in-process AV1 decoder's pool, WinRT async) and a percent of pixels. Peak bytes stay exact.
+/// Room for run-to-run noise that is not a regression. None is known: every source found
+/// (a Debug-flag registry read mid-decode, rav1d's debug-build borrow tracking, rav1d's workers
+/// freeing their decoder after it was closed, threads racing to create parking_lot's table,
+/// the first chunk of a child's pipe sizing its read buffer, a worker still exiting after it
+/// answered, the harness's 60-second notice) was removed where it came from, and every count
+/// repeated exactly in 30 runs beside a workspace build. A format that moves inside this band
+/// deserves the same hunt. Peak bytes have none.
 fn allocs_slack(banked: usize) -> usize {
     (banked * 3 / 100).max(4)
 }
@@ -149,19 +183,22 @@ struct Cost {
     pixels: usize,
 }
 
+/// The decode's cost, and how many of its allocations were made off the measuring thread.
 /// `None` when the decode returned an error: a failed decode's few bytes are not a ceiling.
-fn measure(bytes: &[u8]) -> Option<Cost> {
+fn measure(bytes: &[u8]) -> Option<(Cost, usize)> {
     let base = LIVE.load(Ordering::Relaxed);
     PEAK.store(base, Ordering::Relaxed);
-    COUNT.store(0, Ordering::Relaxed);
+    ON_THREAD.store(0, Ordering::Relaxed);
+    OFF_THREAD.store(0, Ordering::Relaxed);
     TOTAL.store(0, Ordering::Relaxed);
     let out = st2k_codecs::decode::decode_thumbnail_opts(bytes, CX, false);
+    let off_thread = OFF_THREAD.load(Ordering::Relaxed);
     let cost = Cost {
-        allocs: COUNT.load(Ordering::Relaxed),
-        peak: PEAK.load(Ordering::Relaxed).saturating_sub(base),
+        allocs: ON_THREAD.load(Ordering::Relaxed) + off_thread,
+        peak: (PEAK.load(Ordering::Relaxed) - base).max(0) as usize,
         pixels: TOTAL.load(Ordering::Relaxed) / 4 * 100 / (CX as usize * CX as usize),
     };
-    out.ok().map(|_| cost)
+    out.ok().map(|_| (cost, off_thread))
 }
 
 fn read_ceilings() -> BTreeMap<String, Cost> {
@@ -193,29 +230,63 @@ fn write_ceilings(all: &BTreeMap<String, Cost>) {
     std::fs::write(ceilings_path(), out).expect("write ceilings");
 }
 
-/// Our own decoders only (no ImageMagick subprocess, no Media Foundation), and the Debug-flag
-/// cache kept warm. `log_debug` re-reads the Debug registry flag whenever its 1 s cache is
-/// stale, ~5 allocations that would land in whichever window the expiry falls in (a slow decode,
-/// or bad luck). A helper thread, not counted, refreshes the cache every 200 ms so it is never
-/// stale. Detached on purpose: it dies with the test process.
+/// Our own decoders only (no ImageMagick subprocess, no Media Foundation), on this thread,
+/// with parking_lot's process-wide table already in place ([`warm_parking_lot`]).
+///
+/// Also proves the Debug-flag refresh allocates nothing. `log_debug` re-reads the flag from
+/// the registry on whichever thread finds its 1 s cache stale, so any allocation in that read
+/// lands in whichever decode the expiry falls in: 5 of them once did, failing `kdc` and `ts`
+/// at random on a loaded machine. The process's first read always goes to the registry (the
+/// cache starts empty), so it is counted here.
 fn prepare_environment() {
+    warm_parking_lot();
+    MEASURING.with(|m| m.set(true));
+    STARTED.store(true, Ordering::Relaxed);
     #[allow(unused_unsafe)]
     unsafe {
         std::env::set_var("ST2K_NO_MAGICK", "1");
         std::env::set_var("ST2K_NO_MF", "1");
     }
-    if st2k_base::safety::debug_logging_on() {
+    let before = ON_THREAD.load(Ordering::Relaxed);
+    let debug = st2k_base::safety::debug_logging_on();
+    let refresh = ON_THREAD.load(Ordering::Relaxed) - before;
+    assert_eq!(
+        refresh, 0,
+        "the Debug-flag registry read allocated {refresh} times; it runs mid-decode once a second"
+    );
+    if debug {
         println!(
             "NOTE: HKCU Debug=1 is set; log writes add allocations, numbers are not comparable"
         );
     }
-    std::thread::spawn(|| {
-        UNCOUNTED.with(|u| u.set(true));
-        loop {
-            st2k_base::safety::debug_logging_on();
-            std::thread::sleep(std::time::Duration::from_millis(200));
-        }
-    });
+}
+
+/// rav1d's locks are parking_lot's, which keeps one process-wide table of parked threads:
+/// created by the first thread to park, grown (never shrunk) when more park at once than it
+/// was sized for. The first AVIF decode's threads parked together and raced to create it, and
+/// each loser allocated a table and freed it again, three allocations per loser, as many as
+/// the scheduler made. Sixteen threads parked at once create it and size it here, before
+/// anything is measured; a decode's four workers never grow it again.
+fn warm_parking_lot() {
+    const THREADS: usize = 16;
+    let all_parked = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
+    let threads: Vec<_> = (0..THREADS)
+        .map(|_| {
+            let all_parked = all_parked.clone();
+            std::thread::spawn(move || {
+                let lock = parking_lot::Mutex::new(());
+                let mut guard = lock.lock();
+                // Nothing notifies it: the wait parks and times out, and from then on this
+                // thread has its slot in the table until it exits, after the barrier.
+                parking_lot::Condvar::new()
+                    .wait_for(&mut guard, std::time::Duration::from_millis(1));
+                all_parked.wait();
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().expect("parking_lot warm-up thread");
+    }
 }
 
 #[derive(Default)]
@@ -226,8 +297,10 @@ struct Verdicts {
 }
 
 impl Verdicts {
-    /// Compare one measured format with its banked ceiling.
-    fn judge(&mut self, ext: &'static str, c: Cost, banked: Option<&Cost>) {
+    /// Compare one measured format with its banked ceiling. `off_thread` (how many of its
+    /// allocations other threads made) goes into a failure only: which thread of a decoder's
+    /// pool makes a shared allocation varies run to run, the sum does not.
+    fn judge(&mut self, ext: &'static str, c: Cost, off_thread: usize, banked: Option<&Cost>) {
         match banked {
             None => self.unseeded.push(ext),
             Some(b)
@@ -235,8 +308,9 @@ impl Verdicts {
                     || c.peak > b.peak
                     || c.pixels > b.pixels + pixels_slack(b.pixels) =>
             {
-                self.rose
-                    .push(format!("{ext}: {c:?} exceeds ceiling {b:?}"));
+                self.rose.push(format!(
+                    "{ext}: {c:?} exceeds ceiling {b:?} ({off_thread} allocs off the measuring thread)"
+                ));
             }
             Some(b)
                 if c.allocs + allocs_slack(b.allocs) < b.allocs
@@ -298,7 +372,7 @@ fn thumbnail_allocation_ceilings() {
         let t = Instant::now();
         let c = measure(&bytes);
         let ms = t.elapsed().as_millis();
-        let Some(c) = c else {
+        let Some((c, off_thread)) = c else {
             println!("{ext}: decode failed without ImageMagick / Media Foundation ({ms} ms)");
             if banked.contains_key(*ext) {
                 v.rose
@@ -312,7 +386,7 @@ fn thumbnail_allocation_ceilings() {
             c.allocs, c.peak, c.pixels
         );
         now.insert(ext.to_string(), c);
-        v.judge(ext, c, banked.get(*ext));
+        v.judge(ext, c, off_thread, banked.get(*ext));
     }
 
     if !not_measured.is_empty() {

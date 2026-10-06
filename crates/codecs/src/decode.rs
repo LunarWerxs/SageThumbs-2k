@@ -164,6 +164,7 @@ pub(crate) use magick::Fidelity;
 pub(crate) use magick::await_magick_output as await_child_output;
 #[cfg(test)]
 use magick::metafile_min_density;
+pub(crate) use magick::read_child_png;
 use magick::{decode_named_extension, has_name_selected_coder};
 use magick::{decode_psd_composite, decode_via_magick_capped};
 

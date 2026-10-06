@@ -79,7 +79,9 @@ where
 /// create the thread — the two are collapsed on purpose: a timed-out worker cannot be cancelled
 /// safely (there is no way to abort a thread mid-decode/mid-probe), so either way the caller is
 /// blocked for at most `timeout` and gets nothing back. A worker that times out keeps running —
-/// it sends into a now-dropped channel (the send simply errors) and exits on its own.
+/// it sends into a now-dropped channel (the send simply errors) and exits on its own. One that
+/// answers in time is waited for until its thread has exited (bounded by
+/// `WORKER_EXIT_WAIT_MS`), so a call that returns a result leaves nothing of itself running.
 ///
 /// The DLL pin happens BEFORE spawning, not as `op`'s first line: a `Builder::spawn` that fails
 /// to create the OS thread never runs `op` at all, and pinning only on entry would leave a
@@ -140,13 +142,36 @@ where
         });
     // The OS refusing a new thread is the same terminal state as a timeout: no result, and
     // (per the doc above) any guard `op` captured has already been dropped by `spawn` itself.
-    worker.ok()?;
+    let worker = worker.ok()?;
     match rx.recv_timeout(timeout) {
-        Ok(r) => Some(r),
+        Ok(r) => {
+            await_exit(worker);
+            Some(r)
+        }
         Err(_) => {
             ticket.caller_gave_up();
             None
         }
+    }
+}
+
+/// How long a [`spawn_budgeted`] call that has its result waits for the worker to exit. After
+/// sending, the worker still drops what it holds (its sender, its half of the ticket, the DLL
+/// pin) and tears its thread down: microseconds, but unwaited that runs, and frees memory,
+/// under whatever the caller does next. Bounded, because the OS can hold an exiting thread up
+/// (DLL detach notifications run under the loader lock), and a caller that already has its
+/// result must not wait on that.
+const WORKER_EXIT_WAIT_MS: u32 = 500;
+
+/// Join `worker` if it exits within [`WORKER_EXIT_WAIT_MS`]; otherwise let it finish detached.
+fn await_exit<T>(worker: std::thread::JoinHandle<T>) {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
+    use windows::Win32::System::Threading::WaitForSingleObject;
+    // SAFETY: the handle is `worker`'s own, open for as long as `worker` is alive.
+    let wait = unsafe { WaitForSingleObject(HANDLE(worker.as_raw_handle()), WORKER_EXIT_WAIT_MS) };
+    if wait == WAIT_OBJECT_0 {
+        let _ = worker.join();
     }
 }
 
