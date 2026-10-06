@@ -28,7 +28,10 @@
 # LEFT behind (reproduced 2026-10-06): the shell extension renamed to `.old<N>`, still mapped,
 # and its own name empty, because the rollback never put it back. Baseline and upgrade are the
 # same version here, so "the DLL is version X afterwards" cannot tell a replaced DLL from an
-# untouched one; "the DLL exists afterwards" can, and it is what the user needs.
+# untouched one; "the DLL exists afterwards" can, and it is what the user needs. The pinned file
+# can only be queued for the restart, so -Hold then also proves setup reports it, and that a
+# second update before that restart cancels the first one's queued copy (which would otherwise
+# put the older file back at the restart).
 #
 # Elevation: the launched setup elevates via the `runas` verb. On GitHub-hosted runners and
 # on dev boxes with silent admin consent this shows no prompt. It INSTALLS/UPGRADES the
@@ -187,6 +190,36 @@ try {
             throw "The upgrade landed by KILLING the SYSTEM holder: setup must park held files, never close their holders. Setup's log ends:`n$(Get-SetupLogTail)"
         }
         Write-Host '  [self-update] -Hold: upgrade landed with every holder still running' -ForegroundColor Green
+        # The pinned file could not even be renamed, so setup queued it for the restart. Setup
+        # must SAY so (StaleAfterInstall reads Windows' rename queue): it is what makes the
+        # --updated toast ask for the restart instead of claiming the update is done.
+        $pinnedName = Split-Path -Leaf $pinned
+        $log = if (Test-Path -LiteralPath $setupLog) { Get-Content -LiteralPath $setupLog -Raw } else { '' }
+        if ($log -notmatch "Stale after install: $([regex]::Escape($pinnedName)) is queued") {
+            throw "Setup did not report $pinnedName as waiting for a restart. Setup's log ends:`n$(Get-SetupLogTail)"
+        }
+        Write-Host "  [self-update] -Hold: setup reported $pinnedName as waiting for the restart" -ForegroundColor Green
+
+        # A SECOND update before that restart: the queued copy is the FIRST update's, and if it
+        # still ran at the restart it would put that older file back over the second update's.
+        # Setup must cancel it once its own files are in.
+        Stop-Holders
+        $t1 = (Get-Date).ToUniversalTime()
+        $p = Start-Process -FilePath $App -ArgumentList '--update-selftest', "`"$Setup`"" -Wait -PassThru
+        if ($p.ExitCode) { throw "The second --update-selftest exited $($p.ExitCode)." }
+        $deadline = (Get-Date).AddSeconds($TimeoutSec)
+        $again = $false
+        while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 3
+            $unins = Get-Item -LiteralPath $uninsDat -ErrorAction SilentlyContinue
+            if ($unins -and $unins.LastWriteTimeUtc -gt $t1) { $again = $true; break }
+        }
+        if (-not $again) { throw "The second update did not land within ${TimeoutSec}s. Setup's log ends:`n$(Get-SetupLogTail)" }
+        $log = Get-Content -LiteralPath $setupLog -Raw
+        if ($log -notmatch "Cancelled the restart-time replacement of .*$([regex]::Escape($pinnedName)) queued by an earlier setup") {
+            throw "The second update left the first update's restart-time copy of $pinnedName queued: the restart would put the older file back. Setup's log ends:`n$(Get-SetupLogTail)"
+        }
+        Write-Host "  [self-update] -Hold: the second update cancelled the first one's queued $pinnedName" -ForegroundColor Green
     }
 } finally {
     if ($Hold) { Stop-Holders }

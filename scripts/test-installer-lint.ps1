@@ -502,7 +502,7 @@ try {
 
     $missingCorePolicy = Join-Path $scratch 'missing-core-policy.iss'
     $needle =
-        'Source: "{#StageDir}\policy.xml"; DestDir: "{app}"; Flags: ignoreversion'
+        'Source: "{#StageDir}\policy.xml"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete'
     $mutated = $source.Replace($needle, '')
     if ($mutated -ceq $source) { throw 'test mutation did not remove core policy mapping' }
     Set-Content -LiteralPath $missingCorePolicy -Value $mutated -Encoding utf8
@@ -512,9 +512,9 @@ try {
 
     $duplicatePolicy = Join-Path $scratch 'duplicate-policy.iss'
     $needle =
-        'Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion restartreplace recursesubdirs createallsubdirs'
+        'Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion restartreplace uninsrestartdelete recursesubdirs createallsubdirs'
     $replacement =
-        'Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Flags: ignoreversion restartreplace recursesubdirs createallsubdirs'
+        'Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete recursesubdirs createallsubdirs'
     $mutated = $source.Replace($needle, $replacement)
     if ($mutated -ceq $source) { throw 'test mutation did not remove policy exclusion' }
     Set-Content -LiteralPath $duplicatePolicy -Value $mutated -Encoding utf8
@@ -530,6 +530,24 @@ try {
     Set-Content -LiteralPath $noBackstop -Value $mutated -Encoding utf8
     Assert-LintFails 'app EXE row without the restartreplace backstop' {
         Invoke-InstallerLint -IssPath $noBackstop
+    }
+
+    # A non-image file is held just the same (a scanner on the icon, magick.exe on policy.xml).
+    $iconNoBackstop = Join-Path $scratch 'icon-no-restartreplace.iss'
+    $needle = 'Source: "{#StageDir}\app.ico"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete'
+    $mutated = $source.Replace($needle, 'Source: "{#StageDir}\app.ico"; DestDir: "{app}"; Flags: ignoreversion uninsrestartdelete')
+    if ($mutated -ceq $source) { throw 'test mutation did not remove the icon restartreplace' }
+    Set-Content -LiteralPath $iconNoBackstop -Value $mutated -Encoding utf8
+    Assert-LintFails 'icon row without the restartreplace backstop' {
+        Invoke-InstallerLint -IssPath $iconNoBackstop
+    }
+
+    $cancellable = Join-Path $scratch 'cancel-during-install.iss'
+    $mutated = $source.Replace('AllowCancelDuringInstall=no', 'AllowCancelDuringInstall=yes')
+    if ($mutated -ceq $source) { throw 'test mutation did not re-enable Cancel during install' }
+    Set-Content -LiteralPath $cancellable -Value $mutated -Encoding utf8
+    Assert-LintFails 'Cancel allowed while files are written' {
+        Invoke-InstallerLint -IssPath $cancellable
     }
 
     $restartManager = Join-Path $scratch 'restart-manager-on.iss'

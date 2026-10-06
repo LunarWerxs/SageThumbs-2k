@@ -137,6 +137,12 @@ MinVersion=10.0
 ; parks every held file aside instead (SwapAsideHeldFiles), which needs nobody closed, and the
 ; `restartreplace` flags in [Files] are the backstop for a file it cannot rename.
 CloseApplications=no
+; NO CANCEL ONCE FILES ARE BEING WRITTEN. Inno's rollback cannot undo [InstallDelete] and only
+; deletes what it wrote into an empty name, so a Cancel mid-copy left an upgrade on the old
+; version with the whole ImageMagick engine (magick.exe, its DLLs, modules\, policy.xml) gone,
+; and every format that needs it failing until a later update landed. The install takes
+; seconds; the wizard pages before it can still be cancelled.
+AllowCancelDuringInstall=no
 ; Always write a setup log (%TEMP%\Setup Log <date> #NNN.txt), whoever launched setup and with
 ; whatever switches: an update launched by an older app passes no /LOG, and a failed install
 ; with no log is the reason #60 had to be guessed at. The app's own updater also passes /LOG
@@ -210,39 +216,42 @@ Type: files; Name: "{app}\SageThumbs2K.cer"
 ; leave it behind. See issue #15.
 ;
 ; EVERY row that ships a program file carries `restartreplace` for the same reason (issue #60):
-; SwapAsideHeldFiles parks whatever is held, and a file it could not rename (a handle opened
-; without delete sharing, as a scanner holds one) must cost a restart, never the whole install.
-; Without the flag Inno asks Abort/Retry/Ignore about that file, and a silent update answers
-; Abort and rolls everything back.
+; SwapAsideHeldFiles parks held EXEs and DLLs, and any file it could not rename (a handle opened
+; without delete sharing, as a scanner holds one) or does not park (the icon, policy.xml and the
+; other non-image files, which a scanner or a running magick.exe can hold just the same) must
+; cost a restart, never the whole install. Without the flag Inno asks Abort/Retry/Ignore about
+; that file, and an update launched by 3.6.0 or older (/SUPPRESSMSGBOXES) answers Abort and
+; rolls everything back. Every row also carries `uninsrestartdelete`, so an uninstall that meets
+; a held file removes it at the next restart instead of leaving it in Program Files for good.
 Source: "{#StageDir}\{#AppDll}"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
-Source: "{#StageDir}\st2k.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace skipifsourcedoesntexist
-Source: "{#StageDir}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion restartreplace
+Source: "{#StageDir}\st2k.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete skipifsourcedoesntexist
+Source: "{#StageDir}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
 ; The Open/Save-dialog selection reader. NOT a shell extension and never registered: the app
 ; loads it on demand, into the dialog's own process, for one question. Absent = the app simply
 ; has no dialog support, which is why this row is skipifsourcedoesntexist.
-Source: "{#StageDir}\st2k_dlghook.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace skipifsourcedoesntexist
+Source: "{#StageDir}\st2k_dlghook.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete skipifsourcedoesntexist
 ; Signed sparse package -> the Windows 11 modern context menu. Built by
 ; scripts\packaging\make-msix.ps1 (skipped with -NoModernMenu). A release build signs it with
 ; the real publisher certificate and ships NO .cer; a self-signed development build ships the
 ; public .cer beside it, which the [Run] step below trusts. Both rows are
 ; skipifsourcedoesntexist for exactly that reason.
-Source: "{#StageDir}\SageThumbs2K.msix"; DestDir: "{app}"; Flags: ignoreversion restartreplace skipifsourcedoesntexist
-Source: "{#StageDir}\SageThumbs2K.cer"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#StageDir}\SageThumbs2K.msix"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete skipifsourcedoesntexist
+Source: "{#StageDir}\SageThumbs2K.cer"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete skipifsourcedoesntexist
 ; Branding assets: icon (shortcut/uninstall) + swappable logo/banner overrides.
-Source: "{#StageDir}\app.ico"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "{#StageDir}\logo.png"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "{#StageDir}\banner.png"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "{#StageDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "{#StageDir}\LICENSE*"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#StageDir}\app.ico"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete skipifsourcedoesntexist
+Source: "{#StageDir}\logo.png"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete skipifsourcedoesntexist
+Source: "{#StageDir}\banner.png"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete skipifsourcedoesntexist
+Source: "{#StageDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete skipifsourcedoesntexist
+Source: "{#StageDir}\LICENSE*"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete skipifsourcedoesntexist
 ; The hardened policy ships unconditionally, ahead of the engine it constrains. The decoder
 ; can fall back to a separately-installed Program Files ImageMagick if our bundled one is
 ; missing or unusable, and that copy must be constrained too - so this row must NOT become
 ; conditional on the engine payload. The bundle's duplicate copy exists for exact staged
 ; testing and is excluded from the engine row below.
-Source: "{#StageDir}\policy.xml"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StageDir}\policy.xml"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
 ; Bundled ImageMagick (magick.exe + DLLs + modules\).
 #if CompactOnly == "0"
-Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion restartreplace recursesubdirs createallsubdirs
+Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion restartreplace uninsrestartdelete recursesubdirs createallsubdirs
 #endif
 
 [Dirs]
@@ -470,9 +479,12 @@ Filename: "{app}\{#AppExe}"; Description: "Open SageThumbs 2K Settings"; \
 ; silent - no skipifsilent here, deliberately). runasoriginaluser is LOAD-BEARING: without
 ; it this runs in the ELEVATED setup context, and the daemon it heals would inherit that
 ; elevation - a non-elevated Settings window is then UIPI-blocked from ever posting
-; WM_RELOAD to it, so later hotkey changes would silently stop applying.
-Filename: "{app}\{#AppExe}"; Parameters: "--updated {#AppVer}"; \
-  Flags: nowait runasoriginaluser; Check: WasSelfUpdate and ConsoleUserStep('--updated {#AppVer}')
+; WM_RELOAD to it, so later hotkey changes would silently stop applying. UpdatedParams adds
+; --restart-pending when a file of this install waits for a restart: the running EXE can be the
+; new one while the shell extension or an ImageMagick file is not yet, and "you're now on
+; <ver>" would then be untrue until the restart.
+Filename: "{app}\{#AppExe}"; Parameters: "{code:UpdatedParams}"; \
+  Flags: nowait runasoriginaluser; Check: WasSelfUpdate and UpdatedStep
 ; Restart the resident hotkey daemon after EVERY install, silent or not: the setup killed
 ; it (PrepareToInstall / Restart Manager) to replace the EXE, and nothing else brings it
 ; back until the next logon - a user whose hotkeys are on would otherwise find them dead
@@ -557,11 +569,139 @@ function SetEnvironmentVariableW(lpName, lpValue: String): BOOL;
 // that parameter is a Cardinal and the call passes 0.
 function MoveFileExW(lpExistingFileName: String; lpNewFileName: Cardinal; dwFlags: DWORD): BOOL;
   external 'MoveFileExW@kernel32.dll stdcall';
+// Which session this setup runs in, for PrepareToInstall's taskkill. Boolean, not BOOL, for the
+// reason WTSQuerySessionInformationW below gives.
+function ProcessIdToSessionId(dwProcessId: DWORD; var pSessionId: DWORD): Boolean;
+  external 'ProcessIdToSessionId@kernel32.dll stdcall';
+function GetCurrentProcessId(): DWORD;
+  external 'GetCurrentProcessId@kernel32.dll stdcall';
+function WTSGetActiveConsoleSessionId(): DWORD;
+  external 'WTSGetActiveConsoleSessionId@kernel32.dll stdcall';
 const
   MOVEFILE_DELAY_UNTIL_REBOOT = 4;
 // Set by PrepareToInstall (the last moment it is knowable) and read by IsUpgrade.
 var
   WasUpgrade: Boolean;
+  // ssPostInstall was reached: every file is written. SettleParkedFiles reads it.
+  InstallCompleted: Boolean;
+  // The restart-time replacements under {app} that were already queued when this setup started
+  // (PendingReplacesUnder pairs), read by StaleAfterInstall and cleared by ssPostInstall.
+  EarlierPending: TArrayOfString;
+
+// ---- replacements Windows makes at the next restart ---------------------------------------
+//
+// A file [Files] could not replace (held without delete sharing) is written beside its target
+// and queued for a rename when Windows next starts (`restartreplace`). Until that restart the
+// queue still holds the OLD setup's copy. A second update before the restart overwrote the file
+// in place, and the restart then put the earlier version back on top of it: a newer EXE with an
+// older DLL or ImageMagick module, registered and reported as the newer version. An uninstall
+// before the restart had the restart recreate the file in Program Files.
+
+// One entry of Windows' rename list as a plain path: the "*<digits>" mark recent Windows puts in
+// front, then the "!" a replace-existing rename's destination carries (Replace says whether it
+// was there), then the "\??\" device prefix.
+function RenameEntryPath(const Entry: String; var Replace: Boolean): String;
+var
+  i: Integer;
+begin
+  Result := Entry;
+  if (Result <> '') and (Result[1] = '*') then
+  begin
+    i := 2;
+    while (i <= Length(Result)) and (Result[i] >= '0') and (Result[i] <= '9') do
+      i := i + 1;
+    Result := Copy(Result, i, Length(Result));
+  end;
+  Replace := (Result <> '') and (Result[1] = '!');
+  if Replace then
+    Result := Copy(Result, 2, Length(Result));
+  if Copy(Result, 1, 4) = '\??\' then
+    Result := Copy(Result, 5, Length(Result));
+end;
+
+// The queued restart-time replacements whose target is a file under Dir, as pairs: the waiting
+// copy at an even index, the file it replaces after it. A replace's source is the entry right
+// before its "!" destination whatever else the list holds, so the pairing never depends on how
+// the delete-only entries (an empty destination) come back from the registry.
+function PendingReplacesUnder(const Dir: String): TArrayOfString;
+var
+  Names: TArrayOfString;
+  V, E, Prev, Under: String;
+  i, P, n: Integer;
+  Replace: Boolean;
+begin
+  SetArrayLength(Result, 0);
+  Under := Lowercase(AddBackslash(Dir));
+  SetArrayLength(Names, 2);
+  Names[0] := 'PendingFileRenameOperations';
+  Names[1] := 'PendingFileRenameOperations2';
+  for i := 0 to 1 do
+    if RegQueryMultiStringValue(HKEY_LOCAL_MACHINE, 'SYSTEM\CurrentControlSet\Control\Session Manager',
+         Names[i], V) then
+    begin
+      Prev := '';
+      V := V + #0;
+      while V <> '' do
+      begin
+        P := Pos(#0, V);
+        E := RenameEntryPath(Copy(V, 1, P - 1), Replace);
+        V := Copy(V, P + 1, Length(V));
+        if Replace and (Prev <> '') and (Copy(Lowercase(E), 1, Length(Under)) = Under) then
+        begin
+          n := GetArrayLength(Result);
+          SetArrayLength(Result, n + 2);
+          Result[n] := Prev;
+          Result[n + 1] := E;
+        end;
+        Prev := E;
+      end;
+    end;
+end;
+
+// Is S one of the waiting copies (even indexes) in Pairs?
+function IsPendingSource(const Pairs: TArrayOfString; const S: String): Boolean;
+var
+  i: Integer;
+begin
+  Result := False;
+  i := 0;
+  while i + 1 < GetArrayLength(Pairs) do
+  begin
+    if CompareText(Pairs[i], S) = 0 then
+    begin
+      Result := True;
+      Exit;
+    end;
+    i := i + 2;
+  end;
+end;
+
+// Cancel the queued replacements in Pairs by deleting their waiting copies: Windows skips a
+// rename whose source is gone. Only a copy under Dir is ever touched. AlsoTarget queues the
+// target for deletion after the rename (uninstall: nothing may come back at the restart, even
+// if a copy could not be deleted now).
+procedure CancelPendingReplaces(const Pairs: TArrayOfString; const Dir: String; AlsoTarget: Boolean);
+var
+  i: Integer;
+  Under: String;
+begin
+  Under := Lowercase(AddBackslash(Dir));
+  i := 0;
+  while i + 1 < GetArrayLength(Pairs) do
+  begin
+    if Copy(Lowercase(Pairs[i]), 1, Length(Under)) = Under then
+    begin
+      // Already gone counts: [InstallDelete] clears modules\, waiting copies included.
+      if (not FileExists(Pairs[i])) or DeleteFile(Pairs[i]) then
+        Log('Cancelled the restart-time replacement of ' + Pairs[i + 1] + ' queued by an earlier setup')
+      else
+        Log('Could not delete ' + Pairs[i] + ', queued to replace ' + Pairs[i + 1] + ' at restart');
+      if AlsoTarget then
+        MoveFileExW(Pairs[i + 1], 0, MOVEFILE_DELAY_UNTIL_REBOOT);
+    end;
+    i := i + 2;
+  end;
+end;
 
 // The signed sparse package is bundled only when build-release.ps1 ran with the
 // Windows SDK present (i.e. not -NoModernMenu). Gate the cert-trust + Appx
@@ -639,9 +779,13 @@ end;
 //
 // This is the INTERACTIVE channel (a user who downloaded the setup and ran it). The SILENT
 // self-update never shows its box (CurStepChanged gates it on WasSelfUpdate) - that path is
-// covered instead by the --updated relaunch, whose toast already compares the installer's
-// version to the running image and says "restart Windows to finish" on a mismatch.
-function StaleAfterInstall: String;
+// covered instead by the --updated relaunch, which UpdatedParams tells about a waiting file, so
+// its toast says "restart Windows to finish".
+//
+// The DLL and the EXE are read back by version; every other file (an ImageMagick DLL or module,
+// the modern-menu package) carries none, so a replacement THIS setup queued for the restart is
+// what names it - one queued by an earlier setup was already there in PrepareToInstall.
+function StaleImage: String;
 begin
   Result := '';
   if not FileIsCurrent('{#AppDll}') then
@@ -650,11 +794,33 @@ begin
     Result := '{#AppExe}';
 end;
 
-// [Run] check for the per-user cache-rebuild queue (see that entry): only when the swap is
-// waiting on a restart. Evaluated when [Run] executes, after the files are in place.
+function StaleAfterInstall: String;
+var
+  Queued: TArrayOfString;
+  i: Integer;
+begin
+  Result := StaleImage;
+  if Result <> '' then
+    Exit;
+  Queued := PendingReplacesUnder(ExpandConstant('{app}'));
+  i := 0;
+  while i + 1 < GetArrayLength(Queued) do
+  begin
+    if not IsPendingSource(EarlierPending, Queued[i]) then
+    begin
+      Result := ExtractFileName(Queued[i + 1]);
+      Exit;
+    end;
+    i := i + 2;
+  end;
+end;
+
+// [Run] check for the per-user cache-rebuild queue (see that entry): only when the shell
+// extension or the app waits on a restart (a waiting ImageMagick file does not change what
+// Explorer has cached). Evaluated when [Run] executes, after the files are in place.
 function CacheRebuildPending: Boolean;
 begin
-  Result := StaleAfterInstall <> '';
+  Result := StaleImage <> '';
 end;
 
 // ---- the one install-time question: what goes in a thumbnail's corner -------------------
@@ -874,7 +1040,11 @@ begin
   end;
   if CurStep = ssPostInstall then
   begin
+    InstallCompleted := True;
     Stale := StaleAfterInstall;
+    // Every file of this release is written (or queued by THIS setup), so an earlier setup's
+    // restart-time replacements would only put older files back on top of these.
+    CancelPendingReplaces(EarlierPending, ExpandConstant('{app}'), False);
     // Remove the start-up re-registration task an EARLIER stale install may have left; it is
     // recreated just below if this install is stale too (2026-09-19 audit F13).
     Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN "SageThumbs2K-Reregister" /F', '',
@@ -1106,10 +1276,11 @@ begin
 end;
 
 // Run once when setup ends, however it ended. A parked file whose name was filled again (the
-// new copy landed) is deleted now, or on the next reboot while a holder still maps it. One
-// whose name is still EMPTY goes back: the install aborted and its rollback removed the new
-// copy, or this release does not ship that file. Before this, an aborted update left the
-// shell extension DLL missing altogether.
+// new copy landed) is deleted now, or on the next reboot while a holder still maps it, and so
+// is one whose name stayed empty in a COMPLETED install: this release no longer ships that
+// file, which is what [InstallDelete] would have removed had it not been held. Only after an
+// abort does a parked file go back, because the rollback removed the new copy. Before this,
+// an aborted update left the shell extension DLL missing altogether.
 procedure SettleParkedFiles;
 var
   i: Integer;
@@ -1117,7 +1288,7 @@ begin
   i := 0;
   while i + 1 < GetArrayLength(Parked) do
   begin
-    if FileExists(Parked[i]) then
+    if FileExists(Parked[i]) or InstallCompleted then
     begin
       if not DeleteFile(Parked[i + 1]) then
         RestartReplace(Parked[i + 1], '');
@@ -1136,14 +1307,41 @@ begin
   SettleParkedFiles;
 end;
 
-function PrepareToInstall(var NeedsRestart: Boolean): String;
+// Stop SageThumbs2K.exe in one session. Only this setup's own session (the app that launched an
+// update, its hotkey helper) and the console user's are stopped, never every signed-in user's:
+// parking frees the file names without closing anybody, and the [Run] --heal-hotkeys step only
+// restarts the console user's helper, so killing another user's copy cost them their hotkeys
+// until they signed out again, and any Settings change they had not applied.
+procedure StopAppInSession(Session: DWORD);
 var
   R: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'),
+    '/F /FI "SESSION eq ' + IntToStr(Session) + '" /IM {#AppExe}', '', SW_HIDE,
+    ewWaitUntilTerminated, R);
+end;
+
+procedure StopAppForThisUser;
+var
+  Own, Console: DWORD;
+begin
+  Console := WTSGetActiveConsoleSessionId();
+  if not ProcessIdToSessionId(GetCurrentProcessId(), Own) then
+    Own := Console;
+  StopAppInSession(Own);
+  // $FFFFFFFF: nobody at the console; that filter simply matches nothing.
+  if Console <> Own then
+    StopAppInSession(Console);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
   // First, before anything looks at which files exist: a setup that died mid-install can have
   // left the app's own EXE parked under another name.
   SweepParkedLeftovers(ExpandConstant('{app}'));
+  // What an earlier setup left queued for the restart, before [Files] adds anything of ours.
+  EarlierPending := PendingReplacesUnder(ExpandConstant('{app}'));
   // Remember whether SageThumbs was ALREADY here, before any file is copied (afterwards the
   // exe always exists, so this is the only moment the answer is knowable). Drives IsUpgrade,
   // which suppresses the first-run welcome for someone who has used the app for months.
@@ -1159,9 +1357,9 @@ begin
   // taskkill from a windowless parent can deadlock and hang setup before any file copy.
   if WasUpgrade then
   begin
-    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#AppExe}', '', SW_HIDE, ewWaitUntilTerminated, R);
+    StopAppForThisUser;
     Sleep(400);
-    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#AppExe}', '', SW_HIDE, ewWaitUntilTerminated, R);
+    StopAppForThisUser;
   end;
   // Then park whatever is still held: Explorer and every file dialog map the DLL, a running
   // decode maps magick's modules, the CLI may be open in a console. On a repair as much as an
@@ -1525,8 +1723,7 @@ end;
 // The interactive CONSOLE user as "DOMAIN\name", asked of the Terminal Services API - not the
 // account this elevated process runs as (see RunAsOriginalUser for why that differs). '' when
 // there is no console session (a headless uninstall) or the API declines.
-function WTSGetActiveConsoleSessionId(): DWORD;
-  external 'WTSGetActiveConsoleSessionId@kernel32.dll stdcall';
+// (WTSGetActiveConsoleSessionId is declared at the top of [Code]: PrepareToInstall needs it too.)
 // Returns Boolean, NOT BOOL. Inno's DLL marshaller reads a Boolean return correctly from a
 // WinAPI BOOL, and only a Boolean can be used in the `and` below - declared `: BOOL` the
 // whole thing was a "Type mismatch" that the [Code] LINT never caught and only a real ISCC
@@ -1685,6 +1882,21 @@ end;
 function ConsoleUserStep(Params: String): Boolean;
 begin
   Result := ConsoleRoute(ExpandConstant('{app}\{#AppExe}'), Params, Params);
+end;
+
+// The --updated relaunch's arguments: the version, and --restart-pending when a file of this
+// install waits for a restart (StaleAfterInstall), so its toast asks for the restart instead of
+// saying "you're now on <ver>" while thumbnails still come from the old shell extension.
+function UpdatedParams(Param: String): String;
+begin
+  Result := '--updated {#AppVer}';
+  if StaleAfterInstall <> '' then
+    Result := Result + ' --restart-pending';
+end;
+
+function UpdatedStep(): Boolean;
+begin
+  Result := ConsoleUserStep(UpdatedParams(''));
 end;
 
 // The modern-menu registration command, the ONE copy: the [Run] entry expands it through
@@ -1871,6 +2083,9 @@ begin
   // switch, the one way an unattended uninstall can opt in. ParamStr, not {param:}, for the
   // same reason WasSelfUpdate reads /UPDATED that way.
   if CurUninstallStep = usPostUninstall then begin
+    // A replacement an update queued for a restart that has not happened yet would put that
+    // file back into Program Files after this uninstall: cancel it, and remove its target then.
+    CancelPendingReplaces(PendingReplacesUnder(ExpandConstant('{app}')), ExpandConstant('{app}'), True);
     for TaskR := 1 to ParamCount do
       if CompareText(ParamStr(TaskR), '/RESETTHUMBCACHE') = 0 then
         ResetThumbCache := True;

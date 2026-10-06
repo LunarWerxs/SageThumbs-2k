@@ -215,9 +215,9 @@ if ($filesHeaders.Count -ne 1) {
 # source for the installed policy. (Both rows lost their `Components:` clause when the
 # Full/Compact selection was removed — there are no components any more.)
 $corePolicyEntry =
-    'Source: "{#StageDir}\policy.xml"; DestDir: "{app}"; Flags: ignoreversion'
+    'Source: "{#StageDir}\policy.xml"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete'
 $magickPayloadEntry =
-    'Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion restartreplace recursesubdirs createallsubdirs'
+    'Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion restartreplace uninsrestartdelete recursesubdirs createallsubdirs'
 if (@($actualFileEntries | Where-Object { $_ -ceq $corePolicyEntry }).Count -ne 1) {
     $violations.Add(
         "  installer.iss: hardened policy must be installed exactly once as core: $corePolicyEntry"
@@ -235,16 +235,22 @@ if ($magickRows.Count -ne 1 -or $magickRows[0] -cne $magickPayloadEntry) {
 
 # Issue #60: a silent update must never abort over a held file. Restart Manager stays off (it
 # either kills the holder or, failing that, makes Inno answer Abort under /SUPPRESSMSGBOXES),
-# and every row that ships a program file carries `restartreplace`, the backstop for a file
-# SwapAsideHeldFiles cannot rename. A new EXE/DLL row without it brings the abort back.
+# and EVERY [Files] row carries `restartreplace`, the backstop for a file SwapAsideHeldFiles
+# cannot rename or does not park (policy.xml, the icon: a scanner holds those too). A row
+# without it brings the abort back. `uninsrestartdelete` beside it, so an uninstall that meets a
+# held file removes it at the restart instead of leaving it behind. And no Cancel while files
+# are written: the rollback cannot undo [InstallDelete], so a cancelled upgrade lost the engine.
 if (-not @($lines | Where-Object { $_ -match '^\s*CloseApplications\s*=\s*no\s*$' })) {
     $violations.Add("  installer.iss: [Setup] must keep CloseApplications=no (issue #60)")
 }
+if (-not @($lines | Where-Object { $_ -match '^\s*AllowCancelDuringInstall\s*=\s*no\s*$' })) {
+    $violations.Add("  installer.iss: [Setup] must keep AllowCancelDuringInstall=no (a cancelled upgrade deletes the engine)")
+}
 foreach ($entry in $actualFileEntries) {
-    if ($entry -match '^Source:\s*"([^"]+)"' -and
-        $Matches[1] -match '(\.exe|\.dll|\.msix|\{#AppExe\}|\{#AppDll\}|\\magick\\\*)$' -and
-        $entry -notmatch 'Flags:[^;]*\brestartreplace\b') {
-        $violations.Add("  installer.iss: program-file row lacks restartreplace (issue #60): $entry")
+    if ($entry -match '^Source:' -and
+        ($entry -notmatch 'Flags:[^;]*\brestartreplace\b' -or
+         $entry -notmatch 'Flags:[^;]*\buninsrestartdelete\b')) {
+        $violations.Add("  installer.iss: program-file row lacks restartreplace uninsrestartdelete (issue #60): $entry")
     }
 }
 
