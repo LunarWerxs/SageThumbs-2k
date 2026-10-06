@@ -36,6 +36,10 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   now says uploading is off and offers the setting, or, once you have turned it on, asks before
   uploading. The same fault closed the About window when it offered to renew an update licence;
   that offer now appears too.
+- **3D models in OBJ files of more than a few thousand points get thumbnails.** Blender, Maya,
+  MeshLab and ZBrush write every point of a model before its first face, and SageThumbs only
+  recognised an OBJ file when a face appeared in its first 64 KB, so nearly every real model
+  stayed a blank icon. It now recognises a file whose opening is OBJ through and through.
 
 ## 3.6.0
 

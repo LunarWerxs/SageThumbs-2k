@@ -80,7 +80,7 @@ pub(crate) fn mesh_kind(head: &[u8], total: u64) -> Option<MeshKind> {
     if looks_like_ascii_stl(head) {
         return Some(MeshKind::AsciiStl);
     }
-    looks_like_obj(head).then_some(MeshKind::Obj)
+    looks_like_obj(head, total > head.len() as u64).then_some(MeshKind::Obj)
 }
 
 /// Parse a mesh of `kind` from `r`, standing at the start of the file.
@@ -139,32 +139,83 @@ fn looks_like_ascii_stl(bytes: &[u8]) -> bool {
     head.starts_with(b"solid") && find_sub(head, b"facet").is_some()
 }
 
-/// OBJ has no magic at all: accept only when the head has a `v ` vertex line AND an
-/// `f ` face line — a prose file with a line starting "v " won't also have faces. A head
-/// cut mid-character is read up to the cut.
-fn looks_like_obj(bytes: &[u8]) -> bool {
-    let head = &bytes[..bytes.len().min(MESH_SNIFF_BYTES)];
-    let text = match core::str::from_utf8(head) {
-        Ok(t) => t,
-        Err(e) if e.error_len().is_none() => {
-            core::str::from_utf8(&head[..e.valid_up_to()]).unwrap_or_default()
+/// The statements of the OBJ format (geometry, grouping, display and free-form), comments
+/// apart: what a head of nothing but OBJ is made of.
+const OBJ_STATEMENTS: &str = "v vt vn vp f fo l p o g s mg usemtl mtllib cstype deg bmat step \
+    curv curv2 surf parm trim hole scrv sp end con maplib usemap bevel c_interp d_interp lod \
+    shadow_obj trace_obj ctech stech";
+/// Vertex lines a face-less head must hold to pass as OBJ.
+const MIN_HEAD_VERTICES: usize = 16;
+
+/// One line of an OBJ head, judged by its first word.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ObjLine {
+    /// Empty, or a `#` comment.
+    Blank,
+    /// `v` and three numbers.
+    Vertex,
+    Face,
+    /// Any other OBJ statement.
+    Statement,
+    /// Not OBJ.
+    Other,
+}
+
+fn obj_line(line: &str) -> ObjLine {
+    let l = line.trim_start();
+    if l.is_empty() || l.starts_with('#') {
+        return ObjLine::Blank;
+    }
+    let mut words = l.split_ascii_whitespace();
+    match words.next().unwrap_or_default() {
+        "v" if words.take(3).filter(|w| w.parse::<f32>().is_ok()).count() == 3 => ObjLine::Vertex,
+        "f" => ObjLine::Face,
+        k if k != "v" && OBJ_STATEMENTS.split_ascii_whitespace().any(|s| s == k) => {
+            ObjLine::Statement
         }
-        Err(_) => return false,
+        _ => ObjLine::Other,
+    }
+}
+
+/// The text of a head cut anywhere, up to the cut; `None` when it is not UTF-8.
+fn head_text(head: &[u8]) -> Option<&str> {
+    match core::str::from_utf8(head) {
+        Ok(t) => Some(t),
+        Err(e) if e.error_len().is_none() => core::str::from_utf8(&head[..e.valid_up_to()]).ok(),
+        Err(_) => None,
+    }
+}
+
+/// OBJ has no magic at all. A head with a `v` vertex line AND an `f` face line is one: a
+/// prose file with a line starting "v " won't also have faces. But exporters (Blender, Maya,
+/// MeshLab, ZBrush) write every vertex before the first face, so a model of more than about two
+/// thousand vertices has no face in its head at all, and every such file went without a
+/// thumbnail until 2026-10-06. So when the file goes on past the head (`cut`), a head made of
+/// OBJ statements only, vertices among them, is one too; one stray line in fifty is allowed
+/// for an exporter's own extension. A cut head's last, partial line is not judged.
+fn looks_like_obj(bytes: &[u8], cut: bool) -> bool {
+    let Some(text) = head_text(&bytes[..bytes.len().min(MESH_SNIFF_BYTES)]) else {
+        return false;
     };
-    let mut has_v = false;
-    let mut has_f = false;
-    for line in text.lines() {
-        let l = line.trim_start();
-        if l.starts_with("v ") {
-            has_v = true;
-        } else if l.starts_with("f ") {
-            has_f = true;
+    let whole = if cut {
+        text.rfind('\n').map_or("", |end| &text[..end])
+    } else {
+        text
+    };
+    let (mut vertices, mut has_f, mut statements, mut other) = (0usize, false, 0usize, 0usize);
+    for kind in whole.lines().map(obj_line).filter(|k| *k != ObjLine::Blank) {
+        statements += 1;
+        match kind {
+            ObjLine::Vertex => vertices += 1,
+            ObjLine::Face => has_f = true,
+            ObjLine::Other => other += 1,
+            ObjLine::Blank | ObjLine::Statement => {}
         }
-        if has_v && has_f {
+        if vertices > 0 && has_f {
             return true;
         }
     }
-    false
+    cut && vertices >= MIN_HEAD_VERTICES && other * 50 <= statements
 }
 
 fn find_sub(hay: &[u8], needle: &[u8]) -> Option<usize> {

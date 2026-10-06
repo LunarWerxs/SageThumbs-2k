@@ -300,11 +300,57 @@ fn binary_ply_survives_a_vertex_block_cut_short() {
     );
 }
 
+/// A UV sphere of `n` rings by `n` segments, written the way Blender, Maya and MeshLab write
+/// OBJ: a comment and an object name, every vertex, then every face.
+fn exporter_sphere(n: usize) -> Vec<u8> {
+    use std::f32::consts::PI;
+    let mut s = String::from("# Blender 4.2 OBJ File\no Sphere\n");
+    for i in 0..=n {
+        let t = PI * i as f32 / n as f32;
+        for j in 0..n {
+            let p = 2.0 * PI * j as f32 / n as f32;
+            let (x, y, z) = (t.sin() * p.cos(), t.cos(), t.sin() * p.sin());
+            s.push_str(&format!("v {x:.6} {y:.6} {z:.6}\n"));
+        }
+    }
+    s.push_str("s 0\n");
+    for i in 0..n {
+        for j in 0..n {
+            // One quad: this ring's vertex and its neighbour, then the same two a ring down.
+            let (a, b) = (i * n + j + 1, i * n + (j + 1) % n + 1);
+            let (c, d) = (b + n, a + n);
+            s.push_str(&format!("f {a} {b} {c} {d}\n"));
+        }
+    }
+    s.into_bytes()
+}
+
+/// An OBJ whose first face lies past the sniffed head is an OBJ. Exporters write every vertex
+/// before the first face, so this is every model past about two thousand vertices, and none of
+/// them had a thumbnail until 2026-10-06 (the head had to hold a face). Both ways in: the bytes
+/// in hand, and a big file's head plus a reader over the rest.
+#[test]
+fn an_obj_whose_faces_start_past_the_head_still_renders() {
+    let bytes = exporter_sphere(60);
+    let first_face = find_sub(&bytes, b"\nf ").expect("faces");
+    assert!(
+        first_face > MESH_SNIFF_BYTES,
+        "faces must start past the head"
+    );
+    let whole = decode_mesh_sniffed(&bytes).expect("an exporter's OBJ renders");
+    let head = &bytes[..MESH_SNIFF_BYTES];
+    let streamed = mesh_from_reader(&bytes[..], head, bytes.len() as u64).expect("streamed");
+    assert_eq!(whole.as_bytes(), streamed.as_bytes());
+}
+
 /// The sniffers must refuse close-but-wrong inputs: prose with a "v " line but no
-/// faces, a truncated binary STL whose length equation fails, garbage.
+/// faces, a long text whose head is prose with vertex-like lines in it, a truncated binary STL
+/// whose length equation fails, garbage.
 #[test]
 fn sniffers_refuse_non_meshes() {
     assert!(parse_mesh_sniffed(b"v for vendetta\nis a film\n").is_none());
+    let notes = "v 1 2 3\nthe second take, from the top\n".repeat(4000);
+    assert!(mesh_kind(&notes.as_bytes()[..MESH_SNIFF_BYTES], notes.len() as u64).is_none());
     let mut cut = cube_stl();
     cut.truncate(cut.len() - 7);
     assert!(
