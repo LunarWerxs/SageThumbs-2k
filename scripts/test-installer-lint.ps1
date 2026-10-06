@@ -512,14 +512,32 @@ try {
 
     $duplicatePolicy = Join-Path $scratch 'duplicate-policy.iss'
     $needle =
-        'Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion recursesubdirs createallsubdirs'
+        'Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion restartreplace recursesubdirs createallsubdirs'
     $replacement =
-        'Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs'
+        'Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Flags: ignoreversion restartreplace recursesubdirs createallsubdirs'
     $mutated = $source.Replace($needle, $replacement)
     if ($mutated -ceq $source) { throw 'test mutation did not remove policy exclusion' }
     Set-Content -LiteralPath $duplicatePolicy -Value $mutated -Encoding utf8
     Assert-LintFails 'bundled Magick row no longer excludes duplicate policy' {
         Invoke-InstallerLint -IssPath $duplicatePolicy
+    }
+
+    # Issue #60: a held program file must cost a restart, never the whole silent update.
+    $noBackstop = Join-Path $scratch 'no-restartreplace.iss'
+    $needle = 'Source: "{#StageDir}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion restartreplace'
+    $mutated = $source.Replace($needle, 'Source: "{#StageDir}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion')
+    if ($mutated -ceq $source) { throw 'test mutation did not remove the app EXE restartreplace' }
+    Set-Content -LiteralPath $noBackstop -Value $mutated -Encoding utf8
+    Assert-LintFails 'app EXE row without the restartreplace backstop' {
+        Invoke-InstallerLint -IssPath $noBackstop
+    }
+
+    $restartManager = Join-Path $scratch 'restart-manager-on.iss'
+    $mutated = $source.Replace('CloseApplications=no', 'CloseApplications=yes')
+    if ($mutated -ceq $source) { throw 'test mutation did not re-enable Restart Manager' }
+    Set-Content -LiteralPath $restartManager -Value $mutated -Encoding utf8
+    Assert-LintFails 'Restart Manager switched back on' {
+        Invoke-InstallerLint -IssPath $restartManager
     }
 
     $unexpected = Join-Path $payload 'unexpected-third-party.dat'

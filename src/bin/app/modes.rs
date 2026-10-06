@@ -567,6 +567,8 @@ pub(super) unsafe fn dispatch_folder_modes(hinst: HINSTANCE, args: &[String]) ->
 /// Returns `true` if a flag fired (caller should return).
 pub(super) unsafe fn dispatch_heal_modes(args: &[String]) -> bool {
     if let Some(pos) = args.iter().position(|a| a == "--updated") {
+        // The update reported on itself, so the next Settings launch has nothing to say.
+        st2k_appkit::update::forget_update_attempt();
         heal_after_install();
         let ver = args
             .get(pos + 1)
@@ -725,9 +727,10 @@ pub(super) unsafe fn remove_user_state() {
         let _ = k.remove_value(RUN_NAME);
     }
 
-    // This user's runtime files: the diagnostics log (and its one rotated backup) and the
-    // update-check cache. The installer's [UninstallDelete] rows expand {localappdata} in the
-    // ELEVATED account's profile, so for this user only this pass can reach them.
+    // This user's runtime files: the diagnostics log (and its one rotated backup), the
+    // update-check cache and the self-update records. The installer's [UninstallDelete] rows
+    // expand {localappdata} in the ELEVATED account's profile, so for this user only this pass
+    // can reach them.
     if let Some(log) = st2k_base::safety::log_file() {
         let _ = std::fs::remove_file(log.with_extension("log.old"));
         let _ = std::fs::remove_file(log);
@@ -735,6 +738,7 @@ pub(super) unsafe fn remove_user_state() {
     if let Some(cache) = st2k_appkit::update::cache_path() {
         let _ = std::fs::remove_file(cache);
     }
+    st2k_appkit::update::remove_update_records();
 }
 
 /// `--cloud-relink`, the sign-in task's one-shot (`register::cloud::sync_relink_task`): put our

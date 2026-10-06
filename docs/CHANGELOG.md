@@ -7,6 +7,17 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## Unreleased
+
+- **Updating from inside the app installs, even while other programs are using SageThumbs
+  files** (fixes #60). If any program SageThumbs could not close (an antivirus, a service, a
+  program in another Windows session) had one of its files open, the update gave up without a
+  word: the setup window appeared, vanished, and you were still on the old version. Setup now
+  moves files that are in use aside instead of closing anything, finishes any it cannot move on
+  the next restart, and never closes your programs. If an update ever does fail, the next time
+  you open Settings it tells you, with setup's own reason and its log, and offers the download
+  page.
+
 ## 3.6.0
 
 **TL;DR**

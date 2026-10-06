@@ -11,8 +11,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 mod verify;
 use verify::*;
+mod attempt;
 mod install;
 mod task;
+use attempt::*;
+pub use attempt::{failed_update_report, forget_update_attempt, remove_update_records};
 use install::*;
 pub use install::{download_and_install, UpdateError};
 pub use task::{remove_update_task, run_one_shot_check, spawn_due_check, sync_update_task};
@@ -526,7 +529,9 @@ pub fn run_selftest(setup: &Path) -> bool {
             return false;
         }
     };
-    let launched = launch_installer_silent(&path, HWND::default());
+    // The same setup log the real updater asks for, so the harness can show setup's own
+    // account when the upgrade does not land.
+    let launched = launch_installer_silent(&path, HWND::default(), fresh_setup_log().as_deref());
     drop(lock);
     match launched {
         Ok(()) => {

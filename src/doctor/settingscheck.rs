@@ -498,6 +498,58 @@ pub(super) fn append_log_tail(r: &mut Report, path: &Path) {
     }
 }
 
+/// The last self-update's setup log (issue #60): the app hands Inno this path, and a failed
+/// update used to leave nothing anywhere a report could quote. Prints setup's verdict lines and
+/// what it parked, each with the indented lines Inno continues it on (a message box's text).
+pub(super) fn append_setup_log(r: &mut Report) {
+    const NEEDLES: [&str; 8] = [
+        "Installation process succeeded",
+        "Rolling back changes",
+        "User canceled the installation process",
+        "Fatal exception during installation process",
+        "message box (",
+        "Message box (",
+        "Parked held file",
+        "Could not park held file",
+    ];
+    let Some(p) = std::env::var_os("LOCALAPPDATA")
+        .map(|d| Path::new(&d).join("SageThumbs2K-setup.log"))
+        .filter(|p| p.exists())
+    else {
+        r.line(
+            S::Info,
+            "Last self-update setup log",
+            "none (no in-app update has run)",
+        );
+        return;
+    };
+    r.line_with_size("Last self-update setup log", &p);
+    let text = read_log_tail(&p, LOG_TAIL_SCAN_BYTES);
+    let mut keep = false;
+    let mut out: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        let continuation = line.starts_with(' ') || line.is_empty();
+        if !continuation {
+            keep = NEEDLES.iter().any(|n| line.contains(n));
+        }
+        if keep && !line.trim().is_empty() {
+            out.push(line);
+        }
+    }
+    if out.is_empty() {
+        r.line(
+            S::Info,
+            "  setup verdict",
+            "none logged (setup still running, or killed)",
+        );
+        return;
+    }
+    r.head("Last self-update, as setup logged it");
+    for line in out.iter().rev().take(40).rev() {
+        let _ = writeln!(r.out, "{line}");
+    }
+}
+
 /// One stored settings section for the bundle: `None` is the root (the registry root key,
 /// or the ini's `[Settings]`), `Some(name)` a subkey or section. Values are `(name, text)`.
 type SettingsSection = (Option<String>, Vec<(String, String)>);

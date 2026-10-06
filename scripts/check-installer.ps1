@@ -217,7 +217,7 @@ if ($filesHeaders.Count -ne 1) {
 $corePolicyEntry =
     'Source: "{#StageDir}\policy.xml"; DestDir: "{app}"; Flags: ignoreversion'
 $magickPayloadEntry =
-    'Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion recursesubdirs createallsubdirs'
+    'Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion restartreplace recursesubdirs createallsubdirs'
 if (@($actualFileEntries | Where-Object { $_ -ceq $corePolicyEntry }).Count -ne 1) {
     $violations.Add(
         "  installer.iss: hardened policy must be installed exactly once as core: $corePolicyEntry"
@@ -231,6 +231,21 @@ if ($magickRows.Count -ne 1 -or $magickRows[0] -cne $magickPayloadEntry) {
     $violations.Add(
         "  installer.iss: bundled Magick row must exclude duplicate policy.xml: $magickPayloadEntry"
     )
+}
+
+# Issue #60: a silent update must never abort over a held file. Restart Manager stays off (it
+# either kills the holder or, failing that, makes Inno answer Abort under /SUPPRESSMSGBOXES),
+# and every row that ships a program file carries `restartreplace`, the backstop for a file
+# SwapAsideHeldFiles cannot rename. A new EXE/DLL row without it brings the abort back.
+if (-not @($lines | Where-Object { $_ -match '^\s*CloseApplications\s*=\s*no\s*$' })) {
+    $violations.Add("  installer.iss: [Setup] must keep CloseApplications=no (issue #60)")
+}
+foreach ($entry in $actualFileEntries) {
+    if ($entry -match '^Source:\s*"([^"]+)"' -and
+        $Matches[1] -match '(\.exe|\.dll|\.msix|\{#AppExe\}|\{#AppDll\}|\\magick\\\*)$' -and
+        $entry -notmatch 'Flags:[^;]*\brestartreplace\b') {
+        $violations.Add("  installer.iss: program-file row lacks restartreplace (issue #60): $entry")
+    }
 }
 
 if ($ManagedPayloadPath) {

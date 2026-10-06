@@ -127,6 +127,21 @@ ArchitecturesInstallIn64BitMode={#ArchitectureMatcher}
 ; Shell-extension registration writes HKLM + Program Files -> needs elevation.
 PrivilegesRequired=admin
 MinVersion=10.0
+; NO RESTART MANAGER (issue #60, 2026-10-06). With it on, a silent update could only end two
+; ways when another program held one of our files: Restart Manager force-closed that program
+; (measured: it terminated an ordinary process holding a DLL of ours, unsaved work and all), or
+; it could not close it (a holder in another session, a protected antivirus process), in which
+; case Inno answers its own "could not close applications" box with Abort under
+; /SUPPRESSMSGBOXES and rolls the whole update back: the installer window shows, runs, vanishes,
+; and the PC is still on the old version with no message at all. [Code]'s PrepareToInstall
+; parks every held file aside instead (SwapAsideHeldFiles), which needs nobody closed, and the
+; `restartreplace` flags in [Files] are the backstop for a file it cannot rename.
+CloseApplications=no
+; Always write a setup log (%TEMP%\Setup Log <date> #NNN.txt), whoever launched setup and with
+; whatever switches: an update launched by an older app passes no /LOG, and a failed install
+; with no log is the reason #60 had to be guessed at. The app's own updater also passes /LOG
+; with a fixed path, which takes precedence and is what `st2k doctor` and the app read back.
+SetupLogging=yes
 
 ; NO [Types] / [Components] SECTIONS, DELIBERATELY (2026-08-12).
 ;
@@ -188,24 +203,30 @@ Type: files; Name: "{app}\SageThumbs2K.cer"
 ; Keep the DLL and CLI adjacent in the solid stream. Both are mostly the shared
 ; core, so adjacency also helps lower-memory tooling and keeps their repeated
 ; regions close in the solid stream.
-; `restartreplace uninsrestartdelete` is the BACKSTOP behind `SwapAsideInUseDll` (see [Code]).
-; The swap normally frees this name before [Files] runs, so neither flag fires; if a rename
+; `restartreplace uninsrestartdelete` is the BACKSTOP behind `SwapAsideHeldFiles` (see [Code]).
+; Parking normally frees this name before [Files] runs, so neither flag fires; if a rename
 ; ever fails, these turn "setup cannot continue" into "reboot to finish" instead. The uninstall
 ; half matters for the same reason install does: a file manager holding the DLL would otherwise
 ; leave it behind. See issue #15.
+;
+; EVERY row that ships a program file carries `restartreplace` for the same reason (issue #60):
+; SwapAsideHeldFiles parks whatever is held, and a file it could not rename (a handle opened
+; without delete sharing, as a scanner holds one) must cost a restart, never the whole install.
+; Without the flag Inno asks Abort/Retry/Ignore about that file, and a silent update answers
+; Abort and rolls everything back.
 Source: "{#StageDir}\{#AppDll}"; DestDir: "{app}"; Flags: ignoreversion restartreplace uninsrestartdelete
-Source: "{#StageDir}\st2k.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "{#StageDir}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StageDir}\st2k.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace skipifsourcedoesntexist
+Source: "{#StageDir}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion restartreplace
 ; The Open/Save-dialog selection reader. NOT a shell extension and never registered: the app
 ; loads it on demand, into the dialog's own process, for one question. Absent = the app simply
 ; has no dialog support, which is why this row is skipifsourcedoesntexist.
-Source: "{#StageDir}\st2k_dlghook.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#StageDir}\st2k_dlghook.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace skipifsourcedoesntexist
 ; Signed sparse package -> the Windows 11 modern context menu. Built by
 ; scripts\packaging\make-msix.ps1 (skipped with -NoModernMenu). A release build signs it with
 ; the real publisher certificate and ships NO .cer; a self-signed development build ships the
 ; public .cer beside it, which the [Run] step below trusts. Both rows are
 ; skipifsourcedoesntexist for exactly that reason.
-Source: "{#StageDir}\SageThumbs2K.msix"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#StageDir}\SageThumbs2K.msix"; DestDir: "{app}"; Flags: ignoreversion restartreplace skipifsourcedoesntexist
 Source: "{#StageDir}\SageThumbs2K.cer"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; Branding assets: icon (shortcut/uninstall) + swappable logo/banner overrides.
 Source: "{#StageDir}\app.ico"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
@@ -221,7 +242,7 @@ Source: "{#StageDir}\LICENSE*"; DestDir: "{app}"; Flags: ignoreversion skipifsou
 Source: "{#StageDir}\policy.xml"; DestDir: "{app}"; Flags: ignoreversion
 ; Bundled ImageMagick (magick.exe + DLLs + modules\).
 #if CompactOnly == "0"
-Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#StageDir}\magick\*"; DestDir: "{app}"; Excludes: "policy.xml"; Flags: ignoreversion restartreplace recursesubdirs createallsubdirs
 #endif
 
 [Dirs]
@@ -516,10 +537,15 @@ Filename: "{sys}\regsvr32.exe"; Parameters: "/u /s ""{app}\{#AppDll}"""; \
 ; the interactive user's own copies are removed by `--remove-user-state` (RunAsOriginalUser).
 Type: files; Name: "{localappdata}\SageThumbs2K.log"
 Type: files; Name: "{localappdata}\SageThumbs2K-update.txt"
-; Any DLL copies parked aside by `SwapAsideInUseDll` on a machine that has not rebooted since.
-; They are already scheduled for deletion on restart, so this is only a tidier immediate sweep;
-; whichever is still mapped simply refuses and goes on the reboot list as before.
-Type: files; Name: "{app}\{#AppDll}.old*"
+Type: files; Name: "{localappdata}\SageThumbs2K-update-attempt.txt"
+Type: files; Name: "{localappdata}\SageThumbs2K-setup.log"
+; Any copies parked aside by `SwapAsideHeldFiles` on a machine that has not rebooted since: the
+; DLL and EXEs in {app}, ImageMagick's coder and filter modules below it. They are already
+; scheduled for deletion on restart, so this is only a tidier immediate sweep; whichever is
+; still mapped simply refuses and goes on the reboot list as before.
+Type: files; Name: "{app}\*.old*"
+Type: files; Name: "{app}\modules\coders\*.old*"
+Type: files; Name: "{app}\modules\filters\*.old*"
 
 [Code]
 // Kernel32 import: the script engine has no built-in setter for the process environment,
@@ -564,6 +590,22 @@ begin
   Result := ModernMenuBundled and IsWindows11;
 end;
 
+// True when the running app launched this setup as a SILENT self-update - it passes the
+// custom /UPDATED switch. Gates the post-update "you're now on <ver>" relaunch so a normal
+// interactive install never shows it, and keeps the stale-file box out of a self-update.
+function WasSelfUpdate: Boolean;
+var
+  i: Integer;
+begin
+  Result := False;
+  for i := 1 to ParamCount do
+    if CompareText(ParamStr(i), '/UPDATED') = 0 then
+    begin
+      Result := True;
+      Exit;
+    end;
+end;
+
 // Post-install sanity check: did regsvr32 actually register us?
 //
 // The regsvr32 [Run] entry is `/s` (silent) and its exit code is not inspected, so before
@@ -596,9 +638,9 @@ end;
 // with no clue why. Reading the version back off disk is the only way to know.
 //
 // This is the INTERACTIVE channel (a user who downloaded the setup and ran it). The SILENT
-// self-update passes /SUPPRESSMSGBOXES, so its box never shows - that path is covered
-// instead by the --updated relaunch, whose toast already compares the installer's version
-// to the running image and says "restart Windows to finish" on a mismatch.
+// self-update never shows its box (CurStepChanged gates it on WasSelfUpdate) - that path is
+// covered instead by the --updated relaunch, whose toast already compares the installer's
+// version to the running image and says "restart Windows to finish" on a mismatch.
 function StaleAfterInstall: String;
 begin
   Result := '';
@@ -841,7 +883,7 @@ begin
     begin
       // The [Run] regsvr32 above just re-registered whichever DLL was actually on disk at
       // that moment - the OLD one, since the new one is only queued for the next restart
-      // (SwapAsideInUseDll's restartreplace path). Nothing else re-registers after that
+      // (the [Files] restartreplace backstop). Nothing else re-registers after that
       // restart finishes the swap, so the user would boot into the new EXE talking to the
       // stale-registered old DLL (old FORMATS list, no REMOVED_EXTENSIONS sweep) until they
       // found Repair by themselves. These two RunOnce entries close that gap automatically,
@@ -867,19 +909,22 @@ begin
       // SuppressibleMsgBox, not MsgBox: a plain MsgBox from [Code] ignores
       // /SUPPRESSMSGBOXES, and a silent install with a locked DLL sat on this box for
       // twelve minutes in a session with no desktop to show it on (the two-account VM
-      // proof, 2026-09-19). The self-updater's own silent run would have done the same.
-      // Suppressed, it is still written to the Setup log.
-      SuppressibleMsgBox('SageThumbs 2K could not replace ' + Stale + ', so this PC is STILL RUNNING THE'
-        + ' OLD VERSION.'
-        + #13#10#13#10
-        + 'Windows keeps that file open while File Explorer or another app is using it, and'
-        + ' it can only be swapped on the next restart.'
-        + #13#10#13#10
-        + 'This will finish automatically the next time you restart and sign in - no action'
-        + ' needed. If the version still has not changed after that, security software is'
-        + ' most likely blocking the file - allow the install folder in your antivirus and'
-        + ' run this installer again.',
-        mbError, MB_OK, IDOK);
+      // proof, 2026-09-19). Suppressed, it is still written to the Setup log. Never in a
+      // self-update: the app no longer passes /SUPPRESSMSGBOXES (issue #60), and its
+      // --updated toast already says "restart Windows to finish" for exactly this case.
+      Log('Stale after install: ' + Stale + ' is queued for replacement on restart');
+      if not WasSelfUpdate then
+        SuppressibleMsgBox('SageThumbs 2K could not replace ' + Stale + ', so this PC is STILL RUNNING THE'
+          + ' OLD VERSION.'
+          + #13#10#13#10
+          + 'Windows keeps that file open while File Explorer or another app is using it, and'
+          + ' it can only be swapped on the next restart.'
+          + #13#10#13#10
+          + 'This will finish automatically the next time you restart and sign in - no action'
+          + ' needed. If the version still has not changed after that, security software is'
+          + ' most likely blocking the file - allow the install folder in your antivirus and'
+          + ' run this installer again.',
+          mbError, MB_OK, IDOK);
     end;
     if not RegKeyExists(HKEY_CLASSES_ROOT,
          'CLSID\{7B2E6A14-9C3D-4F8A-B1E7-2A5D9F0C6E31}\InprocServer32') then
@@ -895,13 +940,7 @@ begin
   end;
 end;
 
-// Stop the resident hotkey/Quick Preview helper BEFORE any file is copied so its
-// old EXE image cannot hold the destination open. The second sweep mops up a
-// concurrent Settings/logon launch that slipped through the first pass's window.
-// The [Run] --heal-hotkeys step brings the helper back from the NEW exe once the
-// files are in place.
-// Move an IN-USE shell-extension DLL out of the way so setup never has to ask anyone to close
-// anything. Returns True if a swap was needed and done.
+// ---- held files: park them aside, never fail the install (issues #15 and #60) ------------
 //
 // ISSUE #15: "the installer has trouble automatically closing several processes/services, for
 // me, Everything and Directory Opus. The Sage DLL also cannot be terminated automatically."
@@ -912,51 +951,182 @@ end;
 // Manager can only close what cooperates, and quitting the user's file manager to install a
 // thumbnail handler is a bad trade even when it works.
 //
-// The way around it is a Windows detail: a MAPPED dll cannot be deleted or overwritten, but it
-// CAN be renamed. So move the old one aside, let [Files] write the new one into the now-free
-// name, and schedule the renamed copy for deletion on the next reboot. Existing holders keep
-// running against their old mapping until they exit, every process that loads it afterwards
-// gets the new one, nothing has to be closed, and no reboot is needed to FINISH the install.
-// This is the same technique the dev install script has used for a while for the same reason.
-function SwapAsideInUseDll: Boolean;
+// ISSUE #60: the same thing, for every file, killed the silent self-update. Until 3.6.0 only the
+// DLL was parked and Restart Manager was left to deal with everything else. When it could not
+// close a holder (a process in another session, a protected antivirus process, a magick.exe a
+// service started), Inno answered its own "could not close applications" box with Abort under
+// the updater's /SUPPRESSMSGBOXES and rolled the update back: the setup window flashed, the
+// app never came back, and the PC stayed on the old version with nothing said. Restart Manager
+// is off now ([Setup] CloseApplications=no) and THIS is the only mechanism.
+//
+// The way around both is a Windows detail: a MAPPED exe or dll cannot be deleted or
+// overwritten, but it CAN be renamed. So move the held file aside, let [Files] write the new
+// one into the now-free name, and delete the parked copy when setup ends (on the next reboot
+// if a holder still maps it). Existing holders keep running against their old mapping until
+// they exit, every process that loads it afterwards gets the new one, nothing has to be
+// closed, and no reboot is needed to FINISH the install. A file that cannot even be renamed
+// (a handle opened without delete sharing) falls to the [Files] restartreplace backstop.
+//
+// RENAME, never delete-then-recreate. An earlier version deleted the DLL "because the ordinary
+// copy would have worked anyway", which quietly replaced Inno's atomic in-place overwrite with
+// a window where the file does not exist at all. And only a HELD file is parked: one nobody
+// holds is overwritten in place by [Files] as usual, which is what keeps an aborted install
+// from losing it (an aborted install's rollback deletes any file whose name was empty before
+// it copied, which is exactly what a parked name is; SettleParkedFiles puts those back).
+//
+// Parked holds the pairs, original path at an even index and its parked name after it.
 var
-  Dll, Aside: String;
-  i: Integer;
+  Parked: TArrayOfString;
+
+// Is somebody holding this file? An exclusive read-write open is refused while any process
+// has it open, and while it is mapped as a loaded EXE or DLL.
+function FileHeld(const F: String): Boolean;
+var
+  S: TFileStream;
 begin
   Result := False;
-  Dll := ExpandConstant('{app}\{#AppDll}');
-  if not FileExists(Dll) then
-    Exit;  // fresh install: nothing is holding anything
-  // RENAME, never delete-then-recreate. An earlier version of this called DeleteFile first
-  // "because the ordinary copy would have worked anyway", which quietly replaced Inno's
-  // atomic in-place overwrite with a window where the DLL does not exist at all - on EVERY
-  // upgrade, not just the in-use case this exists for. Setup failing anywhere between here
-  // and the file copy would then leave registered COM CLSIDs pointing at a missing file.
-  // A rename has no such window: the old file survives under a new name until it is replaced.
+  try
+    S := TFileStream.Create(F, fmOpenReadWrite or fmShareExclusive);
+    S.Free;
+  except
+    Result := True;
+  end;
+end;
+
+// The path a parked file was parked from ('<path>.old<N>' -> '<path>'), or '' for any other name.
+function ParkedOriginal(const Path: String): String;
+var
+  i: Integer;
+begin
+  Result := '';
+  i := Length(Path);
+  while (i > 0) and (Path[i] >= '0') and (Path[i] <= '9') do
+    i := i - 1;
+  if (i < Length(Path)) and (i > 4) and (CompareText(Copy(Path, i - 3, 4), '.old') = 0) then
+    Result := Copy(Path, 1, i - 4);
+end;
+
+// Rename F to the first free '<F>.old<N>' and remember the pair for SettleParkedFiles.
+procedure SwapAside(const F: String);
+var
+  Aside: String;
+  i, n: Integer;
+begin
   for i := 0 to 20 do
   begin
-    Aside := Dll + '.old' + IntToStr(i);
-    // Sweep a leftover from an earlier swap on a machine that has not rebooted since. If it
-    // deletes, the slot is reusable; if not, it is still mapped and the next index is tried.
-    if FileExists(Aside) then
-      DeleteFile(Aside);
+    Aside := F + '.old' + IntToStr(i);
+    // A name still taken is an earlier park some process maps to this day: try the next.
     if not FileExists(Aside) then
-      if RenameFile(Dll, Aside) then
+    begin
+      if RenameFile(F, Aside) then
       begin
-        // Nothing was holding it after all: drop the copy now rather than leave a file behind
-        // and a reboot-time deletion queued for an install that never needed either.
-        if DeleteFile(Aside) then
-          Result := False
-        else
-        begin
-          // Still mapped. Empty destination = delete on restart. Best-effort: if that fails
-          // the sweep above tidies it on the next install, which is why nothing gates on it.
-          RestartReplace(Aside, '');
-          Result := True;
-        end;
-        Exit;
-      end;
+        n := GetArrayLength(Parked);
+        SetArrayLength(Parked, n + 2);
+        Parked[n] := F;
+        Parked[n + 1] := Aside;
+        Log('Parked held file ' + F + ' as ' + Aside);
+      end
+      else
+        Log('Could not park held file ' + F + '; [Files] restartreplace replaces it on restart');
+      Exit;
+    end;
   end;
+end;
+
+// Park every EXE and DLL under Dir that somebody holds. The uninstaller is Inno's own business.
+procedure SwapAsideHeldFiles(const Dir: String);
+var
+  R: TFindRec;
+  Ext: String;
+begin
+  if FindFirst(Dir + '\*', R) then
+  try
+    repeat
+      if (R.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+      begin
+        if (R.Name <> '.') and (R.Name <> '..') then
+          SwapAsideHeldFiles(Dir + '\' + R.Name);
+      end
+      else
+      begin
+        Ext := LowerCase(ExtractFileExt(R.Name));
+        if ((Ext = '.exe') or (Ext = '.dll'))
+           and (CompareText(Copy(R.Name, 1, 5), 'unins') <> 0)
+           and FileHeld(Dir + '\' + R.Name) then
+          SwapAside(Dir + '\' + R.Name);
+      end;
+    until not FindNext(R);
+  finally
+    FindClose(R);
+  end;
+end;
+
+// What an earlier setup parked and did not settle (it crashed, or a holder still maps the copy).
+// A parked file whose original name is EMPTY goes back, so this setup starts from a complete
+// install; one whose original is there is deleted, or left for its pending reboot deletion.
+procedure SweepParkedLeftovers(const Dir: String);
+var
+  R: TFindRec;
+  F, Orig: String;
+begin
+  if FindFirst(Dir + '\*', R) then
+  try
+    repeat
+      F := Dir + '\' + R.Name;
+      if (R.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+      begin
+        if (R.Name <> '.') and (R.Name <> '..') then
+          SweepParkedLeftovers(F);
+      end
+      else
+      begin
+        Orig := ParkedOriginal(F);
+        if Orig <> '' then
+        begin
+          if not FileExists(Orig) then
+          begin
+            if RenameFile(F, Orig) then
+              Log('Restored ' + Orig + ' left parked by an earlier setup');
+          end
+          else if DeleteFile(F) then
+            Log('Removed ' + F + ' left parked by an earlier setup');
+        end;
+      end;
+    until not FindNext(R);
+  finally
+    FindClose(R);
+  end;
+end;
+
+// Run once when setup ends, however it ended. A parked file whose name was filled again (the
+// new copy landed) is deleted now, or on the next reboot while a holder still maps it. One
+// whose name is still EMPTY goes back: the install aborted and its rollback removed the new
+// copy, or this release does not ship that file. Before this, an aborted update left the
+// shell extension DLL missing altogether.
+procedure SettleParkedFiles;
+var
+  i: Integer;
+begin
+  i := 0;
+  while i + 1 < GetArrayLength(Parked) do
+  begin
+    if FileExists(Parked[i]) then
+    begin
+      if not DeleteFile(Parked[i + 1]) then
+        RestartReplace(Parked[i + 1], '');
+    end
+    else if RenameFile(Parked[i + 1], Parked[i]) then
+      Log('Restored ' + Parked[i] + ': nothing replaced it')
+    else
+      Log('Could not restore ' + Parked[i] + ' from ' + Parked[i + 1]);
+    i := i + 2;
+  end;
+  SetArrayLength(Parked, 0);
+end;
+
+procedure DeinitializeSetup;
+begin
+  SettleParkedFiles;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
@@ -964,24 +1134,33 @@ var
   R: Integer;
 begin
   Result := '';
-  // Before anything else, and deliberately BEFORE the early-exit below: an in-use DLL is the
-  // one thing that can fail this install outright, and it is just as likely on a repair as on
-  // an upgrade. No-ops on a fresh install (the file does not exist yet).
-  SwapAsideInUseDll;
+  // First, before anything looks at which files exist: a setup that died mid-install can have
+  // left the app's own EXE parked under another name.
+  SweepParkedLeftovers(ExpandConstant('{app}'));
   // Remember whether SageThumbs was ALREADY here, before any file is copied (afterwards the
   // exe always exists, so this is the only moment the answer is knowable). Drives IsUpgrade,
   // which suppresses the first-run welcome for someone who has used the app for months.
   WasUpgrade := FileExists(ExpandConstant('{app}\{#AppExe}'));
+  // Stop the resident hotkey/Quick Preview helper BEFORE any file is copied so its old EXE
+  // image cannot hold the destination open. The second sweep mops up a concurrent
+  // Settings/logon launch that slipped through the first pass's window. The [Run]
+  // --heal-hotkeys step brings the helper back from the NEW exe once the files are in place.
   // Only a PRIOR install can have a resident daemon locking our files, and only then is
   // the kill needed. Gating on the installed EXE existing means a FRESH install never
   // spawns taskkill at all. That also fixes unattended installs run from a headless
   // session (e.g. Windows Sandbox's LogonCommand), where spawning a console app like
   // taskkill from a windowless parent can deadlock and hang setup before any file copy.
-  if not FileExists(ExpandConstant('{app}\{#AppExe}')) then
-    Exit;
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#AppExe}', '', SW_HIDE, ewWaitUntilTerminated, R);
-  Sleep(400);
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#AppExe}', '', SW_HIDE, ewWaitUntilTerminated, R);
+  if WasUpgrade then
+  begin
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#AppExe}', '', SW_HIDE, ewWaitUntilTerminated, R);
+    Sleep(400);
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#AppExe}', '', SW_HIDE, ewWaitUntilTerminated, R);
+  end;
+  // Then park whatever is still held: Explorer and every file dialog map the DLL, a running
+  // decode maps magick's modules, the CLI may be open in a console. On a repair as much as an
+  // upgrade, and deliberately not gated on the EXE above (a half-installed folder can hold a
+  // mapped DLL with no EXE beside it); a fresh install has no folder and finds nothing.
+  SwapAsideHeldFiles(ExpandConstant('{app}'));
 end;
 
 // Was SageThumbs already installed when this setup started? Set by PrepareToInstall, which
@@ -989,22 +1168,6 @@ end;
 function IsUpgrade: Boolean;
 begin
   Result := WasUpgrade;
-end;
-
-// True when the running app launched this setup as a SILENT self-update - it passes the
-// custom /UPDATED switch. Gates the post-update "you're now on <ver>" relaunch so a normal
-// interactive install never shows it.
-function WasSelfUpdate: Boolean;
-var
-  i: Integer;
-begin
-  Result := False;
-  for i := 1 to ParamCount do
-    if CompareText(ParamStr(i), '/UPDATED') = 0 then
-    begin
-      Result := True;
-      Exit;
-    end;
 end;
 
 // The "why are you leaving?" answer collected by the uninstall survey (AskUninstallReason),

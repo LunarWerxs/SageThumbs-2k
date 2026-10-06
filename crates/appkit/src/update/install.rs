@@ -4,14 +4,6 @@ use super::*;
 
 use windows::Win32::UI::Shell::IProgressDialog;
 
-/// Switches handed to the freshly-downloaded Inno setup for an unattended in-place upgrade.
-/// `/SILENT` = bare progress bar, no wizard; `/SUPPRESSMSGBOXES` + `/FORCECLOSEAPPLICATIONS`
-/// let it close+restart Explorer to swap the in-use DLL without prompting; `/NORESTART`
-/// blocks a reboot prompt; `/UPDATED` is OUR marker the installer keys the post-update
-/// "you're now on <ver>" relaunch off (see installer.iss `WasSelfUpdate`).
-pub(super) const INSTALL_FLAGS: &str =
-    "/SILENT /SUPPRESSMSGBOXES /NORESTART /FORCECLOSEAPPLICATIONS /UPDATED";
-
 /// Why a one-click update didn't complete. This used to be a bare `String` that every
 /// failure — user cancel, antivirus block, group policy, a dead network — collapsed into
 /// "the update was cancelled at the Windows permission prompt", which the caller then
@@ -141,22 +133,26 @@ pub(super) fn classify_launch_failure(
     ))
 }
 
-/// Launch the freshly-verified installer SILENTLY + ELEVATED (one UAC prompt). `Ok` once the
-/// elevated process actually starts; otherwise a classified reason. On success the caller
-/// should exit — the installer closes this app, upgrades in place, restarts Explorer, and
-/// relaunches us with `--updated <ver>`.
+/// Launch the freshly-verified installer SILENTLY + ELEVATED (one UAC prompt), with the
+/// switches [`install_flags`] builds and its log at `log`. `Ok` once the elevated process
+/// actually starts; otherwise a classified reason. On success the caller should exit — the
+/// installer closes this app, upgrades in place, and relaunches us with `--updated <ver>`.
 ///
 /// `owner` OWNS the consent prompt. Passing `None` here (as this did until 2026-08-03) leaves
 /// the UAC dialog ownerless, so it can land behind whatever is in front and read to the user
 /// as "the update button does nothing" — invisible on a machine that elevates without a
 /// prompt at all. The caller also tears its progress dialog down BEFORE calling this, so
 /// there is nothing of ours left above the prompt.
-pub(super) fn launch_installer_silent(path: &Path, owner: HWND) -> Result<(), UpdateError> {
+pub(super) fn launch_installer_silent(
+    path: &Path,
+    owner: HWND,
+    log: Option<&Path>,
+) -> Result<(), UpdateError> {
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     let verb = crate::win::wide("runas"); // elevate: the setup writes HKLM + Program Files
     let file = crate::win::wide(&path.display().to_string());
-    let params = crate::win::wide(INSTALL_FLAGS);
+    let params = crate::win::wide(&install_flags(log));
     let (ret, last_error) = unsafe {
         let ret = ShellExecuteW(
             Some(owner),
@@ -350,11 +346,17 @@ pub fn download_and_install(parent: HWND) -> Result<String, UpdateError> {
     }
 
     let (path, installer_lock) = prepared?;
-    let launched = launch_installer_silent(&path, parent);
+    // Recorded BEFORE the launch: setup kills this process (taskkill /IM) seconds after it
+    // starts. The next Settings launch reads it back with the log (issue #60).
+    record_attempt(&tag);
+    let launched = launch_installer_silent(&path, parent, fresh_setup_log().as_deref());
+    if launched.is_err() {
+        forget_update_attempt(); // the caller says why; there is nothing for Settings to report
+    }
     drop(installer_lock); // the elevated process has opened the image (or the launch failed)
                           // On failure nothing will ever run `path`, so this removes it. On success it is a no-op:
                           // the running setup has the file mapped as its image, and Windows refuses to delete a
-                          // mapped image (the same rule `SwapAsideInUseDll` works around by renaming). Which is also
+                          // mapped image (the same rule `SwapAsideHeldFiles` works around by renaming). Which is also
                           // what makes the call harmless, since Inno's Setup.tmp re-opens setup.exe by path for its
                           // payload. The file left behind is removed by `sweep_stale_installers` next time.
     cleanup_installer_payload(&path);

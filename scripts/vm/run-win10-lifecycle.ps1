@@ -317,7 +317,7 @@ $f13up = Invoke-Command -Session $session -ScriptBlock {
     $dll = 'C:\Program Files\SageThumbs2K\sagethumbs2k.dll'
     # Hold the DLL open in a background process so the upgrade cannot replace it. NOT a
     # LoadLibrary: Windows lets a mapped image be RENAMED, and the installer's own
-    # SwapAsideInUseDll renames a loaded DLL aside and drops the new one in place, so the
+    # SwapAsideHeldFiles renames a loaded DLL aside and drops the new one in place, so the
     # stale path never fires for a merely loaded DLL. A handle opened WITHOUT delete sharing
     # (what an antivirus scan or an indexer holds) refuses the rename with a sharing
     # violation; Inno then falls back to restartreplace, the on-disk DLL stays the OLD

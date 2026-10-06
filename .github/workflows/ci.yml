@@ -466,7 +466,9 @@ jobs:
           $setup = Get-ChildItem dist/SageThumbs2K-Setup-*.exe |
             Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
           if (-not $setup) { throw 'No built installer found in dist/.' }
-          ./scripts/test-self-update.ps1 -Setup $setup.FullName
+          # -Hold: a SYSTEM process maps install files and a handle pins one, the machine
+          # issue #60's silent update rolled back on. It must land with every holder alive.
+          ./scripts/test-self-update.ps1 -Setup $setup.FullName -Hold
 
   # A native ARM64 runner catches architecture-specific Windows/COM/linker drift
   # that an x64 cross-build cannot. It deliberately skips the engine payload:

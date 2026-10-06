@@ -212,6 +212,26 @@ fn update_piggyback_wanted(args: &[String]) -> bool {
     !args.iter().any(|a| EXCLUDED.contains(&a.as_str()))
 }
 
+/// Say so when the last self-update did not install (issue #60): it used to end with the old
+/// version back on screen and not one word about why. Once per attempt, with setup's own
+/// reason; Yes opens the releases page for a manual install.
+unsafe fn report_failed_update() {
+    let Some(body) = st2k_appkit::update::failed_update_report() else {
+        return;
+    };
+    let text = win::wide(&body);
+    let cap = win::wide("SageThumbs 2K update");
+    let answer = MessageBoxW(
+        None,
+        windows::core::PCWSTR(text.as_ptr()),
+        windows::core::PCWSTR(cap.as_ptr()),
+        MB_YESNO | MB_ICONWARNING,
+    );
+    if answer == IDYES {
+        win::open_url(st2k_appkit::update::RELEASES_URL);
+    }
+}
+
 fn main() {
     // Capture panics to the diagnostics log before the process aborts (panic=abort).
     st2k_base::safety::install_panic_hook("app");
@@ -265,6 +285,7 @@ fn main() {
         // Placed after every headless/one-shot mode has returned, so only a real, visible
         // launch can ever raise it.
         crate::first_run::show_if_first_run();
+        report_failed_update();
 
         // Opening the Settings window is the natural moment to self-heal the hotkey service:
         // if it's enabled (or a custom hotkey is bound) but not running — e.g. it was

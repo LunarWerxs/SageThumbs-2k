@@ -181,6 +181,7 @@ pub fn report(file: Option<&str>) -> String {
         ),
         None => r.line(S::Warn, "Diagnostics log", "LOCALAPPDATA is unset"),
     }
+    append_setup_log(&mut r);
 
     // One snapshot for the whole report, instead of `check_extensions`'s ~330-format
     // sweep (and, now, `check_progid_handlers`'s matching sweep) each re-reading and
