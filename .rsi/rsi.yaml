@@ -6,7 +6,6 @@ metrics:
     unit: allocations
     measure: "cargo test -p sagethumbs2k-codecs --test alloc_ceilings -- --nocapture"
     pick: 'allocs=(\d+)'
-    heavy: true
     gate: exact
   - id: thumbnail.alloc.peak
     kind: size
@@ -14,5 +13,4 @@ metrics:
     unit: bytes
     measure: "cargo test -p sagethumbs2k-codecs --test alloc_ceilings -- --nocapture"
     pick: 'peak=(\d+)'
-    heavy: true
     gate: exact
