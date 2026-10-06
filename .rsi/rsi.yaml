@@ -1,0 +1,18 @@
+schema: hydra-rsi/1
+metrics:
+  - id: thumbnail.alloc.count
+    kind: count
+    better: lower
+    unit: allocations
+    measure: "cargo test --test alloc_ceilings -- --nocapture"
+    pick: 'allocs=(\d+)'
+    heavy: true
+    gate: exact
+  - id: thumbnail.alloc.peak
+    kind: size
+    better: lower
+    unit: bytes
+    measure: "cargo test --test alloc_ceilings -- --nocapture"
+    pick: 'peak=(\d+)'
+    heavy: true
+    gate: exact

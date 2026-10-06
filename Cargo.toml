@@ -588,3 +588,7 @@ path = "tests/shell_thumbnail_api.rs"
 [[test]]
 name = "video_profile_gate"
 path = "tests/video_profile_gate.rs"
+
+[[test]]
+name = "alloc_ceilings"
+path = "tests/alloc_ceilings.rs"
