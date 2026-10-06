@@ -94,21 +94,26 @@ if ($Hold) {
     $mapped2 = & $firstPresent @('CORE_RL_MagickCore_.dll', 'st2k_dlghook.dll', 'st2k.exe')
     $pinned = & $firstPresent @('modules\coders\IM_MOD_RL_png_.dll', 'st2k.exe')
     New-Item -ItemType Directory -Force -Path $holdDir | Out-Null
+    $ready = Join-Path $holdDir 'ready.txt'
+    # The paths ride IN the script, not on its command line: schtasks refuses a /TR over 261
+    # characters, and four quoted install paths are well past that (the first CI run of -Hold
+    # died on exactly this).
+    $lit = { param($s) "'" + $s.Replace("'", "''") + "'" }
+    $paths = "`$Mapped1 = $(& $lit $installedDll)`n`$Mapped2 = $(& $lit $mapped2)`n" +
+        "`$Pinned = $(& $lit $pinned)`n`$Ready = $(& $lit $ready)`n"
     # LOAD_LIBRARY_AS_IMAGE_RESOURCE maps each file as an IMAGE (what blocks an overwrite, as a
     # real load does) without running any of its code in a SYSTEM process.
-    Set-Content -LiteralPath $holdScript -Encoding utf8 -Value @'
-param([string]$Mapped1, [string]$Mapped2, [string]$Pinned, [string]$Ready)
+    Set-Content -LiteralPath $holdScript -Encoding utf8 -Value ($paths + @'
 Add-Type -Namespace St2kHold -Name K -MemberDefinition '[DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern IntPtr LoadLibraryExW(string p, IntPtr h, uint f);'
 $a = [St2kHold.K]::LoadLibraryExW($Mapped1, [IntPtr]::Zero, 0x20)
 $b = [St2kHold.K]::LoadLibraryExW($Mapped2, [IntPtr]::Zero, 0x20)
 $fs = [System.IO.File]::Open($Pinned, 'Open', 'Read', 'Read')
 "mapped=$($a -ne [IntPtr]::Zero),$($b -ne [IntPtr]::Zero) pinned=$($fs.Length)" | Set-Content -LiteralPath $Ready
 Start-Sleep -Seconds 900
-'@
-    $ready = Join-Path $holdDir 'ready.txt'
-    $tr = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$holdScript`" -Mapped1 `"$installedDll`" -Mapped2 `"$mapped2`" -Pinned `"$pinned`" -Ready `"$ready`""
-    schtasks.exe /Create /TN $holdTask /RU SYSTEM /SC ONCE /ST 23:59 /F /TR $tr | Out-Null
-    if ($LASTEXITCODE) { throw "-Hold needs an elevated shell: could not create the SYSTEM holder task (schtasks exit $LASTEXITCODE)." }
+'@)
+    $tr = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$holdScript`""
+    $made = schtasks.exe /Create /TN $holdTask /RU SYSTEM /SC ONCE /ST 23:59 /F /TR $tr 2>&1
+    if ($LASTEXITCODE) { throw "-Hold could not create the SYSTEM holder task (it needs an elevated shell): $made" }
     schtasks.exe /Run /TN $holdTask | Out-Null
     $until = (Get-Date).AddSeconds(30)
     while (-not (Test-Path -LiteralPath $ready) -and (Get-Date) -lt $until) { Start-Sleep -Milliseconds 500 }

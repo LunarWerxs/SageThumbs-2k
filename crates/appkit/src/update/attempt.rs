@@ -234,6 +234,20 @@ pub(super) fn report_text(
     text
 }
 
+/// The most of setup's log [`failed_update_report`] reads: its verdict is at the end, a whole
+/// install logs a few hundred KB, and the file sits in a user-writable folder.
+const LOG_TAIL: u64 = 4 * 1024 * 1024;
+
+fn read_log_tail(p: &Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(p).ok()?;
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(len.saturating_sub(LOG_TAIL))).ok()?;
+    let mut buf = Vec::new();
+    f.take(LOG_TAIL).read_to_end(&mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
 /// The Settings launch check: the message to show if the last self-update did not install,
 /// at most once per attempt. `None` when there was no attempt, it landed, or it may still be
 /// running.
@@ -242,7 +256,12 @@ pub fn failed_update_report() -> Option<String> {
     let record = std::fs::read_to_string(&marker).ok()?;
     let mut lines = record.lines();
     let started = lines.next().and_then(|l| l.trim().parse::<u64>().ok());
-    let tag = lines.next().map(str::trim).filter(|t| !t.is_empty());
+    // Re-printed from its numbers: the record sits in a user-writable folder, and its text
+    // must never reach the dialog as written.
+    let tag = lines
+        .next()
+        .and_then(|l| parse_ver(l.trim()))
+        .map(|(a, b, c)| format!("{a}.{b}.{c}"));
     let (Some(started), Some(tag)) = (started, tag) else {
         let _ = std::fs::remove_file(&marker);
         return None;
@@ -250,11 +269,9 @@ pub fn failed_update_report() -> Option<String> {
     // Only the log this attempt handed to setup speaks for it (see `record_attempt`).
     let log_handed = lines.next().is_some_and(|l| l.trim() == "1");
     let log_path = setup_log_path().filter(|p| log_handed && p.exists());
-    let log = log_path
-        .as_ref()
-        .and_then(|p| std::fs::read(p).ok())
-        .map(|b| String::from_utf8_lossy(&b).into_owned());
+    let log = log_path.as_deref().and_then(read_log_tail);
     let running = env!("CARGO_PKG_VERSION");
+    let tag = tag.as_str();
     match attempt_verdict(started, now_secs(), tag, running, log.as_deref()) {
         Verdict::Keep => None,
         Verdict::Forget => {
