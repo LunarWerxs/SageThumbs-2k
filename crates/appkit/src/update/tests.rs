@@ -577,8 +577,82 @@ fn selftest_refuses_a_non_executable_before_any_launch() {
     std::fs::write(&path, b"definitely not a PE image").unwrap();
     // Fails at verification (no MZ), so nothing is ever handed to ShellExecuteW —
     // which is also what makes this safe to run un-elevated in any environment.
-    assert!(!super::run_selftest(&path));
+    assert_eq!(super::run_selftest(&path), super::SELFTEST_FAILED);
     std::fs::remove_file(path).unwrap();
+}
+
+/// Setup refuses to install over a file of ours that Windows' restart-time list still names
+/// (Inno's "previous installation was not completed"), and under the updater's /SILENT that
+/// refusal was a box nobody answered: CI's second held update waited on it for an hour. The
+/// updater refuses first on exactly those names, and never on the parked-image deletions
+/// nearly every update leaves, which would hold back every second update until a restart.
+#[test]
+fn the_restart_list_holds_back_an_update_only_where_setup_would_refuse() {
+    let dir = r"C:\Program Files\SageThumbs2K\";
+    let cases: &[(&str, bool)] = &[
+        // A held file setup queued for the restart: its waiting copy, then its target.
+        (
+            r"*1\??\C:\Program Files\SageThumbs2K\is-NDHP5HTGSW.tmp",
+            true,
+        ),
+        (r"*1!\??\C:\Program Files\SageThumbs2K\st2k.exe", true),
+        (r"!\??\c:\program files\sagethumbs2k\SageThumbs2K.exe", true),
+        // Anything under modules\, a parked one included: setup clears that whole folder.
+        (
+            r"*1\??\C:\Program Files\SageThumbs2K\modules\coders\IM_MOD_RL_png_.dll.old0",
+            true,
+        ),
+        // Parked images at the top level, waiting for deletion: setup never touches them.
+        (
+            r"*1\??\C:\Program Files\SageThumbs2K\sagethumbs2k.dll.old0",
+            false,
+        ),
+        (
+            r"\??\C:\Program Files\SageThumbs2K\CORE_RL_MagickCore_.dll.old12",
+            false,
+        ),
+        (
+            r"\??\C:\Program Files\SageThumbs2K\SageThumbs2K.exe.old3",
+            false,
+        ),
+        // Not a parked image: no number, or not an image.
+        (
+            r"\??\C:\Program Files\SageThumbs2K\sagethumbs2k.dll.old",
+            true,
+        ),
+        (r"\??\C:\Program Files\SageThumbs2K\policy.xml.old0", true),
+        // A delete's empty destination, and other programs' files.
+        ("", false),
+        (r"\??\C:\Program Files\SageThumbs2K Extras\x.dll", false),
+        (r"*1!\??\C:\Windows\System32\drivers\x.sys", false),
+    ];
+    for &(entry, blocks) in cases {
+        let list = [entry.to_string()];
+        assert_eq!(
+            !super::pending::blocking_names(&list, dir).is_empty(),
+            blocks,
+            "{entry:?}"
+        );
+    }
+}
+
+/// The app finds the installed copy through the uninstall key Inno names after the installer's
+/// AppId. A new AppId with the old key here would switch the check above off without a sound.
+#[test]
+fn the_uninstall_key_is_the_installers_app_id() {
+    let iss = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/packaging/installer.iss"),
+    )
+    .unwrap();
+    let id = iss
+        .lines()
+        .find_map(|l| l.strip_prefix("AppId={"))
+        .expect("installer.iss sets AppId");
+    assert!(
+        super::pending::UNINSTALL_KEY.ends_with(&format!(r"\{id}_is1")),
+        "{} does not name AppId {id}",
+        super::pending::UNINSTALL_KEY
+    );
 }
 // ---- The updates-window offer decision -------------------------------------------
 

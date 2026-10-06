@@ -826,3 +826,5 @@ upd_failed_log = "安裝程式的完整記錄：{path}"
 upd_failed_ask = "要開啟發行頁面以手動安裝 {ver} 嗎？"
 upd_btn_available = "有可用更新"
 upd_toast_body_portable = "版本 {ver} 已推出。按一下以下載新的可攜版 zip。"
+
+upd_err_restart_first = "Windows 仍需重新啟動，才能完成 SageThumbs 2K 上一次的更新。請先重新啟動 Windows，然後再安裝這個更新。"

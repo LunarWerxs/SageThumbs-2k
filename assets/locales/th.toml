@@ -823,3 +823,5 @@ upd_failed_log = "บันทึกฉบับเต็มของตัว�
 upd_failed_ask = "เปิดหน้า releases เพื่อติดตั้ง {ver} ด้วยตัวเองหรือไม่?"
 upd_btn_available = "มีอัปเดต"
 upd_toast_body_portable = "มีเวอร์ชัน {ver} แล้ว คลิกเพื่อดาวน์โหลดไฟล์ zip แบบพกพาใหม่"
+
+upd_err_restart_first = "Windows ยังต้องรีสตาร์ตเพื่อให้การอัปเดต SageThumbs 2K ครั้งล่าสุดเสร็จสมบูรณ์ รีสตาร์ต Windows แล้วค่อยติดตั้งการอัปเดตนี้"

@@ -30,8 +30,9 @@
 # same version here, so "the DLL is version X afterwards" cannot tell a replaced DLL from an
 # untouched one; "the DLL exists afterwards" can, and it is what the user needs. The pinned file
 # can only be queued for the restart, so -Hold then also proves setup reports it, and that a
-# second update before that restart cancels the first one's queued copy (which would otherwise
-# put the older file back at the restart).
+# second update before that restart is refused up front by the app ("restart Windows first",
+# exit 3) instead of launching a setup that stops on Inno's own "previous installation was not
+# completed" box.
 #
 # Elevation: the launched setup elevates via the `runas` verb. On GitHub-hosted runners and
 # on dev boxes with silent admin consent this shows no prompt. It INSTALLS/UPGRADES the
@@ -50,36 +51,125 @@ if (-not $App) {
     $App = Join-Path (Join-Path (& "$PSScriptRoot\_targetdir.ps1") 'release') 'SageThumbs2K.exe'
 }
 $Setup = (Resolve-Path -LiteralPath $Setup).Path
-if (-not (Test-Path -LiteralPath $App -PathType Leaf)) { throw "App exe not found: $App" }
 
 $installDir = Join-Path $env:ProgramFiles 'SageThumbs2K'
 $installedExe = Join-Path $installDir 'SageThumbs2K.exe'
 $installedDll = Join-Path $installDir 'sagethumbs2k.dll'
+# --update-selftest's exit for "Windows has to restart first" (update.rs SELFTEST_RESTART_FIRST).
+$restartFirst = 3
+# -App may name the installed EXE itself (the ARM64 release check), which the baseline install
+# below creates.
+if (-not (Test-Path -LiteralPath $App -PathType Leaf) -and $App -ne $installedExe) { throw "App exe not found: $App" }
 
 # First three version components only: Windows stores four and Inno writes X.Y.Z.0.
 function Get-Ver3([string]$path) {
     $v = (Get-Item -LiteralPath $path).VersionInfo
     '{0}.{1}.{2}' -f $v.FileMajorPart, $v.FileMinorPart, $v.FileBuildPart
 }
-$expected = Get-Ver3 $App
-
-if (-not (Test-Path -LiteralPath $installedExe -PathType Leaf)) {
-    Write-Host "  [self-update] baseline: fresh silent install of $(Split-Path -Leaf $Setup)"
-    $p = Start-Process -FilePath $Setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
-    if ($p.ExitCode) { throw "Baseline install failed (setup exit $($p.ExitCode))." }
-    if (-not (Test-Path -LiteralPath $installedExe -PathType Leaf)) {
-        throw "Baseline install finished but $installedExe does not exist."
-    }
-}
-
-Write-Host "  [self-update] installed: $(Get-Ver3 $installedExe) -> expecting $expected via the app's own updater"
 
 # The app's updater hands setup this log path (update/attempt.rs); its tail is what a failure
 # below prints, so a red run says what setup itself saw.
 $setupLog = Join-Path $env:LOCALAPPDATA 'SageThumbs2K-setup.log'
-function Get-SetupLogTail {
-    if (Test-Path -LiteralPath $setupLog) { (Get-Content -LiteralPath $setupLog -Tail 40) -join "`n" } else { '(no setup log)' }
+function Get-SetupLogTail([string]$Path = $setupLog) {
+    if (Test-Path -LiteralPath $Path) { (Get-Content -LiteralPath $Path -Tail 40) -join "`n" } else { '(no setup log)' }
 }
+
+# The setup processes started under $Root: the setup copy and the engine Inno unpacks and runs
+# beside it, both named after that copy. Found by ancestry, so nobody else's setup is touched,
+# and by name, so the app's own notice that setup starts at the end is not waited on.
+function Get-SetupUnder([int]$Root) {
+    $all = @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, Name)
+    $ids = [Collections.Generic.List[int]]::new()
+    $ids.Add($Root)
+    for ($i = 0; $i -lt $ids.Count; $i++) {
+        foreach ($c in $all) {
+            if ($c.ParentProcessId -eq $ids[$i] -and -not $ids.Contains([int]$c.ProcessId)) { $ids.Add([int]$c.ProcessId) }
+        }
+    }
+    @($all | Where-Object { $ids.Contains([int]$_.ProcessId) -and $_.Name -like 'SageThumbs2K-Setup-*' })
+}
+
+# The visible windows of these processes, each with the text of its controls: a message box's
+# question is one of them, so a setup that waits on one says what it asks.
+function Get-WindowTexts([int[]]$Ids) {
+    if (-not $Ids) { return @() }
+    if (-not ('St2kWindows' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class St2kWindows {
+    delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr p, EnumProc f, IntPtr l);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, IntPtr w, StringBuilder l, uint flags, uint ms, out IntPtr result);
+    // WM_GETTEXT, bounded and skipped when hung: GetWindowText cannot read another process's controls.
+    static string Text(IntPtr h) {
+        var s = new StringBuilder(2048);
+        IntPtr n;
+        SendMessageTimeout(h, 0x000D, (IntPtr)s.Capacity, s, 0x0002, 1000, out n);
+        return s.ToString().Trim();
+    }
+    public static List<string> Of(int[] pids) {
+        var lines = new List<string>();
+        EnumWindows((h, l) => {
+            uint pid;
+            GetWindowThreadProcessId(h, out pid);
+            if (Array.IndexOf(pids, (int)pid) < 0 || !IsWindowVisible(h)) return true;
+            var parts = new List<string> { Text(h) };
+            EnumChildWindows(h, (c, l2) => {
+                var t = Text(c);
+                if (t.Length > 0) parts.Add(t);
+                return true;
+            }, IntPtr.Zero);
+            lines.Add(pid + ": " + string.Join(" | ", parts));
+            return true;
+        }, IntPtr.Zero);
+        return lines;
+    }
+}
+'@
+    }
+    [St2kWindows]::Of($Ids)
+}
+
+# Wait for $Proc and the setup it started to finish, for at most $TimeoutSec. Never
+# Start-Process -Wait: it waits on every descendant with no limit, and a setup stuck on a box
+# nobody could answer held the CI job for its whole hour without printing a line. A stall ends
+# what this run started and says what setup was showing.
+function Wait-Setup($Proc, [string]$What, [string]$Log = $setupLog) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        if ($Proc.HasExited -and -not (Get-SetupUnder $Proc.Id)) { return }
+        Start-Sleep -Seconds 1
+    }
+    $stuck = Get-SetupUnder $Proc.Id
+    $windows = (Get-WindowTexts @($stuck | ForEach-Object { [int]$_.ProcessId })) -join "`n"
+    if (-not $windows) { $windows = '(none visible)' }
+    $stuck | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    if (-not $Proc.HasExited) { $Proc.Kill() }
+    throw "$What did not finish within ${TimeoutSec}s. Setup's windows:`n$windows`nSetup's log ends:`n$(Get-SetupLogTail $Log)"
+}
+
+if (-not (Test-Path -LiteralPath $installedExe -PathType Leaf)) {
+    Write-Host "  [self-update] baseline: fresh silent install of $(Split-Path -Leaf $Setup)"
+    $baselineLog = Join-Path ([IO.Path]::GetTempPath()) "st2k-selfupdate-baseline-$PID.log"
+    $p = Start-Process -FilePath $Setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$baselineLog`"" -PassThru
+    $null = $p.Handle # keeps ExitCode readable once it exits
+    Wait-Setup $p 'The baseline install' $baselineLog
+    if ($p.ExitCode) { throw "Baseline install failed (setup exit $($p.ExitCode)). Setup's log ends:`n$(Get-SetupLogTail $baselineLog)" }
+    if (-not (Test-Path -LiteralPath $installedExe -PathType Leaf)) {
+        throw "Baseline install finished but $installedExe does not exist."
+    }
+}
+if (-not (Test-Path -LiteralPath $App -PathType Leaf)) { throw "App exe not found: $App" }
+$expected = Get-Ver3 $App
+
+Write-Host "  [self-update] installed: $(Get-Ver3 $installedExe) -> expecting $expected via the app's own updater"
 
 $holdTask = "st2k-selfupdate-hold-$PID"
 $holdDir = Join-Path ([IO.Path]::GetTempPath()) $holdTask
@@ -142,7 +232,7 @@ $t0 = (Get-Date).ToUniversalTime()
 # The app-side pipeline. It exits as soon as the ELEVATED INSTALLER PROCESS is running
 # (mirroring the production caller, which exits so the installer can replace it), so a zero
 # exit here means verify + lock + launch all succeeded - the half that was broken for
-# twenty releases. The polling below proves the other half.
+# twenty releases. Wait-Setup waits for that setup too, and the polling below proves it landed.
 $orphan = $null
 try {
     if ($Hold) {
@@ -151,11 +241,16 @@ try {
         Rename-Item -LiteralPath $installedDll -NewName (Split-Path -Leaf $orphan)
         Write-Host "  [self-update] -Hold: left the shell extension at $(Split-Path -Leaf $orphan), its own name empty (a failed 3.6.0 update's leftovers)"
     }
-    $p = Start-Process -FilePath $App -ArgumentList '--update-selftest', "`"$Setup`"" -Wait -PassThru
+    $p = Start-Process -FilePath $App -ArgumentList '--update-selftest', "`"$Setup`"" -PassThru
+    $null = $p.Handle
+    Wait-Setup $p 'The update the app launched'
+    if ($p.ExitCode -eq $restartFirst) {
+        throw "--update-selftest refused: Windows still has to restart to finish an earlier update of this install, and setup would refuse too. Restart Windows, then run this again. See %LOCALAPPDATA%\SageThumbs2K.log (update-selftest lines)."
+    }
     if ($p.ExitCode) {
         throw "--update-selftest exited $($p.ExitCode): the updater could not verify, lock, or LAUNCH the installer. See %LOCALAPPDATA%\SageThumbs2K.log (update-selftest lines)."
     }
-    Write-Host "  [self-update] elevated installer launched; waiting for the upgrade to land..."
+    Write-Host "  [self-update] the app launched setup elevated, and setup has finished"
 
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     $landed = $false
@@ -200,26 +295,30 @@ try {
         }
         Write-Host "  [self-update] -Hold: setup reported $pinnedName as waiting for the restart" -ForegroundColor Green
 
-        # A SECOND update before that restart: the queued copy is the FIRST update's, and if it
-        # still ran at the restart it would put that older file back over the second update's.
-        # Setup must cancel it once its own files are in.
+        # A SECOND update before that restart. Setup will not install over a file Windows still
+        # has to replace: it stops on "a previous installation was not completed", a box nobody
+        # can answer under the updater's silent launch (it held CI for an hour). The app must
+        # refuse first, say to restart Windows, and launch nothing.
         Stop-Holders
+        $appLog = Join-Path $env:LOCALAPPDATA 'SageThumbs2K.log'
+        $seen = if (Test-Path -LiteralPath $appLog) { (Get-Content -LiteralPath $appLog -Raw).Length } else { 0 }
         $t1 = (Get-Date).ToUniversalTime()
-        $p = Start-Process -FilePath $App -ArgumentList '--update-selftest', "`"$Setup`"" -Wait -PassThru
-        if ($p.ExitCode) { throw "The second --update-selftest exited $($p.ExitCode)." }
-        $deadline = (Get-Date).AddSeconds($TimeoutSec)
-        $again = $false
-        while ((Get-Date) -lt $deadline) {
-            Start-Sleep -Seconds 3
-            $unins = Get-Item -LiteralPath $uninsDat -ErrorAction SilentlyContinue
-            if ($unins -and $unins.LastWriteTimeUtc -gt $t1) { $again = $true; break }
+        $p = Start-Process -FilePath $App -ArgumentList '--update-selftest', "`"$Setup`"" -PassThru
+        $null = $p.Handle
+        Wait-Setup $p 'The second update'
+        if ($p.ExitCode -ne $restartFirst) {
+            throw "A second update before the restart exited $($p.ExitCode), not $restartFirst (restart Windows first). Setup's log ends:`n$(Get-SetupLogTail)"
         }
-        if (-not $again) { throw "The second update did not land within ${TimeoutSec}s. Setup's log ends:`n$(Get-SetupLogTail)" }
-        $log = Get-Content -LiteralPath $setupLog -Raw
-        if ($log -notmatch "Cancelled the restart-time replacement of .*$([regex]::Escape($pinnedName)) queued by an earlier setup") {
-            throw "The second update left the first update's restart-time copy of $pinnedName queued: the restart would put the older file back. Setup's log ends:`n$(Get-SetupLogTail)"
+        if ((Get-Item -LiteralPath $uninsDat).LastWriteTimeUtc -gt $t1) {
+            throw "A second update before the restart still ran setup. Setup's log ends:`n$(Get-SetupLogTail)"
         }
-        Write-Host "  [self-update] -Hold: the second update cancelled the first one's queued $pinnedName" -ForegroundColor Green
+        $all = if (Test-Path -LiteralPath $appLog) { Get-Content -LiteralPath $appLog -Raw } else { '' }
+        $new = if ($all.Length -ge $seen) { $all.Substring($seen) } else { $all }
+        $pinnedDir = [regex]::Escape((Split-Path -Parent $pinned))
+        if ($new -notmatch "Windows has to restart first: its rename list still names $pinnedDir\\") {
+            throw "The app refused the second update without naming the file in $(Split-Path -Parent $pinned) that waits for the restart. Its log's new lines:`n$new"
+        }
+        Write-Host "  [self-update] -Hold: a second update before the restart asks for the restart and launches nothing" -ForegroundColor Green
     }
 } finally {
     if ($Hold) { Stop-Holders }

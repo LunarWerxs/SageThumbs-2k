@@ -829,3 +829,5 @@ upd_failed_log = "설치 프로그램 전체 로그: {path}"
 upd_failed_ask = "{ver}을(를) 직접 설치하려면 릴리스 페이지를 열까요?"
 upd_btn_available = "업데이트 사용 가능"
 upd_toast_body_portable = "버전 {ver}을(를) 사용할 수 있습니다. 새 포터블 zip을 다운로드하려면 클릭하세요."
+
+upd_err_restart_first = "SageThumbs 2K의 지난 업데이트를 마치려면 아직 Windows를 다시 시작해야 합니다. Windows를 다시 시작한 다음 이 업데이트를 설치하세요."

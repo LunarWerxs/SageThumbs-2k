@@ -584,18 +584,16 @@ var
   WasUpgrade: Boolean;
   // ssPostInstall was reached: every file is written. SettleParkedFiles reads it.
   InstallCompleted: Boolean;
-  // The restart-time replacements under {app} that were already queued when this setup started
-  // (PendingReplacesUnder pairs), read by StaleAfterInstall and cleared by ssPostInstall.
-  EarlierPending: TArrayOfString;
 
 // ---- replacements Windows makes at the next restart ---------------------------------------
 //
 // A file [Files] could not replace (held without delete sharing) is written beside its target
-// and queued for a rename when Windows next starts (`restartreplace`). Until that restart the
-// queue still holds the OLD setup's copy. A second update before the restart overwrote the file
-// in place, and the restart then put the earlier version back on top of it: a newer EXE with an
-// older DLL or ImageMagick module, registered and reported as the newer version. An uninstall
-// before the restart had the restart recreate the file in Program Files.
+// and queued for a rename when Windows next starts (`restartreplace`). Another setup cannot
+// overwrite it before that restart: Inno itself refuses to install while Windows' rename list
+// names any file this setup installs or deletes ("a previous installation was not completed"),
+// before our PrepareToInstall runs, and the app's updater asks for the restart first instead
+// of launching a setup that would stop on that box (update/pending.rs). An UNINSTALL is not
+// refused, though, and before this the restart then recreated the file in Program Files.
 
 // One entry of Windows' rename list as a plain path: the "*<digits>" mark recent Windows puts in
 // front, then the "!" a replace-existing rename's destination carries (Replace says whether it
@@ -658,29 +656,11 @@ begin
     end;
 end;
 
-// Is S one of the waiting copies (even indexes) in Pairs?
-function IsPendingSource(const Pairs: TArrayOfString; const S: String): Boolean;
-var
-  i: Integer;
-begin
-  Result := False;
-  i := 0;
-  while i + 1 < GetArrayLength(Pairs) do
-  begin
-    if CompareText(Pairs[i], S) = 0 then
-    begin
-      Result := True;
-      Exit;
-    end;
-    i := i + 2;
-  end;
-end;
-
-// Cancel the queued replacements in Pairs by deleting their waiting copies: Windows skips a
-// rename whose source is gone. Only a copy under Dir is ever touched. AlsoTarget queues the
-// target for deletion after the rename (uninstall: nothing may come back at the restart, even
-// if a copy could not be deleted now).
-procedure CancelPendingReplaces(const Pairs: TArrayOfString; const Dir: String; AlsoTarget: Boolean);
+// Uninstall: cancel the queued replacements in Pairs by deleting their waiting copies (Windows
+// skips a rename whose source is gone; only a copy under Dir is ever touched), and queue each
+// target for deletion after the rename, so nothing comes back at the restart even when a copy
+// could not be deleted now.
+procedure CancelPendingReplaces(const Pairs: TArrayOfString; const Dir: String);
 var
   i: Integer;
   Under: String;
@@ -691,13 +671,12 @@ begin
   begin
     if Copy(Lowercase(Pairs[i]), 1, Length(Under)) = Under then
     begin
-      // Already gone counts: [InstallDelete] clears modules\, waiting copies included.
+      // Already gone counts: the uninstall may have removed it with the rest of {app}.
       if (not FileExists(Pairs[i])) or DeleteFile(Pairs[i]) then
-        Log('Cancelled the restart-time replacement of ' + Pairs[i + 1] + ' queued by an earlier setup')
+        Log('Cancelled the restart-time replacement of ' + Pairs[i + 1])
       else
         Log('Could not delete ' + Pairs[i] + ', queued to replace ' + Pairs[i + 1] + ' at restart');
-      if AlsoTarget then
-        MoveFileExW(Pairs[i + 1], 0, MOVEFILE_DELAY_UNTIL_REBOOT);
+      MoveFileExW(Pairs[i + 1], 0, MOVEFILE_DELAY_UNTIL_REBOOT);
     end;
     i := i + 2;
   end;
@@ -783,8 +762,9 @@ end;
 // its toast says "restart Windows to finish".
 //
 // The DLL and the EXE are read back by version; every other file (an ImageMagick DLL or module,
-// the modern-menu package) carries none, so a replacement THIS setup queued for the restart is
-// what names it - one queued by an earlier setup was already there in PrepareToInstall.
+// the modern-menu package) carries none, so a replacement queued for the restart is what names
+// it. It is this setup's own: Inno does not start over one an earlier setup left (see "replacements
+// Windows makes at the next restart").
 function StaleImage: String;
 begin
   Result := '';
@@ -797,22 +777,13 @@ end;
 function StaleAfterInstall: String;
 var
   Queued: TArrayOfString;
-  i: Integer;
 begin
   Result := StaleImage;
   if Result <> '' then
     Exit;
   Queued := PendingReplacesUnder(ExpandConstant('{app}'));
-  i := 0;
-  while i + 1 < GetArrayLength(Queued) do
-  begin
-    if not IsPendingSource(EarlierPending, Queued[i]) then
-    begin
-      Result := ExtractFileName(Queued[i + 1]);
-      Exit;
-    end;
-    i := i + 2;
-  end;
+  if GetArrayLength(Queued) >= 2 then
+    Result := ExtractFileName(Queued[1]);
 end;
 
 // [Run] check for the per-user cache-rebuild queue (see that entry): only when the shell
@@ -959,18 +930,21 @@ end;
 // was set up for business use (the HKLM answer says so, or the breadcrumb remembers it and
 // the app has not yet shown its own one-time downgrade notice). Not a wall: No goes back to
 // the page, Yes proceeds and the app's notice fires once more on the next Settings open,
-// after which neither asks again. A silent run never reaches this (no wizard pages).
+// after which neither asks again. Interactive only: a silent run clicks Next through every
+// page too, this one included, but nobody picked anything there and its answer is never
+// stored (ApplyLicenseModeChoice), so asking would only stop a self-update or an unattended
+// install on a question.
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
-  if (CurPageID = LicensePage.ID) and (LicensePage.SelectedValueIndex = 0)
+  if (not WizardSilent) and (CurPageID = LicensePage.ID) and (LicensePage.SelectedValueIndex = 0)
      and ((LicenseModeInitial = 1) or BreadcrumbSaysWasBusiness) then
-    Result := MsgBox('This computer was set up for business use of SageThumbs 2K.'
+    Result := SuppressibleMsgBox('This computer was set up for business use of SageThumbs 2K.'
       + #13#10#13#10
       + 'Personal use is free only for personal, non-commercial use. If this is a work'
       + ' computer, go back and keep Business.'
       + #13#10#13#10
-      + 'Continue with Personal use?', mbConfirmation, MB_YESNO) = IDYES;
+      + 'Continue with Personal use?', mbConfirmation, MB_YESNO, IDYES) = IDYES;
 end;
 
 // Do not re-ask somebody who has already answered - an upgrade should be quiet. A first
@@ -1042,9 +1016,6 @@ begin
   begin
     InstallCompleted := True;
     Stale := StaleAfterInstall;
-    // Every file of this release is written (or queued by THIS setup), so an earlier setup's
-    // restart-time replacements would only put older files back on top of these.
-    CancelPendingReplaces(EarlierPending, ExpandConstant('{app}'), False);
     // Remove the start-up re-registration task an EARLIER stale install may have left; it is
     // recreated just below if this install is stale too (2026-09-19 audit F13).
     Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN "SageThumbs2K-Reregister" /F', '',
@@ -1340,8 +1311,6 @@ begin
   // First, before anything looks at which files exist: a setup that died mid-install can have
   // left the app's own EXE parked under another name.
   SweepParkedLeftovers(ExpandConstant('{app}'));
-  // What an earlier setup left queued for the restart, before [Files] adds anything of ours.
-  EarlierPending := PendingReplacesUnder(ExpandConstant('{app}'));
   // Remember whether SageThumbs was ALREADY here, before any file is copied (afterwards the
   // exe always exists, so this is the only moment the answer is knowable). Drives IsUpgrade,
   // which suppresses the first-run welcome for someone who has used the app for months.
@@ -2085,7 +2054,7 @@ begin
   if CurUninstallStep = usPostUninstall then begin
     // A replacement an update queued for a restart that has not happened yet would put that
     // file back into Program Files after this uninstall: cancel it, and remove its target then.
-    CancelPendingReplaces(PendingReplacesUnder(ExpandConstant('{app}')), ExpandConstant('{app}'), True);
+    CancelPendingReplaces(PendingReplacesUnder(ExpandConstant('{app}')), ExpandConstant('{app}'));
     for TaskR := 1 to ParamCount do
       if CompareText(ParamStr(TaskR), '/RESETTHUMBCACHE') = 0 then
         ResetThumbCache := True;

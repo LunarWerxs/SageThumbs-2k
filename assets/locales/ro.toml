@@ -824,3 +824,5 @@ upd_failed_log = "Jurnalul complet al programului de instalare: {path}"
 upd_failed_ask = "Deschizi pagina de versiuni pentru a instala {ver} manual?"
 upd_btn_available = "Actualizare disponibilă"
 upd_toast_body_portable = "Versiunea {ver} este disponibilă. Dă clic pentru a descărca noul zip portabil."
+
+upd_err_restart_first = "Windows încă trebuie repornit pentru a finaliza ultima actualizare a SageThumbs 2K. Repornește Windows, apoi instalează aceasta."

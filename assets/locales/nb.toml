@@ -829,3 +829,5 @@ upd_failed_log = "Fullstendig logg fra installasjonen: {path}"
 upd_failed_ask = "Åpne utgivelsessiden for å installere {ver} manuelt?"
 upd_btn_available = "Oppdatering tilgjengelig"
 upd_toast_body_portable = "Versjon {ver} er tilgjengelig. Klikk for å laste ned den nye portable zip-filen."
+
+upd_err_restart_first = "Windows må fortsatt startes på nytt for å fullføre den forrige oppdateringen av SageThumbs 2K. Start Windows på nytt, og installer deretter denne."

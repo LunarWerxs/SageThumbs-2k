@@ -151,6 +151,16 @@ pub(super) unsafe fn offer_update(hwnd: HWND) {
         show_update_box(Some(hwnd), t("upd_in_progress"), MB_OK | MB_ICONINFORMATION);
         return;
     }
+    // Windows still has to restart to finish the last update, and setup would refuse until it
+    // has: say so before asking, not after a download.
+    if update::restart_pending() {
+        show_update_box(
+            Some(hwnd),
+            t("upd_err_restart_first"),
+            MB_OK | MB_ICONINFORMATION,
+        );
+        return;
+    }
     let cap = wide(t("upd_confirm_title"));
     let prompt = wide(t("upd_confirm_install"));
     if MessageBoxW(
@@ -285,6 +295,10 @@ unsafe fn finish_install(owner: Option<HWND>, result: Result<String, update::Upd
         }
         // The user backed out themselves — the one case that stays silent.
         Err(update::UpdateError::Cancelled) => {}
+        // A restart is the fix, not a manual download.
+        Err(e @ update::UpdateError::RestartFirst) => {
+            show_update_box(owner, e.message(), MB_OK | MB_ICONINFORMATION);
+        }
         // Anything else: SAY SO, then fall back to the manual download page. Silently
         // opening a browser (or, worse, doing nothing at all, which is what a scanner block
         // used to produce) is why "the auto-updater doesn't work" arrived with no detail.

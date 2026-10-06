@@ -819,3 +819,5 @@ upd_failed_log = "Asennusohjelman täysi loki: {path}"
 upd_failed_ask = "Avataanko julkaisusivu, jotta voit asentaa version {ver} käsin?"
 upd_btn_available = "Päivitys saatavilla"
 upd_toast_body_portable = "Versio {ver} on saatavilla. Napsauta ladataksesi uuden kannettavan zip-tiedoston."
+
+upd_err_restart_first = "Windows täytyy vielä käynnistää uudelleen, jotta SageThumbs 2K:n edellinen päivitys saadaan valmiiksi. Käynnistä Windows uudelleen ja asenna sitten tämä päivitys."

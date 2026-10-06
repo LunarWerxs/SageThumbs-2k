@@ -558,6 +558,17 @@ try {
         Invoke-InstallerLint -IssPath $restartManager
     }
 
+    # The Personal-or-Business confirmation as it shipped through 3.6.0: a plain MsgBox, which
+    # /SUPPRESSMSGBOXES does not answer, in a page callback a silent run still calls.
+    $plainBox = Join-Path $scratch 'plain-msgbox.iss'
+    $needle = "SuppressibleMsgBox('This computer was set up for business use of SageThumbs 2K.'"
+    $mutated = $source.Replace($needle, "MsgBox('This computer was set up for business use of SageThumbs 2K.'")
+    if ($mutated -ceq $source) { throw 'test mutation did not restore the plain licence MsgBox' }
+    Set-Content -LiteralPath $plainBox -Value $mutated -Encoding utf8
+    Assert-LintFails 'a question an unattended install cannot suppress' {
+        Invoke-InstallerLint -IssPath $plainBox
+    }
+
     $unexpected = Join-Path $payload 'unexpected-third-party.dat'
     [IO.File]::WriteAllBytes($unexpected, [byte[]](1))
     Assert-LintFails 'staged basename outside cleanup allowlist' {

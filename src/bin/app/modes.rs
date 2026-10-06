@@ -57,10 +57,12 @@ pub(super) unsafe fn dispatch_update_modes(args: &[String]) -> bool {
         return true;
     }
     if let Some(pos) = args.iter().position(|a| a == "--update-selftest") {
-        let ok = args
+        let code = args
             .get(pos + 1)
-            .is_some_and(|p| st2k_appkit::update::run_selftest(std::path::Path::new(p)));
-        std::process::exit(if ok { 0 } else { 1 });
+            .map_or(st2k_appkit::update::SELFTEST_FAILED, |p| {
+                st2k_appkit::update::run_selftest(std::path::Path::new(p))
+            });
+        std::process::exit(code);
     }
     if args.iter().any(|a| a == "--first-run-seen") {
         crate::first_run::mark_shown();

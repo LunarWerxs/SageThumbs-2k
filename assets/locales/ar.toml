@@ -823,3 +823,5 @@ upd_failed_log = "سجل برنامج التثبيت الكامل: {path}"
 upd_failed_ask = "هل تريد فتح صفحة الإصدارات لتثبيت {ver} يدويًا؟"
 upd_btn_available = "يتوفر تحديث"
 upd_toast_body_portable = "يتوفر الإصدار {ver}. انقر لتنزيل ملف zip المحمول الجديد."
+
+upd_err_restart_first = "لا يزال Windows بحاجة إلى إعادة التشغيل لإنهاء آخر تحديث لـ SageThumbs 2K. أعد تشغيل Windows، ثم ثبّت هذا التحديث."

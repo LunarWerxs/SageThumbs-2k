@@ -830,3 +830,5 @@ upd_failed_log = "A telepítő teljes naplója: {path}"
 upd_failed_ask = "Megnyitja a kiadások oldalát, hogy kézzel telepítse a {ver} verziót?"
 upd_btn_available = "Frissítés érhető el"
 upd_toast_body_portable = "Elérhető a {ver} verzió. Kattintson az új hordozható zip letöltéséhez."
+
+upd_err_restart_first = "A Windowsnak még újra kell indulnia, hogy befejeződjön a SageThumbs 2K legutóbbi frissítése. Indítsa újra a Windowst, majd telepítse ezt a frissítést."

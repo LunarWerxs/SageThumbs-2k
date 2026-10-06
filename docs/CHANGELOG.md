@@ -18,10 +18,15 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   you open Settings it tells you, with setup's own reason and its log, and offers the download
   page.
 - **Updating from inside the app, fixed in more places:**
-  - A file an update left for the next restart (because a program was using it) could be put
-    back by that restart after a second update had already replaced it, leaving an older file
-    beside a newer SageThumbs. Setup now cancels what an earlier update left waiting, and an
-    uninstall does too, so nothing comes back after you remove SageThumbs.
+  - When an update leaves a file for the next restart (because a program was using it),
+    updating again before that restart now tells you to restart Windows first. It used to start
+    setup, which stopped on a "previous installation was not completed" message, out of sight
+    of a silent update, and never finished. Removing SageThumbs before that restart no longer
+    lets the restart put the file back.
+  - On a PC once set up for business use and later for personal use, an update could stop to
+    ask "Continue with Personal use?", and an unattended install (winget, an administrator's
+    silent deployment) waited on that question for ever. Setup now asks it only when you run
+    setup yourself.
   - The notice after an update says when a restart is still needed to finish it, instead of
     only "you're now on" the new version.
   - Cancelling setup while it copied files could leave SageThumbs without its ImageMagick

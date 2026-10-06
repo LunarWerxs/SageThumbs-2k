@@ -289,9 +289,5 @@ jobs:
       - name: Install it, then let the installed app update itself in place
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath $env:setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
-          if ($p.ExitCode) { throw "the ARM64 setup failed to install (exit $($p.ExitCode))" }
-          $app = Join-Path $env:ProgramFiles 'SageThumbs2K\SageThumbs2K.exe'
-          $machine = (Get-Item -LiteralPath $app).VersionInfo
-          Write-Host "installed $($machine.FileVersion)"
-          ./scripts/test-self-update.ps1 -Setup $env:setup -App $app
+          # The harness installs it first (bounded), then runs the installed app's updater.
+          ./scripts/test-self-update.ps1 -Setup $env:setup -App (Join-Path $env:ProgramFiles 'SageThumbs2K\SageThumbs2K.exe')

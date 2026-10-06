@@ -703,7 +703,8 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   is available, SageThumbs can **download and install it for you**: a progress bar shows the
   download, the file is integrity-checked, Windows asks once for permission, and the new
   version installs in the background and confirms with a quiet tray notification when it's
-  done, or tells you when a Windows restart is still needed to finish it. A second
+  done, or tells you when a Windows restart is still needed to finish it (until that restart,
+  it asks you to restart before installing another update). A second
   notification offers to refresh your thumbnails: instead of waiting for Explorer's thumbnail
   cache to expire on its own, clicking it refreshes them right away. If antivirus, a security
   policy or GitHub itself gets in the way, it **says so** rather than

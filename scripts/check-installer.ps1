@@ -254,6 +254,23 @@ foreach ($entry in $actualFileEntries) {
     }
 }
 
+# A question setup asks must never stop an unattended run. A plain MsgBox or TaskDialogMsgBox
+# shows even under /SUPPRESSMSGBOXES (winget's and an admin's /VERYSILENT deployment), and a
+# silent run still calls the page callbacks: Inno clicks Next through every page, custom pages
+# included, so NextButtonClick's Personal-or-Business check asked its question in the middle of
+# a silent update. Only the Suppressible forms, which /SUPPRESSMSGBOXES answers with their
+# default.
+for ($i = 0; $i -lt $lines.Count; $i++) {
+    $code = $lines[$i] -replace '//.*$', '' -replace '\{[^}]*\}', ''
+    if ($code -match '(?<![\w])(MsgBox|TaskDialogMsgBox)\s*\(') {
+        $violations.Add(
+            "  installer.iss:$($i + 1): $($Matches[1]) shows even under /SUPPRESSMSGBOXES and " +
+            "stops an unattended install; use Suppressible$($Matches[1]) with a default answer: " +
+            $lines[$i].Trim()
+        )
+    }
+}
+
 if ($ManagedPayloadPath) {
     if (-not (Test-Path -LiteralPath $ManagedPayloadPath -PathType Container)) {
         $violations.Add("  staged managed payload is missing: $ManagedPayloadPath")
@@ -320,5 +337,5 @@ if ($violations.Count -gt 0) {
     exit 1
 }
 
-Write-Host "installer.iss lint OK (resource-safe forms + scoped upgrades + core policy)" -ForegroundColor Green
+Write-Host "installer.iss lint OK (resource-safe forms + scoped upgrades + core policy + suppressible questions)" -ForegroundColor Green
 exit 0

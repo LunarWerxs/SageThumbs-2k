@@ -826,3 +826,5 @@ upd_failed_log = "Nhật ký đầy đủ của trình cài đặt: {path}"
 upd_failed_ask = "Mở trang phát hành để cài đặt {ver} thủ công?"
 upd_btn_available = "Có bản cập nhật"
 upd_toast_body_portable = "Đã có phiên bản {ver}. Nhấp để tải xuống tệp zip di động mới."
+
+upd_err_restart_first = "Windows vẫn cần khởi động lại để hoàn tất bản cập nhật trước của SageThumbs 2K. Hãy khởi động lại Windows, rồi cài đặt bản cập nhật này."

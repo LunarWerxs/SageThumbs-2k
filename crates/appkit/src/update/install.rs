@@ -25,6 +25,9 @@ pub enum UpdateError {
     /// still refuses, exactly when the trust anchor they both come from (the same GitHub API
     /// response) is the thing being spoofed.
     Unverified(String),
+    /// Windows still has to restart to finish an earlier update, and setup will not install
+    /// over the file it queued. The restart is the fix, so there is nothing to download by hand.
+    RestartFirst,
 }
 
 impl UpdateError {
@@ -32,6 +35,7 @@ impl UpdateError {
     pub fn message(&self) -> &str {
         match self {
             UpdateError::Cancelled => "",
+            UpdateError::RestartFirst => t("upd_err_restart_first"),
             UpdateError::Blocked(m) | UpdateError::Failed(m) | UpdateError::Unverified(m) => m,
         }
     }
@@ -269,7 +273,7 @@ pub(super) fn launch_installer_silent(
         path.exists(),
         match &err {
             UpdateError::Cancelled => "user cancelled",
-            UpdateError::Blocked(m) | UpdateError::Failed(m) | UpdateError::Unverified(m) => m,
+            other => other.message(),
         }
     ));
     Err(err)
@@ -392,6 +396,10 @@ pub fn download_and_install(parent: HWND) -> Result<String, UpdateError> {
     // it must never run for a portable copy on a PC the user may not have admin rights to.
     if st2k_base::settings::portable() {
         return Err(UpdateError::Blocked(t("upd_err_portable").to_string()));
+    }
+    // Setup would stop on its "restart first" refusal; say so before downloading anything.
+    if super::pending::restart_blocker().is_some() {
+        return Err(UpdateError::RestartFirst);
     }
     sweep_stale_installers();
 

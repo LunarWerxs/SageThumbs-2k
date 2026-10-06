@@ -828,3 +828,5 @@ upd_failed_log = "Kurulumun tam günlüğü: {path}"
 upd_failed_ask = "{ver} sürümünü elle kurmak için sürümler sayfası açılsın mı?"
 upd_btn_available = "Güncelleme var"
 upd_toast_body_portable = "{ver} sürümü hazır. Yeni taşınabilir zip dosyasını indirmek için tıklayın."
+
+upd_err_restart_first = "Windows'un SageThumbs 2K'nın son güncellemesini tamamlamak için hâlâ yeniden başlatılması gerekiyor. Windows'u yeniden başlatın, sonra bunu yükleyin."

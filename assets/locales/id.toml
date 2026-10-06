@@ -829,3 +829,5 @@ upd_failed_log = "Log lengkap Setup: {path}"
 upd_failed_ask = "Buka halaman rilis untuk memasang {ver} secara manual?"
 upd_btn_available = "Pembaruan tersedia"
 upd_toast_body_portable = "Versi {ver} tersedia. Klik untuk mengunduh zip portabel yang baru."
+
+upd_err_restart_first = "Windows masih harus dimulai ulang untuk menyelesaikan pembaruan SageThumbs 2K yang terakhir. Mulai ulang Windows, lalu pasang pembaruan ini."

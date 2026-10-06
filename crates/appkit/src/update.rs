@@ -13,11 +13,13 @@ mod verify;
 use verify::*;
 mod attempt;
 mod install;
+mod pending;
 mod task;
 use attempt::*;
 pub use attempt::{failed_update_report, forget_update_attempt, remove_update_records};
 use install::*;
 pub use install::{download_and_install, UpdateError};
+pub use pending::restart_pending;
 pub use task::{
     open_toast_click, remove_update_task, run_one_shot_check, spawn_due_check, sync_update_task,
     update_toast, ToastClick,
@@ -540,22 +542,24 @@ const SIG_TIMEOUT_SECS: u64 = 15;
 /// bytes come from disk; the digest is computed from them, so `verify_installer_bytes`
 /// still runs for real). Headless by design: no progress dialog and a null owner — on CI
 /// runners and admin dev boxes the `runas` verb elevates without a prompt. The exit code
-/// is the contract: success once the elevated installer PROCESS is running; the harness
-/// (`scripts/test-self-update.ps1`) then watches the upgrade actually land on disk.
+/// is the contract: [`SELFTEST_LAUNCHED`] once the elevated installer PROCESS is running (the
+/// harness, `scripts/test-self-update.ps1`, then watches the upgrade actually land on disk),
+/// [`SELFTEST_RESTART_FIRST`] for the real updater's up-front "restart Windows first", and
+/// [`SELFTEST_FAILED`] for anything else.
 ///
 /// This exists because 1.3.3..=1.10.0 shipped an updater whose own write-mode lock made
 /// every launch die with `SE_ERR_SHARE`, and no test noticed for twenty releases because
 /// nothing ever drove the real pipeline against a real executable. This entry point is
 /// what makes that class of failure a red build instead of a bug report.
-pub fn run_selftest(setup: &Path) -> bool {
+pub fn run_selftest(setup: &Path) -> i32 {
     let log = |m: &str| st2k_base::safety::log(&format!("update-selftest: {m}"));
     let Ok(bytes) = std::fs::read(setup) else {
         log(&format!("couldn't read {}", setup.display()));
-        return false;
+        return SELFTEST_FAILED;
     };
     let Some(sha256) = sha256_hex(&bytes) else {
         log("sha256 unavailable");
-        return false;
+        return SELFTEST_FAILED;
     };
     let asset = InstallerAsset {
         url: String::new(),
@@ -565,13 +569,13 @@ pub fn run_selftest(setup: &Path) -> bool {
     };
     if !verify_installer_bytes(&bytes, &asset) {
         log("verification refused the installer bytes");
-        return false;
+        return SELFTEST_FAILED;
     }
     let (path, lock) = match write_locked_installer("selftest", &bytes, &asset) {
         Ok(pair) => pair,
         Err(e) => {
             log(e.detail());
-            return false;
+            return SELFTEST_FAILED;
         }
     };
     // The stamp the real updater binds every download to (`version_binding`), read off a REAL
@@ -586,7 +590,16 @@ pub fn run_selftest(setup: &Path) -> bool {
             "the setup's version stamp {stamped:?} is not this build's {}",
             env!("CARGO_PKG_VERSION")
         ));
-        return false;
+        return SELFTEST_FAILED;
+    }
+    // The real updater's up-front refusal, checked where it would stop a launch.
+    if let Some(name) = pending::restart_blocker() {
+        drop(lock);
+        let _ = std::fs::remove_file(&path);
+        log(&format!(
+            "Windows has to restart first: its rename list still names {name}"
+        ));
+        return SELFTEST_RESTART_FIRST;
     }
     // The same setup log the real updater asks for, so the harness can show setup's own
     // account when the upgrade does not land.
@@ -595,15 +608,20 @@ pub fn run_selftest(setup: &Path) -> bool {
     match launched {
         Ok(()) => {
             log("elevated installer launched");
-            true
+            SELFTEST_LAUNCHED
         }
         Err(e) => {
             let _ = std::fs::remove_file(&path);
             log(&format!("launch failed: {}", e.message()));
-            false
+            SELFTEST_FAILED
         }
     }
 }
+
+/// `--update-selftest`'s exit codes; see [`run_selftest`].
+pub const SELFTEST_LAUNCHED: i32 = 0;
+pub const SELFTEST_FAILED: i32 = 1;
+pub const SELFTEST_RESTART_FIRST: i32 = 3;
 
 /// Shown by the installer-spawned `--updated <ver>` relaunch after a silent self-update:
 /// a NON-BLOCKING tray balloon, NOT a modal dialog — so the update stays genuinely silent

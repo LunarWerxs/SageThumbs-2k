@@ -823,3 +823,5 @@ upd_failed_log = "Celotni dnevnik namestitve: {path}"
 upd_failed_ask = "Želite odpreti stran z izdajami in različico {ver} namestiti ročno?"
 upd_btn_available = "Na voljo je posodobitev"
 upd_toast_body_portable = "Na voljo je različica {ver}. Kliknite, da prenesete novi prenosni zip."
+
+upd_err_restart_first = "Za dokončanje zadnje posodobitve programa SageThumbs 2K je treba znova zagnati Windows. Znova zaženite Windows, nato pa namestite to posodobitev."

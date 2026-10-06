@@ -821,3 +821,5 @@ upd_failed_log = "Úplný protokol inštalátora: {path}"
 upd_failed_ask = "Otvoriť stránku s vydaniami a nainštalovať {ver} ručne?"
 upd_btn_available = "Dostupná aktualizácia"
 upd_toast_body_portable = "Je dostupná verzia {ver}. Kliknutím stiahnete nový prenosný zip."
+
+upd_err_restart_first = "Windows sa musí ešte reštartovať, aby sa dokončila posledná aktualizácia SageThumbs 2K. Reštartujte Windows a potom nainštalujte túto aktualizáciu."

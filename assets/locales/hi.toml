@@ -828,3 +828,5 @@ upd_failed_log = "सेटअप का पूरा लॉग: {path}"
 upd_failed_ask = "{ver} को हाथ से इंस्टॉल करने के लिए रिलीज़ पेज खोलें?"
 upd_btn_available = "अपडेट उपलब्ध"
 upd_toast_body_portable = "वर्शन {ver} उपलब्ध है। नया पोर्टेबल ज़िप डाउनलोड करने के लिए क्लिक करें।"
+
+upd_err_restart_first = "SageThumbs 2K के पिछले अपडेट को पूरा करने के लिए Windows को अभी भी रीस्टार्ट करना होगा। Windows को रीस्टार्ट करें, फिर इसे इंस्टॉल करें।"

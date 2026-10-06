@@ -829,3 +829,5 @@ upd_failed_log = "セットアップの完全なログ: {path}"
 upd_failed_ask = "リリースページを開いて {ver} を手動でインストールしますか？"
 upd_btn_available = "更新があります"
 upd_toast_body_portable = "バージョン {ver} が利用可能です。クリックすると新しいポータブル zip をダウンロードします。"
+
+upd_err_restart_first = "SageThumbs 2K の前回の更新を完了するには、Windows の再起動が必要です。Windows を再起動してから、この更新をインストールしてください。"

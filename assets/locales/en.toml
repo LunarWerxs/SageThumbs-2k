@@ -801,6 +801,7 @@ upd_err_busy = "GitHub is limiting requests from your network right now. Try aga
 upd_err_http = "GitHub answered the update request with error {code}."
 upd_err_no_installer = "The latest release has no installer for this PC."
 upd_err_download = "The update download didn't finish. Check your internet connection and try again."
+upd_err_restart_first = "Windows still has to restart to finish the last update of SageThumbs 2K. Restart Windows, then install this one."
 upd_done_title = "SageThumbs 2K updated"
 upd_done_body = "You're now on version {ver}."
 upd_restart_title = "Restart Windows to finish the update"

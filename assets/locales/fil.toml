@@ -819,3 +819,5 @@ upd_failed_log = "Buong log ng Setup: {path}"
 upd_failed_ask = "Buksan ang releases page para mano-manong i-install ang {ver}?"
 upd_btn_available = "May available na update"
 upd_toast_body_portable = "Available na ang version {ver}. I-click para i-download ang bagong portable zip."
+
+upd_err_restart_first = "Kailangan pa ring mag-restart ang Windows para matapos ang huling update ng SageThumbs 2K. I-restart ang Windows, at pagkatapos ay i-install ang isang ito."

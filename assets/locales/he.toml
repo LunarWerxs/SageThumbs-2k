@@ -828,3 +828,5 @@ upd_failed_log = "יומן ההתקנה המלא: {path}"
 upd_failed_ask = "לפתוח את דף הגרסאות כדי להתקין את {ver} ידנית?"
 upd_btn_available = "עדכון זמין"
 upd_toast_body_portable = "גרסה {ver} זמינה. לחצו כדי להוריד את ה־zip הנייד החדש."
+
+upd_err_restart_first = "עדיין יש להפעיל מחדש את Windows כדי לסיים את העדכון האחרון של SageThumbs 2K. הפעילו מחדש את Windows, ואז התקינו את העדכון הזה."

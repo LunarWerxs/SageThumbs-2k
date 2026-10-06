@@ -828,3 +828,5 @@ upd_failed_log = "Potpuni zapis instalacijskog programa: {path}"
 upd_failed_ask = "Otvoriti stranicu izdanja za ručno instaliranje verzije {ver}?"
 upd_btn_available = "Dostupno ažuriranje"
 upd_toast_body_portable = "Dostupna je verzija {ver}. Kliknite da preuzmete novi prijenosni zip."
+
+upd_err_restart_first = "Windows se još treba ponovno pokrenuti da bi dovršio posljednje ažuriranje programa SageThumbs 2K. Ponovno pokrenite Windows, a zatim instalirajte ovo ažuriranje."
