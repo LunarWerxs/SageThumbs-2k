@@ -17,7 +17,7 @@
 //! fixture with no banked ceiling yet is printed as UNSEEDED with the seed command.
 //!
 //! Re-seed (explicit, from a quiet machine):
-//!   `ST2K_ALLOC_SEED=1 cargo test --test alloc_ceilings -- --nocapture`
+//!   `ST2K_ALLOC_SEED=1 cargo test -p sagethumbs2k-codecs --test alloc_ceilings -- --nocapture`
 //!
 //! One `#[test]` on purpose: the counters are process-global (see the djvu-rs guards).
 //! ImageMagick and Media Foundation are switched off so the measure is our own decoders.
@@ -81,7 +81,7 @@ static ALLOC: Counting = Counting;
 
 const CX: u32 = 256;
 const CEILINGS: &str = "tests/alloc_ceilings.txt";
-const SEED_CMD: &str = "ST2K_ALLOC_SEED=1 cargo test --test alloc_ceilings -- --nocapture";
+const SEED_CMD: &str = "ST2K_ALLOC_SEED=1 cargo test -p sagethumbs2k-codecs --test alloc_ceilings -- --nocapture";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Cost {

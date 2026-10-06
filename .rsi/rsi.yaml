@@ -4,7 +4,7 @@ metrics:
     kind: count
     better: lower
     unit: allocations
-    measure: "cargo test --test alloc_ceilings -- --nocapture"
+    measure: "cargo test -p sagethumbs2k-codecs --test alloc_ceilings -- --nocapture"
     pick: 'allocs=(\d+)'
     heavy: true
     gate: exact
@@ -12,7 +12,7 @@ metrics:
     kind: size
     better: lower
     unit: bytes
-    measure: "cargo test --test alloc_ceilings -- --nocapture"
+    measure: "cargo test -p sagethumbs2k-codecs --test alloc_ceilings -- --nocapture"
     pick: 'peak=(\d+)'
     heavy: true
     gate: exact
