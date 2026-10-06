@@ -3,7 +3,9 @@
 //! One fixture per supported format (`FORMATS`, corpus sample `sample.<ext>`) goes through
 //! `decode_thumbnail_opts` at 256 px under a counting `#[global_allocator]` (the pattern of
 //! `crates/vendor/djvu-rs/tests/*_peak_memory.rs`). Three numbers per format are banked in
-//! `tests/alloc_ceilings.txt` as exact, shrink-only ceilings:
+//! `tests/alloc_ceilings.txt` (`tests/alloc_ceilings.<features>.txt` when the crate is built
+//! with `av1` / `testkit`, as the workspace test run does) as shrink-only ceilings, exact apart
+//! from a few percent of run-to-run noise on the allocation count and pixels (never on peak):
 //!
 //!   * `allocs`  - allocation count;
 //!   * `peak`    - peak live bytes;
@@ -16,8 +18,9 @@
 //! judged. A format with no fixture is listed as NOT MEASURED, never skipped silently. A
 //! fixture with no banked ceiling yet is printed as UNSEEDED with the seed command.
 //!
-//! Re-seed (explicit, from a quiet machine):
+//! Re-seed (explicit, from a quiet machine; the test prints the exact command per feature set):
 //!   `ST2K_ALLOC_SEED=1 cargo test -p sagethumbs2k-codecs --test alloc_ceilings -- --nocapture`
+//!   `... --test alloc_ceilings --features av1,testkit -- --nocapture` (the workspace run's set)
 //!
 //! One `#[test]` on purpose: the counters are process-global (see the djvu-rs guards).
 //! ImageMagick and Media Foundation are switched off so the measure is our own decoders.
@@ -97,9 +100,47 @@ unsafe impl GlobalAlloc for Counting {
 static ALLOC: Counting = Counting;
 
 const CX: u32 = 256;
-const CEILINGS: &str = "tests/alloc_ceilings.txt";
-const SEED_CMD: &str =
-    "ST2K_ALLOC_SEED=1 cargo test -p sagethumbs2k-codecs --test alloc_ceilings -- --nocapture";
+
+/// The crate features this test binary was built with. Ceilings are banked per feature set:
+/// the workspace test run (`cargo test --tests`) unifies `av1` and `testkit` into this crate,
+/// which decodes more formats in process than `cargo test -p sagethumbs2k-codecs` alone does.
+fn features() -> Vec<&'static str> {
+    let mut f = Vec::new();
+    if cfg!(feature = "av1") {
+        f.push("av1");
+    }
+    if cfg!(feature = "testkit") {
+        f.push("testkit");
+    }
+    f
+}
+
+fn ceilings_path() -> String {
+    match features().as_slice() {
+        [] => "tests/alloc_ceilings.txt".to_string(),
+        f => format!("tests/alloc_ceilings.{}.txt", f.join("+")),
+    }
+}
+
+fn seed_cmd() -> String {
+    let feat = match features().as_slice() {
+        [] => String::new(),
+        f => format!(" --features {}", f.join(",")),
+    };
+    format!(
+        "ST2K_ALLOC_SEED=1 cargo test -p sagethumbs2k-codecs --test alloc_ceilings{feat} -- --nocapture"
+    )
+}
+
+/// Run-to-run noise that is not a regression: a few allocations from other threads (the
+/// in-process AV1 decoder's pool, WinRT async) and a percent of pixels. Peak bytes stay exact.
+fn allocs_slack(banked: usize) -> usize {
+    (banked * 3 / 100).max(4)
+}
+
+fn pixels_slack(banked: usize) -> usize {
+    (banked / 100).max(2)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Cost {
@@ -124,7 +165,7 @@ fn measure(bytes: &[u8]) -> Option<Cost> {
 }
 
 fn read_ceilings() -> BTreeMap<String, Cost> {
-    let text = std::fs::read_to_string(CEILINGS).unwrap_or_default();
+    let text = std::fs::read_to_string(ceilings_path()).unwrap_or_default();
     text.lines()
         .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
         .filter_map(|l| {
@@ -149,7 +190,7 @@ fn write_ceilings(all: &BTreeMap<String, Cost>) {
     for (e, c) in all {
         out.push_str(&format!("{e} {} {} {}\n", c.allocs, c.peak, c.pixels));
     }
-    std::fs::write(CEILINGS, out).expect("write ceilings");
+    std::fs::write(ceilings_path(), out).expect("write ceilings");
 }
 
 /// Our own decoders only (no ImageMagick subprocess, no Media Foundation), and the Debug-flag
@@ -189,11 +230,21 @@ impl Verdicts {
     fn judge(&mut self, ext: &'static str, c: Cost, banked: Option<&Cost>) {
         match banked {
             None => self.unseeded.push(ext),
-            Some(b) if c.allocs > b.allocs || c.peak > b.peak || c.pixels > b.pixels => {
+            Some(b)
+                if c.allocs > b.allocs + allocs_slack(b.allocs)
+                    || c.peak > b.peak
+                    || c.pixels > b.pixels + pixels_slack(b.pixels) =>
+            {
                 self.rose
                     .push(format!("{ext}: {c:?} exceeds ceiling {b:?}"));
             }
-            Some(b) if c != *b => self.dropped.push(ext),
+            Some(b)
+                if c.allocs + allocs_slack(b.allocs) < b.allocs
+                    || c.peak < b.peak
+                    || c.pixels + pixels_slack(b.pixels) < b.pixels =>
+            {
+                self.dropped.push(ext)
+            }
             Some(_) => {}
         }
     }
@@ -202,15 +253,17 @@ impl Verdicts {
         if !self.unseeded.is_empty() {
             println!(
                 "UNSEEDED (measured, no ceiling yet): {}
-  seed with: {SEED_CMD}",
-                self.unseeded.join(" ")
+  seed with: {}",
+                self.unseeded.join(" "),
+                seed_cmd()
             );
         }
         if !self.dropped.is_empty() {
             println!(
                 "DROPPED below ceiling: {}
-  bank it with: {SEED_CMD}",
-                self.dropped.join(" ")
+  bank it with: {}",
+                self.dropped.join(" "),
+                seed_cmd()
             );
         }
         assert!(
@@ -228,6 +281,7 @@ impl Verdicts {
 #[test]
 fn thumbnail_allocation_ceilings() {
     prepare_environment();
+    println!("features: {:?}, ceilings: {}", features(), ceilings_path());
     let seed = std::env::var_os("ST2K_ALLOC_SEED").is_some();
     let banked = read_ceilings();
     let mut now: BTreeMap<String, Cost> = BTreeMap::new();
@@ -279,7 +333,7 @@ fn thumbnail_allocation_ceilings() {
         all.retain(|e, _| !failed.contains(&e.as_str()));
         all.extend(now);
         write_ceilings(&all);
-        println!("seeded {} formats into {CEILINGS}", all.len());
+        println!("seeded {} formats into {}", all.len(), ceilings_path());
         return;
     }
     v.report_and_assert();
