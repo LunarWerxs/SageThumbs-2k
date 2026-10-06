@@ -98,7 +98,8 @@ static ALLOC: Counting = Counting;
 
 const CX: u32 = 256;
 const CEILINGS: &str = "tests/alloc_ceilings.txt";
-const SEED_CMD: &str = "ST2K_ALLOC_SEED=1 cargo test -p sagethumbs2k-codecs --test alloc_ceilings -- --nocapture";
+const SEED_CMD: &str =
+    "ST2K_ALLOC_SEED=1 cargo test -p sagethumbs2k-codecs --test alloc_ceilings -- --nocapture";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Cost {
@@ -131,7 +132,11 @@ fn read_ceilings() -> BTreeMap<String, Cost> {
             let n = |i: usize| f.get(i)?.parse::<usize>().ok();
             Some((
                 f.first()?.to_string(),
-                Cost { allocs: n(1)?, peak: n(2)?, pixels: n(3)? },
+                Cost {
+                    allocs: n(1)?,
+                    peak: n(2)?,
+                    pixels: n(3)?,
+                },
             ))
         })
         .collect()
@@ -159,7 +164,9 @@ fn prepare_environment() {
         std::env::set_var("ST2K_NO_MF", "1");
     }
     if st2k_base::safety::debug_logging_on() {
-        println!("NOTE: HKCU Debug=1 is set; log writes add allocations, numbers are not comparable");
+        println!(
+            "NOTE: HKCU Debug=1 is set; log writes add allocations, numbers are not comparable"
+        );
     }
     std::thread::spawn(|| {
         UNCOUNTED.with(|u| u.set(true));
@@ -183,7 +190,8 @@ impl Verdicts {
         match banked {
             None => self.unseeded.push(ext),
             Some(b) if c.allocs > b.allocs || c.peak > b.peak || c.pixels > b.pixels => {
-                self.rose.push(format!("{ext}: {c:?} exceeds ceiling {b:?}"));
+                self.rose
+                    .push(format!("{ext}: {c:?} exceeds ceiling {b:?}"));
             }
             Some(b) if c != *b => self.dropped.push(ext),
             Some(_) => {}
@@ -199,12 +207,21 @@ impl Verdicts {
             );
         }
         if !self.dropped.is_empty() {
-            println!("DROPPED below ceiling: {}
-  bank it with: {SEED_CMD}", self.dropped.join(" "));
+            println!(
+                "DROPPED below ceiling: {}
+  bank it with: {SEED_CMD}",
+                self.dropped.join(" ")
+            );
         }
-        assert!(self.rose.is_empty(), "allocation ceiling exceeded:
-{}", self.rose.join("
-"));
+        assert!(
+            self.rose.is_empty(),
+            "allocation ceiling exceeded:
+{}",
+            self.rose.join(
+                "
+"
+            )
+        );
     }
 }
 
@@ -230,7 +247,8 @@ fn thumbnail_allocation_ceilings() {
         let Some(c) = c else {
             println!("{ext}: decode failed without ImageMagick / Media Foundation ({ms} ms)");
             if banked.contains_key(*ext) {
-                v.rose.push(format!("{ext}: banked a ceiling, but the decode now fails"));
+                v.rose
+                    .push(format!("{ext}: banked a ceiling, but the decode now fails"));
             }
             failed.push(*ext);
             continue;
@@ -244,10 +262,16 @@ fn thumbnail_allocation_ceilings() {
     }
 
     if !not_measured.is_empty() {
-        println!("NOT MEASURED (no sample in the test corpus): {}", not_measured.join(" "));
+        println!(
+            "NOT MEASURED (no sample in the test corpus): {}",
+            not_measured.join(" ")
+        );
     }
     if !failed.is_empty() {
-        println!("NOT MEASURED (own decoders cannot decode the sample): {}", failed.join(" "));
+        println!(
+            "NOT MEASURED (own decoders cannot decode the sample): {}",
+            failed.join(" ")
+        );
     }
     if seed {
         // Formats not measured on this machine keep their banked value; a failed one has none.
