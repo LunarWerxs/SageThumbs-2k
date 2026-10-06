@@ -345,7 +345,7 @@ pub unsafe fn confirm_verbs(
 ) -> bool {
     use windows::Win32::UI::Controls::{
         TaskDialogIndirect, TASKDIALOGCONFIG, TASKDIALOG_BUTTON, TASKDIALOG_COMMON_BUTTON_FLAGS,
-        TDF_ALLOW_DIALOG_CANCELLATION, TDF_POSITION_RELATIVE_TO_WINDOW,
+        TDF_ALLOW_DIALOG_CANCELLATION, TDF_POSITION_RELATIVE_TO_WINDOW, TD_INFORMATION_ICON,
     };
 
     // Arbitrary ids; only their identity matters, and neither collides with IDOK/IDCANCEL.
@@ -381,8 +381,11 @@ pub unsafe fn confirm_verbs(
         ..Default::default()
     };
     // `pszMainIcon` is a union; the information icon is the same intent `MB_ICONINFORMATION`
-    // carried on the MessageBox this replaced.
-    cfg.Anonymous1.pszMainIcon = PCWSTR(-3isize as *const u16); // TD_INFORMATION_ICON
+    // carried on the MessageBox this replaced. The crate's constant, never a hand-made one:
+    // `MAKEINTRESOURCE(-3)` is the 16-bit 0xFFFD, and the `-3isize` this once held was a
+    // 64-bit pointer comctl32 read as a string, crashing every question asked here (the Quick
+    // preview's Upload button, the renewal offer) before it could appear.
+    cfg.Anonymous1.pszMainIcon = TD_INFORMATION_ICON;
 
     let mut pressed = 0i32;
     // SAFETY: every pointer in `cfg` borrows a local that outlives this call, and the call

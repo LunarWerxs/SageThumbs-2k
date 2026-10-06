@@ -30,6 +30,12 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   asks ImageMagick only for the finished picture when it has to: a 24 MB layered test file went
   from no thumbnail to one in a fraction of a second. The `._` files a Mac leaves beside your
   pictures are no longer logged as errors.
+- **The Quick preview's Upload button asks its question instead of closing the preview.** In
+  3.6.0 a click showed a busy cursor for a few seconds and then the preview window was gone,
+  with uploading switched off or on: the question it opens crashed before it could appear. It
+  now says uploading is off and offers the setting, or, once you have turned it on, asks before
+  uploading. The same fault closed the About window when it offered to renew an update licence;
+  that offer now appears too.
 
 ## 3.6.0
 

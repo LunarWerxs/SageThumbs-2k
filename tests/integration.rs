@@ -26,6 +26,7 @@ suite! {
     layout_audit,
     preview_db_shot,
     preview_markdown_shot,
+    preview_upload_question,
     preview_view_source,
     qualification_matrix,
     window_teardown_order,
