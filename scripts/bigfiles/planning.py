@@ -62,6 +62,10 @@ def plan(st2k, only, manifest):
             case_id = ext if i == 0 else f"{ext}~{os.path.splitext(name)[0]}"
             cases.append({"ext": case_id, "sample": name, "path": path, "strategy": strategy,
                           "category": category, "waive_sizes": entry.get("waive_sizes", {})})
+            # "also": more shapes of the first sample, each its own case (a big PDF can be big
+            # in its body or in its page count, and each broke on its own).
+            for shape in entry.get("also", []) if i == 0 else []:
+                cases.append({**cases[-1], "ext": f"{ext}~{shape}", "strategy": shape})
     return cases, waived
 
 

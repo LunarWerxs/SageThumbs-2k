@@ -2,8 +2,9 @@
 
 Every strategy adds bytes the format's readers skip - ballast - and writes the zeros as a
 sparse range (NTFS FSCTL_SET_SPARSE), so a 5 GB twin of a 30 KB sample costs no disk and a
-second to make. Two strategies write real bytes instead (`PHYSICAL`): a comment is not
-zeros, and a video grown by repeating its content repeats real packets.
+second to make. Three strategies write real bytes instead (`PHYSICAL`): a comment is not
+zeros, a video grown by repeating its content repeats real packets, and a scanned book's
+scans are not NUL runs (grow_pdfbook.py).
 
 The strategies, and which files take which, are the gate's business (`bigfiles.py`); each one
 here is a pure "src -> dst of `size` bytes, same picture" transform. Which formats tolerate
@@ -15,6 +16,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from grow_archives import rar_last, sevenzip_gap, tar_last  # noqa: E402
 from grow_docs import eps_postscript, ole_front, pdf_body  # noqa: E402
+from grow_pdfbook import pdf_pages  # noqa: E402
 from grow_plain import (  # noqa: E402
     before_tail_tag, fits_hdu, isobmff_free, psd_layers, repeat, tail, xml_comment, zip_last,
 )
@@ -29,6 +31,7 @@ STRATEGIES = {
     "fits-hdu": fits_hdu,
     "repeat": repeat,
     "pdf-body": pdf_body,
+    "pdf-pages": pdf_pages,
     "eps-postscript": eps_postscript,
     "ole-front": ole_front,
     "rar-last": rar_last,
@@ -38,4 +41,4 @@ STRATEGIES = {
 
 
 # Strategies that write real bytes: made once, at the smallest size only.
-PHYSICAL = {"xml-comment", "repeat"}
+PHYSICAL = {"xml-comment", "repeat", "pdf-pages"}

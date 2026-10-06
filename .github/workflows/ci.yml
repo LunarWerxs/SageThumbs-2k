@@ -184,6 +184,7 @@ jobs:
         env:
           CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER: 'pwsh -NoProfile -File ${{ github.workspace }}\scripts\test-timed.ps1'
           RT_TEST_TIMES: ${{ runner.temp }}\test-times.log
+          RT_NOT_MEASURED: ${{ runner.temp }}\not-measured.log
         run: cargo test --locked --tests --no-fail-fast
       - name: 30 slowest tests
         if: always()
@@ -191,6 +192,13 @@ jobs:
         env:
           RT_TEST_TIMES: ${{ runner.temp }}\test-times.log
         run: ./scripts/slowest-tests.ps1
+      # A runner has no test corpus: the tests that passed without measuring, as a warning.
+      - name: Tests that measured nothing
+        if: always()
+        shell: pwsh
+        env:
+          RT_NOT_MEASURED: ${{ runner.temp }}\not-measured.log
+        run: ./scripts/not-measured.ps1
       - name: ImageMagick subprocess decode (ignored by default; needs the staged magick.exe)
         # Reuses the lib test binary the step above built; it recompiled the workspace here
         # (61-109 s) only while base's build script watched a path that does not exist.
@@ -522,6 +530,7 @@ jobs:
         env:
           CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_RUNNER: 'pwsh -NoProfile -File ${{ github.workspace }}\scripts\test-timed.ps1'
           RT_TEST_TIMES: ${{ runner.temp }}\test-times.log
+          RT_NOT_MEASURED: ${{ runner.temp }}\not-measured.log
         run: cargo +stable-aarch64-pc-windows-msvc test --locked --tests --target aarch64-pc-windows-msvc --no-fail-fast
       - name: 30 slowest tests
         if: always()
@@ -529,6 +538,12 @@ jobs:
         env:
           RT_TEST_TIMES: ${{ runner.temp }}\test-times.log
         run: ./scripts/slowest-tests.ps1
+      - name: Tests that measured nothing
+        if: always()
+        shell: pwsh
+        env:
+          RT_NOT_MEASURED: ${{ runner.temp }}\not-measured.log
+        run: ./scripts/not-measured.ps1
       - name: Verify ARM64 PE artifacts and engine-less payload
         shell: pwsh
         run: |

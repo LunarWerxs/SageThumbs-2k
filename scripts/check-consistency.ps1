@@ -582,6 +582,10 @@ if (-not (Test-Path $bigManifest) -or -not (Test-Path $ballastPy)) {
         elseif ("$($e.waive_sizes[$size])".Trim().Length -lt 40) { $fail.Add("big-files.json: the $size waiver for .$ext is too short to be a reason") }
       }
     }
+    # More shapes of the same sample, each its own case (planning.py).
+    foreach ($shape in @($e['also'] | Where-Object { $_ })) {
+      if ($strategies -notcontains $shape) { $fail.Add("big-files.json: .$ext also names strategy '$shape', which ballast.py does not have") }
+    }
   }
   foreach ($ext in $big.Keys) {
     if ($registeredBig -notcontains $ext) { $fail.Add("big-files.json: .$ext has an entry but is not in FORMATS any more - delete the stale entry") }

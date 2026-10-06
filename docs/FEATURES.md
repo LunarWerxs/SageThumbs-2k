@@ -779,14 +779,17 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   wide-gamut tag (Display P3 / Adobe RGB) are converted into sRGB before display, so
   they no longer look over-saturated next to ordinary photos. AVIF/HEIC read their
   profile from the ISOBMFF `colr` box, including the CICP `nclx` Display-P3 signal
-  iPhone HEIC uses, and CMYK JPEGs are converted through their embedded CMYK profile.
+  iPhone HEIC uses, and CMYK JPEGs (Photoshop's YCCK ones included) are converted through
+  their embedded CMYK profile. Photoshop documents drawn from their own pixels (the Quick
+  preview, or a file saved without a preview image) go through the document's profile, so a
+  CMYK, grayscale or Adobe RGB document shows the colours Photoshop shows.
   HDR PNGs (a `cICP` chunk signalling PQ or HLG, BT.2020 or Display P3) are turned into
   linear light and tone-mapped like EXR and Radiance files, so they render with the right
   curve instead of washed out; HDR AVIF and HEIC (a PQ or HLG `nclx` signal) take the same
-  tone map, whether Windows' own codec or the bundled ImageMagick decoded them.
+  tone map, whether Windows' own codec or the bundled ImageMagick decoded them. All pure-Rust
+  (`zune-jpeg` for raw CMYK + `moxcms` for the transform), no C colour-engine dependency.
 - **Accessible Settings:** the category rail reports a name, a role and the current selection to
-  UI Automation, so Narrator and NVDA can navigate it. All pure-Rust (`zune-jpeg` for raw CMYK + `moxcms` for the
-  transform), no C colour-engine dependency.
+  UI Automation, so Narrator and NVDA can navigate it.
 - **Lossless where it matters:** metadata strip rewrites JPEG segments / PNG chunks
   without touching pixels; rotate writes a copy rather than re-compressing in place.
 - **Permissive, lean dependencies:** MIT/Apache/BSD only; no GPL/AGPL, **no
