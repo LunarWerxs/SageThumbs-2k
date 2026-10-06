@@ -548,3 +548,275 @@ fn a_pdf_past_two_gib_is_never_handed_to_the_engine() {
     assert!(render_pages_from_stream(&stream, bytes.len() as u64, fit, 1).is_some());
     assert!(render_pages_from_stream(&stream, MAX_ENGINE_BYTES + 1, fit, 1).is_none());
 }
+
+/// Issue #59: a scanned book too big to buffer gets page one off the stream. Windows' engine
+/// visits every page object when it loads a document, and in a scanned book each one sits a
+/// page's scan after the last, so a block cache that spends a megabyte per visit ran out of
+/// budget near page 190 and the load failed: no scanned book past the 256 MiB input ceiling
+/// with more pages than that ever had a thumbnail. 300 pages 1.2 MB apart, ~360 MB, served
+/// from memory a few KB at a time ([`scanned_book::ScannedBook`]); 3.6.0 fails it, as it failed
+/// the same shape on disk through `st2k prebuild`.
+#[test]
+fn a_scanned_book_past_the_input_ceiling_renders_page_one_off_the_stream() {
+    use windows::Win32::System::Com::{CoInitializeEx, IStream, COINIT_MULTITHREADED};
+    const COVER: (u8, u8, u8) = (200, 40, 40);
+    const BOOK_PAGES: u32 = 300;
+    // The thumbnail host's thread is in the MTA; the worker then gets this very object back.
+    let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+    let book = scanned_book::ScannedBook::new(BOOK_PAGES as usize, 1_200_000, COVER);
+    let size = book.size();
+    assert!(
+        size > crate::decode::limits::MAX_INPUT_BYTES,
+        "{size} bytes is not past the input ceiling, so this is not the oversized path"
+    );
+    let stream: IStream = book.into();
+    let (pngs, count) = render_pages_from_stream(&stream, size, PageFit::LongSide(256), 1)
+        .expect("Windows' PDF engine loaded no document off the stream");
+    assert_eq!(count, BOOK_PAGES, "page count");
+    let png = pngs.first().expect("page one did not render");
+    assert!(
+        close(mean_rgb(png), COVER),
+        "page one is {:?}",
+        mean_rgb(png)
+    );
+}
+
+/// A scanned book's SHAPE without its bytes: the read-only `IStream` the test above hands the
+/// engine. Every page is a page object, a one-line content stream and a `gap`-byte stream
+/// standing in for the page's scan; page one fills itself with `cover`, the rest are white;
+/// the cross-reference table sits at the end, as in a real big scanned PDF. Only the PDF
+/// syntax is held: the scans are produced on read, as 0xFF (NOT NUL: Windows' engine lexes a
+/// NUL run between objects as whitespace, byte by byte, which no real scan makes it do).
+mod scanned_book {
+    use core::ffi::c_void;
+    use std::sync::Mutex;
+
+    use windows::core::{Error, Result, HRESULT};
+    use windows::Win32::Foundation::{
+        E_FAIL, E_INVALIDARG, E_NOTIMPL, E_POINTER, STG_E_ACCESSDENIED, S_FALSE, S_OK,
+    };
+    use windows::Win32::System::Com::{
+        ISequentialStream_Impl, IStream, IStream_Impl, LOCKTYPE, STATFLAG, STATSTG, STGC,
+        STGTY_STREAM, STREAM_SEEK, STREAM_SEEK_CUR, STREAM_SEEK_END, STREAM_SEEK_SET,
+    };
+    use windows_implement::implement;
+
+    /// One stretch of the file: bytes held, or `n` bytes of scan produced on read.
+    enum Run {
+        Bytes(Vec<u8>),
+        Scan(u64),
+    }
+
+    impl Run {
+        fn len(&self) -> u64 {
+            match self {
+                Run::Bytes(b) => b.len() as u64,
+                Run::Scan(n) => *n,
+            }
+        }
+    }
+
+    #[implement(IStream)]
+    pub struct ScannedBook {
+        /// (start offset, run), contiguous and in order.
+        runs: Vec<(u64, Run)>,
+        size: u64,
+        pos: Mutex<u64>,
+    }
+
+    impl ScannedBook {
+        pub fn new(pages: usize, gap: u64, cover: (u8, u8, u8)) -> Self {
+            let mut b = Builder::default();
+            b.bytes(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n");
+            b.obj("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n".into());
+            let kids: Vec<String> = (0..pages).map(|i| format!("{} 0 R", 3 + 3 * i)).collect();
+            b.obj(format!(
+                "2 0 obj\n<< /Type /Pages /Kids [{}] /Count {pages} >>\nendobj\n",
+                kids.join(" ")
+            ));
+            for i in 0..pages {
+                let (page, content, scan) = (3 + 3 * i, 4 + 3 * i, 5 + 3 * i);
+                let (r, g, bl) = if i == 0 { cover } else { (255, 255, 255) };
+                b.obj(format!(
+                    "{page} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+                     /Contents {content} 0 R /Resources << >> >>\nendobj\n"
+                ));
+                let fill = format!(
+                    "{:.5} {:.5} {:.5} rg\n0 0 612 792 re\nf\n",
+                    f32::from(r) / 255.0,
+                    f32::from(g) / 255.0,
+                    f32::from(bl) / 255.0
+                );
+                b.obj(format!(
+                    "{content} 0 obj\n<< /Length {} >>\nstream\n{fill}endstream\nendobj\n",
+                    fill.len()
+                ));
+                b.obj(format!("{scan} 0 obj\n<< /Length {gap} >>\nstream\n"));
+                b.scan(gap);
+                b.bytes(b"\nendstream\nendobj\n");
+            }
+            let xref = b.at;
+            let total = b.offsets.len() + 1;
+            let mut table = format!("xref\n0 {total}\n0000000000 65535 f \n");
+            for off in &b.offsets {
+                table.push_str(&format!("{off:010} 00000 n \n"));
+            }
+            table.push_str(&format!(
+                "trailer\n<< /Size {total} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n"
+            ));
+            b.bytes(table.as_bytes());
+            Self {
+                size: b.at,
+                runs: b.runs,
+                pos: Mutex::new(0),
+            }
+        }
+
+        pub fn size(&self) -> u64 {
+            self.size
+        }
+
+        /// Fill `out` with the file's bytes from offset `at` (`at + out.len() <= size`).
+        fn copy_at(&self, at: u64, out: &mut [u8]) {
+            let mut i = self
+                .runs
+                .partition_point(|(start, _)| *start <= at)
+                .saturating_sub(1);
+            let mut done = 0usize;
+            while done < out.len() && i < self.runs.len() {
+                let (start, run) = &self.runs[i];
+                let off = at + done as u64 - start;
+                let n = ((run.len() - off) as usize).min(out.len() - done);
+                match run {
+                    Run::Bytes(b) => {
+                        out[done..done + n].copy_from_slice(&b[off as usize..off as usize + n])
+                    }
+                    Run::Scan(_) => out[done..done + n].fill(0xFF),
+                }
+                done += n;
+                i += 1;
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct Builder {
+        runs: Vec<(u64, Run)>,
+        at: u64,
+        /// Byte offset of each object, in object-number order from 1.
+        offsets: Vec<u64>,
+    }
+
+    impl Builder {
+        fn bytes(&mut self, b: &[u8]) {
+            self.runs.push((self.at, Run::Bytes(b.to_vec())));
+            self.at += b.len() as u64;
+        }
+
+        fn scan(&mut self, n: u64) {
+            self.runs.push((self.at, Run::Scan(n)));
+            self.at += n;
+        }
+
+        fn obj(&mut self, text: String) {
+            self.offsets.push(self.at);
+            self.bytes(text.as_bytes());
+        }
+    }
+
+    impl ISequentialStream_Impl for ScannedBook_Impl {
+        fn Read(&self, pv: *mut c_void, cb: u32, pcbread: *mut u32) -> HRESULT {
+            if pv.is_null() {
+                return E_POINTER;
+            }
+            let Ok(mut pos) = self.pos.lock() else {
+                return E_FAIL;
+            };
+            let n = u64::from(cb).min(self.size.saturating_sub(*pos)) as usize;
+            // SAFETY: the caller's buffer holds `cb` bytes, and `n <= cb`.
+            let out = unsafe { std::slice::from_raw_parts_mut(pv as *mut u8, n) };
+            self.copy_at(*pos, out);
+            *pos += n as u64;
+            if !pcbread.is_null() {
+                unsafe { *pcbread = n as u32 };
+            }
+            if n == cb as usize {
+                S_OK
+            } else {
+                S_FALSE
+            }
+        }
+
+        fn Write(&self, _pv: *const c_void, _cb: u32, _pcbwritten: *mut u32) -> HRESULT {
+            STG_E_ACCESSDENIED
+        }
+    }
+
+    impl IStream_Impl for ScannedBook_Impl {
+        fn Seek(
+            &self,
+            dlibmove: i64,
+            dworigin: STREAM_SEEK,
+            plibnewposition: *mut u64,
+        ) -> Result<()> {
+            let mut pos = self.pos.lock().map_err(|_| Error::from(E_FAIL))?;
+            let base: i128 = match dworigin {
+                STREAM_SEEK_SET => 0,
+                STREAM_SEEK_CUR => *pos as i128,
+                STREAM_SEEK_END => self.size as i128,
+                _ => return Err(Error::from(E_INVALIDARG)),
+            };
+            let np = base + dlibmove as i128;
+            if np < 0 {
+                return Err(Error::from(E_INVALIDARG));
+            }
+            *pos = np as u64;
+            if !plibnewposition.is_null() {
+                unsafe { *plibnewposition = *pos };
+            }
+            Ok(())
+        }
+
+        fn Stat(&self, pstatstg: *mut STATSTG, _grfstatflag: &STATFLAG) -> Result<()> {
+            if pstatstg.is_null() {
+                return Err(Error::from(E_POINTER));
+            }
+            unsafe {
+                *pstatstg = STATSTG {
+                    r#type: STGTY_STREAM.0 as u32,
+                    cbSize: self.size,
+                    ..Default::default()
+                }
+            };
+            Ok(())
+        }
+
+        fn SetSize(&self, _libnewsize: u64) -> Result<()> {
+            Err(Error::from(E_NOTIMPL))
+        }
+        fn CopyTo(
+            &self,
+            _pstm: windows::core::Ref<'_, IStream>,
+            _cb: u64,
+            _pcbread: *mut u64,
+            _pcbwritten: *mut u64,
+        ) -> Result<()> {
+            Err(Error::from(E_NOTIMPL))
+        }
+        fn Commit(&self, _grfcommitflags: &STGC) -> Result<()> {
+            Ok(())
+        }
+        fn Revert(&self) -> Result<()> {
+            Ok(())
+        }
+        fn LockRegion(&self, _liboffset: u64, _cb: u64, _dwlocktype: &LOCKTYPE) -> Result<()> {
+            Err(Error::from(E_NOTIMPL))
+        }
+        fn UnlockRegion(&self, _liboffset: u64, _cb: u64, _dwlocktype: u32) -> Result<()> {
+            Err(Error::from(E_NOTIMPL))
+        }
+        fn Clone(&self) -> Result<IStream> {
+            Err(Error::from(E_NOTIMPL))
+        }
+    }
+}

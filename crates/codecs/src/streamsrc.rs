@@ -147,6 +147,14 @@ pub(crate) unsafe fn stream_source_with_caps(
     // `Stat` again for the same size and name.
     let head = stream_head(stream);
 
+    // A macOS `._` companion carries its picture's name (so `._art.psd` reaches the Photoshop
+    // handler) and only Finder metadata: refused here, before any read past the head, with
+    // the code the shell surfaces decline without an ERROR line (`decode::NOT_A_PICTURE`).
+    if crate::container::is_apple_double(head.first(8)) {
+        safety::log_debugf!("{who}: AppleDouble companion (macOS metadata), not a picture");
+        return Err(decode::not_a_picture());
+    }
+
     if let Some(resolved) = try_video_source(stream, &head, cfg, who) {
         return resolved;
     }
@@ -710,8 +718,24 @@ unsafe fn oversized_rescue(
             return Ok(src);
         }
     }
-    safety::log_debugf!("{who}: skip, {size} bytes over limit");
+    log_oversized_skip(who, size, max_file_bytes);
     Err(Error::from(E_FAIL))
+}
+
+/// The debug line for an oversized file no rescue read. It used to be "skip, N bytes over
+/// limit" either way, so a big PDF the user's MaxSize allowed, whose rescues all ran and
+/// failed, read like one the setting had refused (issue #59). Say which it was; a rescue that
+/// ran and failed has logged its own reason above this line.
+fn log_oversized_skip(who: &str, size: u64, max_file_bytes: u64) {
+    if size > max_file_bytes {
+        safety::log_debugf!(
+            "{who}: skip, {size} bytes is over the MaxSize setting ({max_file_bytes} bytes)"
+        );
+    } else {
+        safety::log_debugf!(
+            "{who}: skip, no rescue read this {size}-byte file (too big to buffer, within MaxSize)"
+        );
+    }
 }
 
 /// The last rescues, in the order that suits the file: a preview found by offset (a compound
@@ -943,7 +967,10 @@ unsafe fn pdf_page(
     // buffered preview gives it.
     let cx = (target_edge < decode::OVERSIZED_VIEW_EDGE).then_some(target_edge);
     let edge = pdf_tier::pdf_raster_edge(cx);
-    let front = stream_prefix(stream, Some(size), PDF_FRONT_BYTES)?;
+    let Some(front) = stream_prefix(stream, Some(size), PDF_FRONT_BYTES) else {
+        safety::log_debugf!("{who}: PDF rescue could not read the file's first bytes");
+        return None;
+    };
     let illustrator = crate::container::ai::is_illustrator(&front);
     let (fit, want) = if illustrator {
         (PageFit::Width(edge), pdf_tier::AI_SHEET_PAGES as u32)
@@ -952,7 +979,10 @@ unsafe fn pdf_page(
     };
     let pages = crate::pdf::render_pages_from_stream(stream, size, fit, want);
     let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    let (pngs, count) = pages?;
+    let Some((pngs, count)) = pages else {
+        safety::log_debugf!("{who}: PDF rescue: the PDF engine gave no page off the stream");
+        return None;
+    };
     safety::log_debugf!(
         "{who}: {} of {count} PDF page(s) rendered off the stream",
         pngs.len()

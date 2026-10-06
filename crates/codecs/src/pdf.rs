@@ -99,6 +99,16 @@ pub(crate) fn engine_can_open(len: u64) -> bool {
     len <= MAX_ENGINE_BYTES
 }
 
+/// Bytes per source read when the engine reads a big document off the shell's stream
+/// ([`render_pages_from_stream`]). Windows' engine visits EVERY page object when it loads a
+/// document (a 256-byte probe and an 8 KiB read at each), and in a scanned book each page object
+/// sits a page's scan after the last. At the block cache's 1 MiB default every visit cost a block
+/// of its own, so a 310-page, 421 MB book touched 312 blocks for 3 MiB of actual reads, the cache
+/// refused the rest at its 192 MiB budget, and the load failed: no scanned book with more than
+/// ~190 pages past the 256 MiB input ceiling ever had a thumbnail (issue #59, measured
+/// 2026-10-06). At 64 KiB the same load pulls 22 MiB, under the same byte budget.
+const STREAM_BLOCK: u64 = 64 * 1024;
+
 /// Where a document is read from: bytes in hand, or a file the rasterizer reads itself.
 enum Source {
     Bytes(Vec<u8>),
@@ -391,38 +401,69 @@ pub(crate) enum PageFit {
 /// fitted by `fit`, as PNG bytes, with the document's page count: a file too big to hold. A big
 /// PDF is its images and fonts, with the cross-reference that finds page one at its END, so no
 /// bounded head read serves it (the big-file gate, 2026-09-23); the OS rasterizer reads what it
-/// needs through a block cache instead. The worker gets the stream through the Global Interface
-/// Table, so this is safe from the thumbnail host's thread whatever its apartment. A page that
-/// fails to render ends the list there.
+/// needs through a block cache of [`STREAM_BLOCK`]-sized blocks instead. The worker gets the
+/// stream through the Global Interface Table, so this is safe from the thumbnail host's thread
+/// whatever its apartment. A page that fails to render ends the list there. Every way this
+/// comes back empty leaves a debug-log line saying which step failed and why.
 pub(crate) fn render_pages_from_stream(
     shell: &windows::Win32::System::Com::IStream,
     size: u64,
     fit: PageFit,
     pages: u32,
 ) -> Option<(Vec<Vec<u8>>, u32)> {
-    use windows::Storage::Streams::IRandomAccessStream;
-    use windows::Win32::System::WinRT::{CreateRandomAccessStreamOverStream, BSOS_DEFAULT};
     if !engine_can_open(size) {
+        st2k_base::safety::log_debugf!(
+            "pdf: a {size}-byte document is past the {MAX_ENGINE_BYTES} bytes Windows' PDF \
+             engine is given"
+        );
         return None;
     }
     crate::video::with_stream_on_worker(
         shell,
         PDF_TIMEOUT,
         "pdf: the streamed render",
-        move |inner| {
-            let deadline = std::time::Instant::now() + PDF_TIMEOUT;
-            let cached: windows::Win32::System::Com::IStream =
-                crate::vstream::BlockCacheStream::new(inner, size, deadline).into();
-            let ras: IRandomAccessStream =
-                unsafe { CreateRandomAccessStreamOverStream(&cached, BSOS_DEFAULT) }.ok()?;
-            let doc = block_op(&PdfDocument::LoadFromStreamAsync(&ras).ok()?).ok()?;
-            let count = doc.PageCount().ok()?;
-            let pngs: Vec<Vec<u8>> = (0..count.min(pages))
-                .map_while(|i| render_fitted(&doc, i, fit).ok())
-                .collect();
-            Some((pngs, count))
-        },
+        move |inner| render_pages_cached(inner, size, fit, pages),
     )
+}
+
+/// [`render_pages_from_stream`]'s worker body: the document loaded off `inner` through the
+/// block cache, its first `pages` pages rendered. A failed step is logged with what the cache
+/// pulled and refused, since the engine's own error says nothing about a starved read.
+fn render_pages_cached(
+    inner: windows::Win32::System::Com::IStream,
+    size: u64,
+    fit: PageFit,
+    pages: u32,
+) -> Option<(Vec<Vec<u8>>, u32)> {
+    use windows::Storage::Streams::IRandomAccessStream;
+    use windows::Win32::System::WinRT::{CreateRandomAccessStreamOverStream, BSOS_DEFAULT};
+    let deadline = std::time::Instant::now() + PDF_TIMEOUT;
+    let cache = crate::vstream::BlockCacheStream::with_block(inner, size, deadline, STREAM_BLOCK);
+    let stats = cache.stats();
+    let cached: windows::Win32::System::Com::IStream = cache.into();
+    let failed = |step: &str, e: windows::core::Error| {
+        st2k_base::safety::log_debugf!("pdf: {step} failed ({e}); {}", stats.describe());
+    };
+    let ras: IRandomAccessStream =
+        unsafe { CreateRandomAccessStreamOverStream(&cached, BSOS_DEFAULT) }
+            .map_err(|e| failed("wrapping the stream for the engine", e))
+            .ok()?;
+    let doc = PdfDocument::LoadFromStreamAsync(&ras)
+        .and_then(|op| block_op(&op))
+        .map_err(|e| failed("loading the document", e))
+        .ok()?;
+    let count = doc
+        .PageCount()
+        .map_err(|e| failed("reading the page count", e))
+        .ok()?;
+    let pngs: Vec<Vec<u8>> = (0..count.min(pages))
+        .map_while(|i| {
+            render_fitted(&doc, i, fit)
+                .map_err(|e| failed(&format!("rendering page {}", i + 1), e))
+                .ok()
+        })
+        .collect();
+    Some((pngs, count))
 }
 
 /// Page `i` of an open document, sized by `fit`, as PNG bytes.

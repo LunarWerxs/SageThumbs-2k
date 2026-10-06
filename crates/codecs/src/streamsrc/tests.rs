@@ -915,3 +915,17 @@ fn end_at_ends_the_stream_where_it_is_told() {
     unbounded.read_to_end(&mut all).unwrap();
     assert_eq!(all.len(), 10);
 }
+
+/// A macOS `._` companion is refused at the head, before the stream is read past it, with the
+/// code the shell surfaces decline without an ERROR line: the issue #55 log carried one per `._`
+/// file, each after every decode tier, an ImageMagick child included, had been tried on it.
+#[test]
+fn an_appledouble_companion_is_refused_at_the_head() {
+    let mut f = vec![0x00, 0x05, 0x16, 0x07, 0x00, 0x02, 0x00, 0x00];
+    f.resize(4096, 0);
+    let stream = unsafe { SHCreateMemStream(Some(&f)) }.expect("SHCreateMemStream");
+    match unsafe { stream_source(&stream, &test_cfg(100 << 20), 256, "test") } {
+        Err(e) => assert_eq!(e.code(), crate::decode::NOT_A_PICTURE),
+        Ok(_) => panic!("an AppleDouble companion must not reach the decode tiers"),
+    }
+}

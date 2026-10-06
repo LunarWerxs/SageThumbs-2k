@@ -120,6 +120,24 @@ fn garbage_bytes_fail_cleanly() {
     assert!(decode_thumbnail_opts(&[0u8, 1, 2, 3, 4, 5, 6, 7], 96, false).is_err());
 }
 
+/// A macOS `._` companion handed over as bytes (the CLI and the verbs read by path, not
+/// through the shell's stream) is declined with the distinct code, before any tier runs: the
+/// issue #55 log showed each one walked through every tier, an ImageMagick child included.
+#[test]
+fn an_appledouble_companion_is_declined_as_not_a_picture() {
+    // Header (version 2), 16 filler bytes, one entry: Finder info, id 9, at 38, 32 bytes.
+    let mut f = vec![0x00, 0x05, 0x16, 0x07, 0x00, 0x02, 0x00, 0x00];
+    f.extend_from_slice(&[0u8; 16]);
+    f.extend_from_slice(&1u16.to_be_bytes());
+    for v in [9u32, 38, 32] {
+        f.extend_from_slice(&v.to_be_bytes());
+    }
+    f.extend_from_slice(b"8BPS8BIM");
+    f.resize(38 + 32, 0);
+    let err = decode_preview_capped(&f, 256).expect_err("Finder metadata is not a picture");
+    assert_eq!(err.code(), NOT_A_PICTURE);
+}
+
 #[test]
 fn a_stand_in_for_a_larger_picture_still_fills_the_tile() {
     // Issue #25 stays fixed: Photoshop bakes a ~160 px preview into a document of any size,

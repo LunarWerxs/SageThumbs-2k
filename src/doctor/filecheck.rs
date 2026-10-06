@@ -558,12 +558,38 @@ pub(super) fn probe_file(
     // The decisive step: actually run the thumbnail decoder on THIS file's bytes, the
     // same preview-fidelity path Explorer's provider uses.
     match st2k_codecs::decode::read_preview_capped(path) {
-        Err(e) => r.fail_with_fix(
+        Err(e) => report_unbuffered(r, path, &e),
+        Ok(bytes) => report_decode(r, path, &bytes, is_video),
+    }
+}
+
+/// A file the buffered read refused. Past the in-memory ceiling Explorer does not give up: it
+/// runs the streamed rescues, and `decode_oversized_path` is that same cascade, so the report
+/// runs it too rather than calling a 421 MB scanned book unreadable (issue #59's report did).
+/// Under the ceiling it bows out at once and the read error stands.
+fn report_unbuffered(r: &mut Report, path: &str, e: &std::io::Error) {
+    match st2k_codecs::decode::decode_oversized_path(path, 256) {
+        Some(img) => {
+            r.line(
+                S::Ok,
+                "Decode this file",
+                &format!(
+                    "OK ({}x{}) off the stream: too big to hold in memory, read the way \
+                     Explorer reads it",
+                    img.width(),
+                    img.height()
+                ),
+            );
+            // Then ask the shell, exactly as the buffered success path does.
+            shell_roundtrip(r, path);
+        }
+        None => r.fail_with_fix(
             "Read file",
             &format!("could not read the bytes: {e}"),
-            "check the file isn't locked, truncated, or over the size limit",
+            "check the file isn't locked or truncated; past the size limit no streamed rescue \
+             read it either, and with Debug logging on the log's last lines name the step \
+             that failed",
         ),
-        Ok(bytes) => report_decode(r, path, &bytes, is_video),
     }
 }
 

@@ -348,8 +348,9 @@ pub fn download_and_install(parent: HWND) -> Result<String, UpdateError> {
     let (path, installer_lock) = prepared?;
     // Recorded BEFORE the launch: setup kills this process (taskkill /IM) seconds after it
     // starts. The next Settings launch reads it back with the log (issue #60).
-    record_attempt(&tag);
-    let launched = launch_installer_silent(&path, parent, fresh_setup_log().as_deref());
+    let log = fresh_setup_log();
+    record_attempt(&tag, log.is_some());
+    let launched = launch_installer_silent(&path, parent, log.as_deref());
     if launched.is_err() {
         forget_update_attempt(); // the caller says why; there is nothing for Settings to report
     }

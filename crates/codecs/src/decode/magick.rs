@@ -222,10 +222,16 @@ pub(super) fn decode_via_magick_capped(
 fn magick_stdin_spec(bytes: &[u8]) -> &'static str {
     if is_mini_avif(bytes) {
         "avif:-"
-    } else if is_image_sequence(bytes) {
+    } else if is_image_sequence(bytes) || bytes.starts_with(b"8BPS") {
         // Only frame 0 is ever used, and a bare `-` decodes EVERY frame of the sequence first:
         // measured on the corpus's real.heics, 5.0 s against 0.54 s for the same picture, which
         // left a normal-size sequence's preview pane blank on a loaded machine.
+        //
+        // A Photoshop document is the same shape: frame 0 is its composite (or, saved without
+        // one, ImageMagick's flattening of the layers), and every layer after it is a frame
+        // too, all decoded, resized and written down the pipe. Measured with the bundled
+        // binary on a 24 MB layered document (issue #55): `-` ran past 28.9 s of CPU and died
+        // of its own time limit, `-[0]` drew the same picture in 1.0 s.
         "-[0]"
     } else {
         "-"

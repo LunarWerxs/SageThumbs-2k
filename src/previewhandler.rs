@@ -298,57 +298,7 @@ impl IPreviewHandler_Impl for PreviewHandler_Impl {
                 }
             };
 
-            // A cascade miss (oversized past every rescue, artless audio, undecodable
-            // video) leaves the pane empty — same terminal state as a failed decode. Each
-            // miss leaves one always-on `ERROR` line naming the file, so a "blank pane"
-            // report can be read from the log without `Debug=1`.
-            let decoded = match source {
-                // A video frame arrives already decoded by Media Foundation.
-                Ok(StreamSource::Frame(frame) | StreamSource::Picture(frame)) => Some(frame),
-                // Decode bytes OFF the host thread under a wall-clock budget so a
-                // slow/exotic decode can't freeze the preview host's message pump.
-                Ok(StreamSource::Bytes(bytes) | StreamSource::Cover(bytes)) => {
-                    let len = bytes.len();
-                    safety::log_debugf!("DoPreview: read {len} bytes from stream");
-                    match decode_preview_budgeted(bytes, ext) {
-                        Ok(img) => Some(img),
-                        Err(why) => {
-                            safety::log_error(&format!(
-                                "DoPreview: decode failed for {} ({len} bytes): {why}",
-                                self.stream_label()
-                            ));
-                            None
-                        }
-                    }
-                }
-                // A generic archive's contact sheet: the covers are ordinary
-                // JPEG/PNG members decoded by the CHEAP tiers only (no subprocess,
-                // no video/PDF), so no wall-clock budget is needed. The pane's edge
-                // matches the PDF rasterize target — crisp at any pane size.
-                Ok(StreamSource::Covers(covers)) => {
-                    safety::log_debugf!("DoPreview: {} archive covers", covers.len());
-                    match decode::thumbnail_from_covers(&covers, safety::PREVIEW_TARGET_EDGE) {
-                        Ok(d) => image::RgbaImage::from_raw(d.width, d.height, d.rgba)
-                            .map(image::DynamicImage::ImageRgba8),
-                        Err(e) => {
-                            safety::log_error(&format!(
-                                "DoPreview: contact sheet failed for {} hr={:#010x}",
-                                self.stream_label(),
-                                e.code().0
-                            ));
-                            None
-                        }
-                    }
-                }
-                Err(e) => {
-                    safety::log_error(&format!(
-                        "DoPreview: stream_source failed for {} hr={:#010x}",
-                        self.stream_label(),
-                        e.code().0
-                    ));
-                    None
-                }
-            };
+            let decoded = self.decode_source(source, ext);
             match &decoded {
                 Some(img) => {
                     safety::log_debugf!("DoPreview: decoded {}x{}", img.width(), img.height())
@@ -449,6 +399,68 @@ impl PreviewHandler_Impl {
             .ok()
             .and_then(|b| b.as_ref().and_then(|s| unsafe { stream_name(s) }))
             .unwrap_or_else(|| "<unnamed stream>".to_string())
+    }
+
+    /// `DoPreview`'s source → pixels step. A cascade miss (oversized past every rescue,
+    /// artless audio, undecodable video) leaves the pane empty — same terminal state as a
+    /// failed decode. Each miss leaves one always-on `ERROR` line naming the file, so a
+    /// "blank pane" report can be read from the log without `Debug=1`.
+    fn decode_source(
+        &self,
+        source: Result<StreamSource>,
+        ext: Option<String>,
+    ) -> Option<image::DynamicImage> {
+        match source {
+            // A video frame arrives already decoded by Media Foundation.
+            Ok(StreamSource::Frame(frame) | StreamSource::Picture(frame)) => Some(frame),
+            // Decode bytes OFF the host thread under a wall-clock budget so a
+            // slow/exotic decode can't freeze the preview host's message pump.
+            Ok(StreamSource::Bytes(bytes) | StreamSource::Cover(bytes)) => {
+                let len = bytes.len();
+                safety::log_debugf!("DoPreview: read {len} bytes from stream");
+                decode_preview_budgeted(bytes, ext)
+                    .map_err(|why| {
+                        safety::log_error(&format!(
+                            "DoPreview: decode failed for {} ({len} bytes): {why}",
+                            self.stream_label()
+                        ));
+                    })
+                    .ok()
+            }
+            // A generic archive's contact sheet: the covers are ordinary
+            // JPEG/PNG members decoded by the CHEAP tiers only (no subprocess,
+            // no video/PDF), so no wall-clock budget is needed. The pane's edge
+            // matches the PDF rasterize target — crisp at any pane size.
+            Ok(StreamSource::Covers(covers)) => {
+                safety::log_debugf!("DoPreview: {} archive covers", covers.len());
+                match decode::thumbnail_from_covers(&covers, safety::PREVIEW_TARGET_EDGE) {
+                    Ok(d) => image::RgbaImage::from_raw(d.width, d.height, d.rgba)
+                        .map(image::DynamicImage::ImageRgba8),
+                    Err(e) => {
+                        safety::log_error(&format!(
+                            "DoPreview: contact sheet failed for {} hr={:#010x}",
+                            self.stream_label(),
+                            e.code().0
+                        ));
+                        None
+                    }
+                }
+            }
+            // A macOS `._` companion is no picture: an empty pane is the answer, and not
+            // an ERROR line (issue #55's log had one per `._` file).
+            Err(e) if e.code() == decode::NOT_A_PICTURE => {
+                safety::log_debugf!("DoPreview: {} is not a picture", self.stream_label());
+                None
+            }
+            Err(e) => {
+                safety::log_error(&format!(
+                    "DoPreview: stream_source failed for {} hr={:#010x}",
+                    self.stream_label(),
+                    e.code().0
+                ));
+                None
+            }
+        }
     }
 
     /// Create the child window if we have a parent and don't already have a LIVE one.

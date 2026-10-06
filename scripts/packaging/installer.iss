@@ -1006,6 +1006,15 @@ begin
     Result := Copy(Path, 1, i - 4);
 end;
 
+// The only files SwapAside parks: EXE and DLL images. Any other '.old<N>' name is not ours.
+function IsImageFile(const Name: String): Boolean;
+var
+  Ext: String;
+begin
+  Ext := LowerCase(ExtractFileExt(Name));
+  Result := (Ext = '.exe') or (Ext = '.dll');
+end;
+
 // Rename F to the first free '<F>.old<N>' and remember the pair for SettleParkedFiles.
 procedure SwapAside(const F: String);
 var
@@ -1037,7 +1046,6 @@ end;
 procedure SwapAsideHeldFiles(const Dir: String);
 var
   R: TFindRec;
-  Ext: String;
 begin
   if FindFirst(Dir + '\*', R) then
   try
@@ -1049,8 +1057,7 @@ begin
       end
       else
       begin
-        Ext := LowerCase(ExtractFileExt(R.Name));
-        if ((Ext = '.exe') or (Ext = '.dll'))
+        if IsImageFile(R.Name)
            and (CompareText(Copy(R.Name, 1, 5), 'unins') <> 0)
            and FileHeld(Dir + '\' + R.Name) then
           SwapAside(Dir + '\' + R.Name);
@@ -1081,7 +1088,7 @@ begin
       else
       begin
         Orig := ParkedOriginal(F);
-        if Orig <> '' then
+        if (Orig <> '') and IsImageFile(Orig) then
         begin
           if not FileExists(Orig) then
           begin

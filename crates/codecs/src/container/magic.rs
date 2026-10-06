@@ -38,6 +38,16 @@ pub(crate) fn is_7z(b: &[u8]) -> bool {
     b.starts_with(&[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C])
 }
 
+/// A macOS AppleDouble companion: the `._name` file a Mac writes beside `name` on any volume
+/// that cannot hold its Finder info and resource fork (a FAT/exFAT stick, a network share, a
+/// zip made on a Mac). It carries the original's NAME, so a `._art.psd` registers as a
+/// Photoshop file, but it is a few hundred bytes of metadata and never a picture. Magic
+/// `00 05 16 07`, then version 1 or 2 (RFC 1740). AppleSingle (`00 05 16 00`), which carries
+/// the data fork too, is not this.
+pub(crate) fn is_apple_double(b: &[u8]) -> bool {
+    b.starts_with(&[0x00, 0x05, 0x16, 0x07]) && matches!(b.get(4..8), Some([0, 1 | 2, 0, 0]))
+}
+
 /// RAR signature (RAR 1.5–4.x `Rar!\x1a\x07\x00` and RAR5 `Rar!\x1a\x07\x01\x00` share this prefix).
 pub(super) fn is_rar(b: &[u8]) -> bool {
     b.starts_with(b"Rar!\x1a\x07")

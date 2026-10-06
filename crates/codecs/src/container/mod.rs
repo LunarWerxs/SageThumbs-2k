@@ -162,7 +162,9 @@ mod magic;
 mod waveform;
 mod zipfmt;
 use magic::*;
-pub(crate) use magic::{is_7z, looks_like_djvu, looks_like_raster, looks_like_xcf};
+pub(crate) use magic::{
+    is_7z, is_apple_double, looks_like_djvu, looks_like_raster, looks_like_xcf,
+};
 pub use magic::{is_generic_archive_magic, looks_like_audio};
 // Synthetic, structurally-valid seeds + direct fuzz entry points for the extractors above.
 // Test-only. Lives inside `container` because the format modules are private to it — see the
@@ -833,6 +835,10 @@ pub(crate) use dwg::testutil as dwg_testutil;
 /// can build synthetic PSD/DWG files without reaching into the private modules.
 #[cfg(test)]
 pub(crate) use psd::testutil as psd_testutil;
+/// Test-only: a Photoshop document with no baked preview, its composite drawn by a closure,
+/// for the `decode` tests of the thumbnail route (issue #55).
+#[cfg(test)]
+pub(crate) use psdmerged::synth as psd_synth;
 
 /// Shared embedded-JPEG span scanner — see [`util::jpeg_span_len`]. Re-exported so
 /// `decode` and the container extractors (PSP, C4D) don't each hand-roll their own.

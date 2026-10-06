@@ -7,17 +7,20 @@
 //! *thousands of tiny reads* through the shell's marshaled COM thumbnail stream — each a slow
 //! cross-apartment RPC. This wrapper coalesces those into a handful of **1 MiB block** reads
 //! cached in RAM, so MF can seek freely (to the true ~30 % representative frame) at a few big
-//! reads total instead of thousands of tiny ones. A **block budget** caps the distinct bytes we
+//! reads total instead of thousands of tiny ones. A **byte budget** caps the distinct bytes we
 //! ever pull from the source, so even if MF decides to scan a multi-GB file it stays bounded
 //! (past the budget, reads short → MF fails → the caller falls back to a head prefix / default
-//! icon). It runs on the same timeout-guarded worker as the other video tiers.
+//! icon). It runs on the same timeout-guarded worker as the other video tiers. A reader that
+//! visits many small, far-apart spots instead (Windows' PDF engine, see `pdf::STREAM_BLOCK`)
+//! takes smaller blocks under the same byte budget ([`BlockCacheStream::with_block`]).
 //!
 //! Read-only: every mutating `IStream`/`ISequentialStream` method is a no-op/`E_NOTIMPL`. All
 //! state is behind a `Mutex` so a panic can never unwind across the COM ABI (panic = abort).
 
 use core::ffi::c_void;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use windows::core::{Error, Result, HRESULT};
@@ -30,12 +33,15 @@ use windows::Win32::System::Com::{
 };
 use windows_implement::implement;
 
-/// Read granularity: one cross-apartment RPC fetches this much from the source at a time.
+/// Default read granularity: one cross-apartment RPC fetches this much from the source at a time.
 const BLOCK: u64 = 1024 * 1024;
-/// Hard cap on distinct blocks ever pulled from the source (192 MiB). A well-indexed file
-/// touches a tiny fraction of this (header + index + one GOP); hitting it means MF is scanning
-/// a huge unindexed file, so we stop feeding it and let the caller fall back.
-const BUDGET_BLOCKS: usize = 192;
+/// The smallest block [`BlockCacheStream::with_block`] accepts.
+const MIN_BLOCK: u64 = 4 * 1024;
+/// Hard cap on the distinct bytes ever pulled from the source (192 MiB), whatever the block
+/// size. A well-indexed file touches a tiny fraction of this (header + index + one GOP);
+/// hitting it means the reader is scanning a huge file, so we stop feeding it and let the
+/// caller fall back.
+const BUDGET_BYTES: u64 = 192 * 1024 * 1024;
 
 struct State {
     pos: u64,
@@ -43,8 +49,49 @@ struct State {
     blocks_read: usize,
 }
 
-/// A read-only `IStream` over `inner`, caching 1 MiB blocks. Construct, then `.into()` an
-/// [`IStream`] to hand to `MFCreateMFByteStreamOnStream`.
+/// What a [`BlockCacheStream`] pulled and why it refused a read, if it did. Shared through an
+/// `Arc` because the stream itself goes to the decoder as an `IStream`, and a decoder that
+/// fails says only that it failed: these say whether the cache starved it (issue #59's big
+/// PDFs failed on an exhausted budget and the log never said so).
+#[derive(Default)]
+pub struct CacheStats {
+    block: u64,
+    budget_blocks: usize,
+    blocks: AtomicUsize,
+    over_budget: AtomicBool,
+    past_deadline: AtomicBool,
+    read_failed: AtomicBool,
+}
+
+impl CacheStats {
+    /// One debug-log clause: what was pulled, and which refusals (if any) the reader met.
+    pub fn describe(&self) -> String {
+        let refusals = [
+            (&self.over_budget, "the read budget ran out"),
+            (&self.past_deadline, "the read deadline passed"),
+            (&self.read_failed, "a read of the source failed"),
+        ];
+        let why: Vec<&str> = refusals
+            .iter()
+            .filter(|(hit, _)| hit.load(Ordering::Relaxed))
+            .map(|(_, why)| *why)
+            .collect();
+        let pulled = format!(
+            "the block cache pulled {} of at most {} blocks of {} KiB",
+            self.blocks.load(Ordering::Relaxed),
+            self.budget_blocks,
+            self.block >> 10
+        );
+        if why.is_empty() {
+            pulled
+        } else {
+            format!("{pulled}, then refused reads: {}", why.join(", "))
+        }
+    }
+}
+
+/// A read-only `IStream` over `inner`, caching blocks (1 MiB unless [`Self::with_block`] says
+/// otherwise). Construct, then `.into()` an [`IStream`] to hand to `MFCreateMFByteStreamOnStream`.
 #[implement(IStream)]
 pub struct BlockCacheStream {
     inner: IStream,
@@ -52,15 +99,37 @@ pub struct BlockCacheStream {
     /// Wall-clock cutoff: past it, further source reads are refused (short read → MF gives up).
     /// Bounds I/O even when this runs inline on the shell's thumbnail thread (no worker timeout).
     deadline: Instant,
+    /// Bytes per source read, and how many distinct blocks [`BUDGET_BYTES`] allows at that size.
+    block: u64,
+    budget_blocks: usize,
+    stats: Arc<CacheStats>,
     state: Mutex<State>,
 }
 
 impl BlockCacheStream {
     pub fn new(inner: IStream, size: u64, deadline: Instant) -> Self {
+        Self::with_block(inner, size, deadline, BLOCK)
+    }
+
+    /// [`Self::new`] reading `block` bytes per source read (clamped to 4 KiB..=1 MiB) under the
+    /// same `BUDGET_BYTES`. Big blocks suit a reader that seeks a few times and then reads on;
+    /// a reader that visits many small, far-apart spots wants small ones, or every visit costs a
+    /// whole block: Windows' PDF engine reads ~8 KiB at each page object of a scanned book, a
+    /// scan's length apart, and at 1 MiB a 200-page book spent the whole budget (issue #59).
+    pub fn with_block(inner: IStream, size: u64, deadline: Instant, block: u64) -> Self {
+        let block = block.clamp(MIN_BLOCK, BLOCK);
+        let budget_blocks = (BUDGET_BYTES / block) as usize;
         Self {
             inner,
             size,
             deadline,
+            block,
+            budget_blocks,
+            stats: Arc::new(CacheStats {
+                block,
+                budget_blocks,
+                ..CacheStats::default()
+            }),
             state: Mutex::new(State {
                 pos: 0,
                 cache: HashMap::new(),
@@ -69,26 +138,40 @@ impl BlockCacheStream {
         }
     }
 
+    /// What this stream has pulled and refused so far; still readable once the stream has gone
+    /// to a decoder as an `IStream`.
+    pub fn stats(&self) -> Arc<CacheStats> {
+        Arc::clone(&self.stats)
+    }
+
     /// Ensure block `blk` is cached; returns false if unavailable (budget hit / deadline passed /
-    /// past EOF / read error), which surfaces to MF as a short read.
+    /// past EOF / read error), which surfaces to MF as a short read. Each refusal but EOF is
+    /// recorded in [`Self::stats`].
     fn ensure_block(&self, st: &mut State, blk: u64) -> bool {
         if st.cache.contains_key(&blk) {
             return true;
         }
-        if st.blocks_read >= BUDGET_BLOCKS || Instant::now() >= self.deadline {
+        if st.blocks_read >= self.budget_blocks {
+            self.stats.over_budget.store(true, Ordering::Relaxed);
             return false;
         }
-        let start = blk * BLOCK;
+        if Instant::now() >= self.deadline {
+            self.stats.past_deadline.store(true, Ordering::Relaxed);
+            return false;
+        }
+        let start = blk * self.block;
         if start >= self.size {
             return false;
         }
-        let len = BLOCK.min(self.size - start) as usize;
+        let len = self.block.min(self.size - start) as usize;
         let mut buf = vec![0u8; len];
         if unsafe { self.read_inner_at(start, &mut buf) }.is_none() {
+            self.stats.read_failed.store(true, Ordering::Relaxed);
             return false;
         }
         st.cache.insert(blk, buf.into_boxed_slice());
         st.blocks_read += 1;
+        self.stats.blocks.store(st.blocks_read, Ordering::Relaxed);
         true
     }
 
@@ -113,12 +196,12 @@ impl ISequentialStream_Impl for BlockCacheStream_Impl {
         let mut done = 0usize;
         while done < want {
             let abs = pos + done as u64;
-            let blk = abs / BLOCK;
+            let blk = abs / self.block;
             if !self.ensure_block(&mut st, blk) {
                 break; // budget / EOF / read error → short read
             }
             let block = &st.cache[&blk];
-            let off = (abs % BLOCK) as usize;
+            let off = (abs % self.block) as usize;
             let n = (want - done).min(block.len() - off);
             out[done..done + n].copy_from_slice(&block[off..off + n]);
             done += n;

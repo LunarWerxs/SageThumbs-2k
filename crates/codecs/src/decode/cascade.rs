@@ -188,6 +188,26 @@ pub(super) fn refuse_a_preview_standing_in_for_the_picture(
     ))
 }
 
+/// Bytes no raster tier may touch, refused before the first one runs.
+fn refuse_tierless(bytes: &[u8]) -> Result<()> {
+    // EPS is embedded-preview-only. Every ordinary caller tries
+    // `container::extract_cover` before reaching this raster tier; if EPS bytes
+    // still arrive here, no supported TIFF/EPSI/Photoshop preview was present.
+    // Refuse them before image/WIC/ImageMagick/the lenient-JPEG fallback so a
+    // nameless shell stream can never invoke a PostScript delegate or treat an
+    // unrelated JPEG byte run as the file's declared preview.
+    if crate::container::is_eps(bytes) {
+        return Err(Error::from(E_FAIL));
+    }
+    // A macOS `._` companion is metadata under a picture's name: no tier can read it, and
+    // walking them all (ImageMagick's child included) only proved that at length.
+    if crate::container::is_apple_double(bytes) {
+        st2k_base::safety::log_debug("decode: AppleDouble companion (macOS metadata), declined");
+        return Err(not_a_picture());
+    }
+    Ok(())
+}
+
 /// Tiered decode: `image` crate → WIC → ImageMagick subprocess → headerless TGA,
 /// except HEIC auxiliary-alpha files may prefer ImageMagick before WIC (see below).
 /// Stops at the first tier that decodes. No resize, no orientation — raw pixels.
@@ -199,15 +219,7 @@ pub(super) fn decode_any_with_wic_target(
     external: bool,
     wic_thumbnail_cx: Option<u32>,
 ) -> Result<DynamicImage> {
-    // EPS is embedded-preview-only. Every ordinary caller tries
-    // `container::extract_cover` before reaching this raster tier; if EPS bytes
-    // still arrive here, no supported TIFF/EPSI/Photoshop preview was present.
-    // Refuse them before image/WIC/ImageMagick/the lenient-JPEG fallback so a
-    // nameless shell stream can never invoke a PostScript delegate or treat an
-    // unrelated JPEG byte run as the file's declared preview.
-    if crate::container::is_eps(bytes) {
-        return Err(Error::from(E_FAIL));
-    }
+    refuse_tierless(bytes)?;
     // Per-tier breadcrumb: each tier's underlying error Display is logged before
     // we fall through, so a failed decode is diagnosable (`-Debug` on) instead of
     // every tier collapsing to a bare E_FAIL. Logging is gated by `log_debug`.

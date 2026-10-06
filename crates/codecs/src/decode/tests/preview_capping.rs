@@ -413,3 +413,53 @@ mod the_by_path_read_honours_the_request_size {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }
+
+/// The third reason a PSD tile is drawn from the document itself (issue #55): it bakes NO
+/// preview. That used to send it past our own reader to ImageMagick's generic tier, which reads
+/// every layer; on a 24 MB layered document that took 28.9 s of CPU against the tile's 20 s
+/// budget, and the file kept its icon. With no ImageMagick installed, it did not decode at all.
+mod a_document_with_no_baked_preview_is_drawn_by_our_reader {
+    /// The 32-bit fixture tells the routes apart by a pixel instead of a stopwatch: our reader
+    /// puts Photoshop's linear-light floats through the sRGB curve (0.5 -> 188), ImageMagick
+    /// hands the linear value back (128).
+    #[test]
+    fn a_preview_less_document_comes_from_our_reader() {
+        let f = crate::container::psd_synth((6, 4), (3, 3, 32), false, false, true, |_, _, c| {
+            [255, 128, 0][usize::from(c)]
+        });
+        assert_eq!(crate::container::psd_preview_long_edge(&f), None, "premise");
+        let img = crate::decode::decode_preview_capped(&f, 256)
+            .expect("a preview-less PSD must still thumbnail");
+        assert_eq!(img.to_rgba8().get_pixel(2, 2).0, [255, 188, 0, 255]);
+    }
+
+    /// The real shapes, from the corpus: a big layered document with no baked preview saved
+    /// with its composite and without it, and the corpus's solid-blue `sample-big-canvas.psd`.
+    /// The tile must be exactly what our reader draws at the edge the thumbnail route asks it
+    /// for (twice the tile); anything else means another tier drew it.
+    #[test]
+    fn corpus_documents_with_no_baked_preview_take_our_reader() {
+        for name in [
+            "issue55-layers-nopreview.psd",
+            "issue55-nocomposite-nopreview.psd",
+            "sample-big-canvas.psd",
+        ] {
+            let Some(bytes) = st2k_base::testcorpus::read(name) else {
+                continue;
+            };
+            assert_eq!(
+                crate::container::psd_preview_long_edge(&bytes),
+                None,
+                "{name}"
+            );
+            let ours = crate::container::psd_merged_from_reader(std::io::Cursor::new(&bytes), 512)
+                .unwrap_or_else(|| panic!("{name}: our reader declined it"));
+            let tile = crate::decode::decode_preview_capped(&bytes, 256)
+                .unwrap_or_else(|e| panic!("{name}: the thumbnail route failed: {e}"));
+            assert!(
+                tile.to_rgba8() == ours.to_rgba8(),
+                "{name}: the tile is not our reader's picture"
+            );
+        }
+    }
+}

@@ -128,8 +128,14 @@ fn report_thumbnail_failure(
     if let Err(e) = r {
         // Always-on breadcrumb: the shell swallows the HRESULT and just falls
         // back to the default icon, so without this line the most common report
-        // ("X shows the generic icon") produced an empty log.
-        provider.log_failure(e);
+        // ("X shows the generic icon") produced an empty log. Not for a file that is no
+        // picture at all (a macOS `._` companion): its icon is the right answer, and an
+        // ERROR line per such file only buried the real failures (issue #55's log).
+        if e.code() == decode::NOT_A_PICTURE {
+            safety::log_debug("GetThumbnail: declined, not a picture (macOS `._` companion)");
+        } else {
+            provider.log_failure(e);
+        }
         if let Some(id) = id {
             failmemo::record_failure(id);
         }

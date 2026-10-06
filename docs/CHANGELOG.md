@@ -17,6 +17,19 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   the next restart, and never closes your programs. If an update ever does fail, the next time
   you open Settings it tells you, with setup's own reason and its log, and offers the download
   page.
+- **Big scanned-book PDFs get their covers** (fixes #59). A PDF over 256 MB with more than about
+  190 pages, each page its own scan (most scanned books), never got a thumbnail: Windows' PDF
+  engine looks at every page when it opens a document, and SageThumbs ran out of its read
+  allowance before the engine had seen them all. The same books now draw their first page,
+  reading less than a tenth as much of the file to do it. `st2k doctor` on a file this big now
+  checks it the way Explorer reads it, instead of reporting it unreadable.
+- **Photoshop files saved without a preview image get thumbnails** (fixes #55). A PSD written
+  by another program, or by Photoshop with image previews turned off, was handed whole to
+  ImageMagick, which decoded every layer and ran out of time on a big layered file, while Space
+  showed it fine. SageThumbs now draws these with its own Photoshop reader, as Space does, and
+  asks ImageMagick only for the finished picture when it has to: a 24 MB layered test file went
+  from no thumbnail to one in a fraction of a second. The `._` files a Mac leaves beside your
+  pictures are no longer logged as errors.
 
 ## 3.6.0
 

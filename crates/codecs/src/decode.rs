@@ -73,6 +73,23 @@ pub struct Decoded {
     pub rgba: Vec<u8>,
 }
 
+/// The error a file is declined with when it is not a picture and never will be: a macOS
+/// AppleDouble `._` companion (`container::is_apple_double`), which carries a picture's name
+/// and a few hundred bytes of Finder metadata. A DISTINCT code (WIC's
+/// `WINCODEC_ERR_UNKNOWNIMAGEFORMAT`), as `ocr::OCR_IMAGE_TOO_LARGE` is, so the shell surfaces
+/// can decline it without the always-on ERROR line a real decode failure earns: the issue #55
+/// log carried one per `._` file, after every tier, an ImageMagick child included, had been
+/// tried on each.
+pub const NOT_A_PICTURE: windows::core::HRESULT = windows::core::HRESULT(0x8898_2F07u32 as i32);
+
+/// [`NOT_A_PICTURE`] as an error, with the reason in its message.
+pub(crate) fn not_a_picture() -> Error {
+    Error::new(
+        NOT_A_PICTURE,
+        "a macOS AppleDouble companion (Finder metadata), not a picture",
+    )
+}
+
 /// =====================================================================
 /// CENTRALIZED DECOMPRESSION-BOMB BUDGETS
 /// =====================================================================

@@ -20,7 +20,7 @@ fn setup_log_path() -> Option<PathBuf> {
         .map(|d| d.join("SageThumbs2K-setup.log"))
 }
 
-/// The record of the attempt: `<unix_secs>\n<tag>\n`.
+/// The record of the attempt: `<unix_secs>\n<tag>\n<1 if setup was given the log, else 0>\n`.
 fn attempt_path() -> Option<PathBuf> {
     cache_path()?
         .parent()
@@ -51,10 +51,16 @@ pub(super) fn install_flags(log: Option<&Path>) -> String {
     flags
 }
 
-/// Note that setup is about to install `tag`. Best-effort: without it only the report is lost.
-pub(super) fn record_attempt(tag: &str) {
+/// Note that setup is about to install `tag`, and whether it was handed the log: when
+/// [`fresh_setup_log`] could not empty the file, whatever is in it belongs to an EARLIER setup,
+/// and reading its verdict for this attempt could forget a failure or quote the wrong reason.
+/// Best-effort: without the record only the report is lost.
+pub(super) fn record_attempt(tag: &str, log_handed: bool) {
     if let Some(p) = attempt_path() {
-        let _ = std::fs::write(p, format!("{}\n{tag}\n", now_secs()));
+        let _ = std::fs::write(
+            p,
+            format!("{}\n{tag}\n{}\n", now_secs(), u8::from(log_handed)),
+        );
     }
 }
 
@@ -241,7 +247,9 @@ pub fn failed_update_report() -> Option<String> {
         let _ = std::fs::remove_file(&marker);
         return None;
     };
-    let log_path = setup_log_path().filter(|p| p.exists());
+    // Only the log this attempt handed to setup speaks for it (see `record_attempt`).
+    let log_handed = lines.next().is_some_and(|l| l.trim() == "1");
+    let log_path = setup_log_path().filter(|p| log_handed && p.exists());
     let log = log_path
         .as_ref()
         .and_then(|p| std::fs::read(p).ok())

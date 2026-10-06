@@ -59,6 +59,20 @@ fn an_image_sequence_asks_magick_for_its_first_frame() {
     );
 }
 
+/// A Photoshop document is read for frame 0, its composite: a bare `-` decodes every layer as
+/// a frame of its own, which is how a layered document ran out of the tile's CPU budget
+/// (issue #55).
+#[test]
+fn a_photoshop_document_asks_magick_for_its_composite_only() {
+    let (psd, _) = crate::container::psd_testutil::synthetic_psd(3, false, 0);
+    assert_eq!(magick_stdin_spec(&psd), "-[0]");
+    assert_eq!(
+        magick_stdin_spec(b"8BPS\x00\x02"),
+        "-[0]",
+        "a PSB is the same format"
+    );
+}
+
 #[test]
 fn ordinary_avif_keeps_magick_auto_detection() {
     let mut bytes = ftyp(b"avif", &[*b"mif1"]);

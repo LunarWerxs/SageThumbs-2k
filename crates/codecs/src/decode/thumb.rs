@@ -140,26 +140,60 @@ fn resolve_transparency(decoded: &mut Decoded) -> Result<()> {
 /// continue through [`decode_preview`] with no target size.
 pub(super) fn decode_preview_thumbnail(bytes: &[u8], cx: u32) -> Result<DynamicImage> {
     // Keep this entry's container/PDF/video behavior identical to `decode_preview`; only the
-    // final WIC raster source receives the target edge. PSDs are the one exception, for the
-    // two reasons in `psd_composite_wanted`.
+    // final WIC raster source receives the target edge. PSDs are the one exception, see
+    // `decode_psd_thumbnail`.
     let cx = cx.max(1);
-    if bytes.starts_with(b"8BPS") && psd_composite_wanted(bytes, cx) {
-        // Twice the tile, not the document's size (issue #55): our reader keeps one row in
-        // every band it shrinks, and the extra rows are what the caller's filter smooths.
-        match decode_psd_composite(bytes, Fidelity::Tile, cx.saturating_mul(2)) {
-            Ok(img) => match composite_beats_baked_preview(img, bytes) {
-                CompositeVerdict::UseComposite(img) => return Ok(img),
-                // Reuse the decode `composite_beats_baked_preview` already did to answer
-                // its own question, instead of falling through to the normal PSD path
-                // below and decoding the same baked JPEG a second time (G145a).
-                CompositeVerdict::UseBakedPreview(preview) => return Ok(preview),
-            },
-            Err(e) => {
-                st2k_base::safety::log_debugf!("PSD composite failed ({e}); using baked preview")
-            }
-        }
+    if bytes.starts_with(b"8BPS") {
+        return decode_psd_thumbnail(bytes, cx);
     }
     decode_preview_with_raw_order(bytes, RawPreviewOrder::BeforeExternal, Some(cx))
+}
+
+/// A Photoshop document's tile, in the order that always ends in a picture when the file holds
+/// one (issue #55):
+///
+/// 1. Photoshop's baked preview, when it serves the request and the document is opaque
+///    ([`psd_composite_wanted`]). The container tier hands it back.
+/// 2. The real picture through [`decode_psd_composite`]: our own reader first (the stored
+///    composite, or the flattened layers of a document saved without one, reading only the
+///    rows the tile takes), ImageMagick's composite read (`-[0]`) only for what it declines.
+/// 3. When both fail or run out of budget, the baked preview at whatever size it is, which
+///    beats the bare icon; with none, the cheap in-process tiers alone (an OS PSD codec, a
+///    JPEG somewhere in the file). Never the generic ImageMagick tier: it would repeat the
+///    decode that just failed, under a second budget.
+///
+/// Before this, a document with NO baked preview (written by another program, or by Photoshop
+/// with "Image Previews: Never Save") skipped step 2 entirely and reached ImageMagick's generic
+/// tier, which reads EVERY LAYER of a layered file and writes them all down the pipe. A 24 MB
+/// layered test document took 28.9 s of CPU that way against 1.0 s for its composite alone,
+/// so the tile's 20 s CPU budget killed it and the file showed its icon; our own reader drew
+/// the same file in 20 ms once it was past the input ceiling, where the stream cascade calls it.
+fn decode_psd_thumbnail(bytes: &[u8], cx: u32) -> Result<DynamicImage> {
+    if !psd_composite_wanted(bytes, cx) {
+        return decode_preview_with_raw_order(bytes, RawPreviewOrder::BeforeExternal, Some(cx));
+    }
+    // Twice the tile, not the document's size (issue #55): our reader keeps one row in
+    // every band it shrinks, and the extra rows are what the caller's filter smooths.
+    let err = match decode_psd_composite(bytes, Fidelity::Tile, cx.saturating_mul(2)) {
+        Ok(img) => {
+            return Ok(match composite_beats_baked_preview(img, bytes) {
+                CompositeVerdict::UseComposite(img) => img,
+                // Reuse the decode `composite_beats_baked_preview` already did to answer
+                // its own question, instead of decoding the same baked JPEG a second time
+                // through the container tier (G145a).
+                CompositeVerdict::UseBakedPreview(preview) => preview,
+            });
+        }
+        Err(e) => e,
+    };
+    if crate::container::psd_baked_preview(bytes).is_some() {
+        st2k_base::safety::log_debugf!("PSD composite failed ({err}); using baked preview");
+        return decode_preview_with_raw_order(bytes, RawPreviewOrder::BeforeExternal, Some(cx));
+    }
+    st2k_base::safety::log_debugf!(
+        "PSD composite failed ({err}) and the file bakes no preview; trying the cheap tiers"
+    );
+    decode_cheap(bytes, Some(cx)).map_err(|_| err)
 }
 
 /// Verdict from [`composite_beats_baked_preview`]: which already-decoded image the caller
@@ -215,7 +249,7 @@ fn composite_beats_baked_preview(composite: DynamicImage, bytes: &[u8]) -> Compo
 /// Should a PSD/PSB thumbnail render the real merged composite rather than the ~160 px JPEG
 /// Photoshop bakes into image resource 1036?
 ///
-/// Two independent reasons, and the second one is issue #33:
+/// Three independent reasons; the second is issue #33 and the third issue #55:
 ///
 /// 1. **The document is transparent.** The baked preview is a JPEG, which has no alpha, so a
 ///    background-removed document would thumbnail against flat white. Predates #33.
@@ -225,18 +259,18 @@ fn composite_beats_baked_preview(composite: DynamicImage, bytes: &[u8]) -> Compo
 ///    it and stayed blurry no matter how long the user waited. This mirrors the guard the RAW
 ///    path already applies (`super::reduced_ifd0_serves`): use the file's own preview when it
 ///    is genuinely big enough for the request, and render properly when it is not.
+/// 3. **There is no baked preview to measure.** Then the composite is the only picture the
+///    file has. This used to answer `false` on the theory that "the ordinary tiers already
+///    reach ImageMagick for it", and they did: its generic tier, which decodes every layer,
+///    never our own reader, and on a big layered document it ran out of budget (issue #55).
 ///
-/// A PSD with no measurable baked preview answers `false` and takes the unchanged path: there
-/// is nothing for a composite to be better *than*, and the ordinary tiers already reach
-/// ImageMagick for it.
-///
-/// The composite is best-effort in both cases. When it fails — no ImageMagick on a compact
-/// install, or a document magick cannot open — the caller falls straight through to the baked
-/// preview, so nothing that produced a thumbnail before can stop producing one.
+/// The composite is best-effort in every case. When it fails, the caller falls back to the
+/// baked preview when there is one, so nothing that produced a thumbnail before can stop
+/// producing one (see [`decode_psd_thumbnail`]).
 fn psd_composite_wanted(bytes: &[u8], cx: u32) -> bool {
     crate::container::psd_has_alpha(bytes)
         || crate::container::psd_preview_long_edge(bytes)
-            .is_some_and(|edge| !embedded_preview_serves(edge, cx))
+            .is_none_or(|edge| !embedded_preview_serves(edge, cx))
 }
 
 /// True when every pixel is fully transparent (alpha 0) — i.e. nothing visible.
