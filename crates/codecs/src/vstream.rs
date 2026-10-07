@@ -286,3 +286,6 @@ impl IStream_Impl for BlockCacheStream_Impl {
         Err(Error::from(E_NOTIMPL))
     }
 }
+
+#[cfg(test)]
+mod tests;

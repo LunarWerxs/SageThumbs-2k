@@ -172,6 +172,7 @@ pub(super) fn inner_targets() -> Vec<Target> {
     use crate::container::apk_fuzzapi as apk;
     use crate::decode::avif_fuzzapi as avif;
     use crate::decode::cicp_fuzzapi as cicp;
+    use crate::decode::color_fuzzapi as color;
     use crate::decode::dds_fuzzapi as dds;
     use crate::decode::jp2_fuzzapi as jp2;
     use crate::decode::jxl_fuzzapi as jxl;
@@ -208,9 +209,16 @@ pub(super) fn inner_targets() -> Vec<Target> {
         ("mesh::ascii_stl", mesh::ascii_stl),
         ("mesh::obj", mesh::obj),
         ("mesh::ply", mesh::ply),
+        // And the draw (2026-10-07): projection, framing and the rasterizer's row spans and
+        // indexing, on geometry from the same untrusted bytes.
+        ("mesh::render", mesh::render),
         // The PNG `cICP` chunk walk (2026-09-08): runs ahead of EVERY PNG decode in the
         // thumbnail host, on the raw bytes, so it is fuzzed like the other pre-decode peeks.
         ("cicp::png_cicp", cicp::png_cicp),
+        // The CMYK JPEG reading (2026-10-07): its own marker walks, the inks and the in-place
+        // profile transform, on a JPEG whose profile is a lookup table moxcms parses from the
+        // file. No seed carried a four-component frame or a CMYK profile before.
+        ("color::cmyk_jpeg", color::cmyk_jpeg),
         // The JPEG XL tier (2026-09-17). Issue #43: the 1:8 reduced render panicked inside
         // the vendored decoder on a JPEG-transcoded 4:2:0 file and took Explorer down with it,
         // and nothing in the always-on gate had ever fed this tier a byte. Both arms, because

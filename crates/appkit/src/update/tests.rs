@@ -342,8 +342,8 @@ fn finds_the_sibling_sig_asset_beside_the_installer() {
 }
 
 #[test]
-fn a_release_with_no_sig_asset_has_no_sig_url() {
-    let json = serde_json::json!({
+fn an_absent_or_off_site_sig_asset_gives_no_sig_url() {
+    let mut json = serde_json::json!({
         "tag_name": "v0.7.0",
         "assets": [
             { "name": "SageThumbs2K-Setup-0.7.0.exe",
@@ -354,6 +354,21 @@ fn a_release_with_no_sig_asset_has_no_sig_url() {
     });
     let (_, asset) = super::installer_asset_from_json_for_arch(&json, "x86_64").expect("x64 asset");
     assert_eq!(asset.sig_url, None);
+
+    // A signature served from anywhere but this project's releases is never fetched.
+    json["assets"]
+        .as_array_mut()
+        .expect("assets")
+        .push(serde_json::Value::Null);
+    for url in [
+        "https://evil.example/SageThumbs2K-Setup-0.7.0.exe.sig",
+        "https://github.com/someone/else/releases/download/v0.7.0/SageThumbs2K-Setup-0.7.0.exe.sig",
+    ] {
+        json["assets"][1] = serde_json::json!({ "name": "SageThumbs2K-Setup-0.7.0.exe.sig", "browser_download_url": url });
+        let (_, asset) =
+            super::installer_asset_from_json_for_arch(&json, "x86_64").expect("x64 asset");
+        assert_eq!(asset.sig_url, None, "{url}");
+    }
 }
 
 #[test]

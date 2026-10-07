@@ -36,6 +36,8 @@ pub(crate) use apkseed::{apk_arsc, apk_axml, apk_pool_utf8};
 use design::*;
 mod tailseed;
 use tailseed::*;
+mod cmykseed;
+pub(crate) use cmykseed::{cmyk_jpeg, cmyk_lut_icc};
 pub(crate) use targets::targets;
 
 // ── seed builders ─────────────────────────────────────────────────────────────────────────
@@ -214,6 +216,33 @@ fn synthetic_epsi() -> Vec<u8> {
     }
     s.push_str("%%EndPreview\n%%EndComments\nshowpage\n");
     s.into_bytes()
+}
+
+/// A Photoshop EPS with no preview of its own: the thumbnail is the 8BIM 1036 resource, hex in
+/// `%` lines behind `%BeginPhotoshop:` (Photoshop's own one-percent spelling). Without it no
+/// mutation reached the hex reader or the cut-short resource it keeps.
+fn synthetic_eps_photoshop() -> Vec<u8> {
+    let mut data = 1u32.to_be_bytes().to_vec(); // thumbnail format 1: JPEG
+    data.extend_from_slice(&[0u8; 24]);
+    data.extend_from_slice(&jpeg(8, 8));
+    let mut res = b"8BIM".to_vec();
+    res.extend_from_slice(&1036u16.to_be_bytes());
+    res.extend_from_slice(&[0, 0]); // empty name, padded to even
+    res.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    res.extend_from_slice(&data);
+    if data.len() % 2 == 1 {
+        res.push(0);
+    }
+    let mut out = format!("%!PS-Adobe-3.0 EPSF-3.0\n%BeginPhotoshop: {}\n", res.len()).into_bytes();
+    for chunk in res.chunks(32) {
+        out.extend_from_slice(b"% ");
+        for b in chunk {
+            out.extend_from_slice(format!("{b:02X}").as_bytes());
+        }
+        out.push(b'\n');
+    }
+    out.extend_from_slice(b"%EndPhotoshop\nshowpage\n");
+    out
 }
 
 /// FictionBook: a `<coverpage>` href pointing at a `<binary>` element holding a base64 PNG.
@@ -495,6 +524,7 @@ pub(crate) fn seeds() -> Vec<(&'static str, Vec<u8>)> {
         ("c4d", synthetic_c4d(37, &jpeg(400, 240), &jpeg(96, 96))),
         ("eps-dos", synthetic_eps_dos()),
         ("epsi", synthetic_epsi()),
+        ("eps-photoshop", synthetic_eps_photoshop()),
         ("ole", synthetic_ole()),
         ("msg", synthetic_msg()),
         ("max", synthetic_max()),
@@ -533,6 +563,10 @@ pub(crate) fn seeds() -> Vec<(&'static str, Vec<u8>)> {
         ("xmind", synthetic_xmind()),
         ("psd-merged", synthetic_psd_merged()),
         ("psd-layers", synthetic_psd_layers()),
+        ("psd-grey-profile", synthetic_psd_grey_profile()),
+        ("psd-rgb-profile", synthetic_psd_rgb_profile()),
+        ("psd-cmyk-alpha", synthetic_psd_cmyk_alpha()),
+        ("psd-cmyk-profile", synthetic_psd_cmyk_profile()),
         ("apev2-item", synthetic_apev2_item()),
         ("dsf-id3v2-apic", synthetic_id3v2_apic()),
         ("djvu", synthetic_djvu()),

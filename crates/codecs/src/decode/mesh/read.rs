@@ -350,7 +350,8 @@ fn read_obj_two_pass<R: BufRead + Seek>(
     Some(())
 }
 
-/// Walk the `v` lines of an OBJ, parsing only the ones `wanted` names; stops at the last.
+/// Walk the `v` lines of an OBJ, parsing only the ones `wanted` names; stops at the last. One
+/// that does not parse refuses the file, as the one-pass read does (it drew at the origin).
 fn pick_obj_verts<R: BufRead>(r: &mut R, wanted: &mut Wanted) -> Option<()> {
     let mut buf = Vec::new();
     let mut at = 0usize;
@@ -360,7 +361,7 @@ fn pick_obj_verts<R: BufRead>(r: &mut R, wanted: &mut Wanted) -> Option<()> {
         }
         if let Some(rest) = text(&buf)?.strip_prefix("v ") {
             if at == want {
-                wanted.take(parse_obj_vertex(rest).unwrap_or([0.0; 3]));
+                wanted.take(parse_obj_vertex(rest)?);
             }
             at += 1;
         }

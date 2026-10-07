@@ -208,7 +208,9 @@ pub(super) fn attempt_verdict(
     match log.map(setup_log_outcome) {
         Some(SetupOutcome::Succeeded) => Verdict::Forget,
         Some(SetupOutcome::Failed(reason)) => Verdict::Report(reason),
-        _ if now.saturating_sub(started) >= GIVE_UP_SECS => Verdict::Report(None),
+        // As far in the FUTURE counts too: that start was stamped while the clock was wrong, and
+        // read as "a moment ago" it would wait until the clock caught up, which could be years.
+        _ if started.abs_diff(now) >= GIVE_UP_SECS => Verdict::Report(None),
         _ => Verdict::Keep,
     }
 }
@@ -367,6 +369,16 @@ mod tests {
         assert_eq!(
             attempt_verdict(t0, t0 + GIVE_UP_SECS, "3.7.0", "3.6.0", None),
             Verdict::Report(None)
+        );
+        // Started "tomorrow" by a clock that was wrong then: reported, not kept for a day. A
+        // clock nudged back a minute while setup runs is not that.
+        assert_eq!(
+            attempt_verdict(t0 + 86_400, t0, "3.7.0", "3.6.0", None),
+            Verdict::Report(None)
+        );
+        assert_eq!(
+            attempt_verdict(t0 + 60, t0, "3.7.0", "3.6.0", None),
+            Verdict::Keep
         );
     }
 }

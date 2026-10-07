@@ -228,3 +228,18 @@ fn hdr_pq_tiff_with_an_icc_profile_is_tone_mapped_not_colour_managed() {
     let pq = decode_full(TIFF_PQ2020).expect("the PQ TIFF twin decodes anywhere");
     assert_hdr_twin_matches_its_sdr_twin("tiff + PQ icc", &pq, &sdr);
 }
+
+/// A float picture is linear light, never on the PQ curve: with a PQ profile it comes back from
+/// the profile step as it went in, for its caller's one tone map. Until 2026-10-07 the profile
+/// step tone-mapped it and the caller tone-mapped that 8-bit result again.
+#[test]
+fn a_float_picture_with_an_hdr_profile_is_tone_mapped_once() {
+    let icc = include_bytes!("../../../../../../tests/fixtures/tiff/bt2020-pq.icc");
+    let img = image::DynamicImage::ImageRgb32F(image::Rgb32FImage::from_pixel(
+        4,
+        4,
+        image::Rgb([0.25, 0.5, 1.0]),
+    ));
+    let out = crate::decode::color::apply_icc_to_srgb(img.clone(), Some(icc.to_vec()));
+    assert_eq!(out, img, "the float samples, untouched");
+}

@@ -439,6 +439,17 @@ fn a_model_past_the_vertex_cap_reads_in_two_passes() {
             "{name}: it draws"
         );
     }
+    // A vertex that does not parse refuses the OBJ in two passes as in one.
+    let [(_, obj), ..] = sphere_files(12);
+    let bad = String::from_utf8(obj).unwrap().replacen("v ", "v x ", 2);
+    for cap in [usize::MAX, 156 / 3] {
+        let mut sink = Collector::new(usize::MAX);
+        let got = read::read_obj_capped(&mut Cur::new(bad.clone().into_bytes()), cap, &mut sink);
+        assert!(
+            got.is_none(),
+            "cap {cap}: a malformed vertex refuses the file"
+        );
+    }
 }
 
 /// One triangle cut into `k * k` sub-triangles that tile it exactly.
@@ -590,6 +601,40 @@ fn rasterizer_budget_bounds_full_canvas_triangles() {
         hostile < reference * 10,
         "100,000 full-canvas triangles took {hostile:?} against {reference:?} for 1,000 of \
          them - the aggregate rasterization budget does not appear to be bounding the work"
+    );
+}
+
+/// A rod lying flat, finely divided, the way a printed axle or pipe is saved: in the
+/// three-quarter view its sides are long diagonal slivers, a few pixels a row but each with a box
+/// of a quarter of the canvas. Charged by their boxes, about 245 of them spent the whole budget
+/// and most of the rod's sides never drew (until 2026-10-07). It must cover what the same rod
+/// with 24 sides does.
+#[test]
+fn a_finely_divided_rod_is_drawn_whole() {
+    let rod = |sides: usize| -> Vec<[f32; 9]> {
+        let ring = |k: usize| {
+            let a = k as f32 * std::f32::consts::TAU / sides as f32;
+            (3.0 * a.cos(), 3.0 * a.sin())
+        };
+        (0..sides)
+            .flat_map(|k| {
+                let ((y0, z0), (y1, z1)) = (ring(k), ring(k + 1));
+                [
+                    [0., y0, z0, 100., y0, z0, 100., y1, z1],
+                    [0., y0, z0, 100., y1, z1, 0., y1, z1],
+                    [0., 0., 0., 0., y1, z1, 0., y0, z0],
+                    [100., 0., 0., 100., y0, z0, 100., y1, z1],
+                ]
+            })
+            .collect()
+    };
+    let opaque = |img: &image::RgbaImage| img.pixels().filter(|p| p[3] > 0).count();
+    let want = opaque(&render(&rod(24), 256));
+    let got = opaque(&render(&rod(2048), 256));
+    assert!(want > 2000, "the rod covers part of the canvas: {want}");
+    assert!(
+        got.abs_diff(want) * 100 <= want * 3,
+        "drawn {got} opaque pixels, the 24-sided rod has {want}"
     );
 }
 

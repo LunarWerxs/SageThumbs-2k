@@ -230,6 +230,8 @@ pub use avif::{AVIF_CHILD_INPUT_CAP, AVIF_CHILD_MAX_EDGE};
 /// can reach it without widening `dds`'s own visibility.
 #[cfg(test)]
 pub(crate) use cicp::fuzzapi as cicp_fuzzapi;
+#[cfg(test)]
+pub(crate) use color::fuzzapi as color_fuzzapi;
 pub(crate) use dds::dxgi_block_name;
 #[cfg(test)]
 pub(crate) use dds::fuzzapi as dds_fuzzapi;

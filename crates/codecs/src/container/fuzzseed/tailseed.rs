@@ -93,3 +93,42 @@ pub(super) fn synthetic_psd_merged() -> Vec<u8> {
 pub(super) fn synthetic_psd_layers() -> Vec<u8> {
     psdmerged::synth_layered()
 }
+
+/// A grey Photoshop document with a linear grey profile (resource 1039): the profile parse and
+/// the grey transform's 256 levels.
+pub(super) fn synthetic_psd_grey_profile() -> Vec<u8> {
+    let icc = moxcms::ColorProfile::new_gray_with_gamma(1.0)
+        .encode()
+        .expect("grey profile");
+    let f = psdmerged::synth((12, 9), (1, 1, 8), false, true, true, |x, y, _| {
+        ((x * 20 + y * 7) % 256) as u16
+    });
+    psdmerged::synth_with_profile(f, &icc)
+}
+
+/// An RGB Photoshop document in Display P3 (resource 1039): the profile parse and the shared
+/// ICC transform its finished picture goes through.
+pub(super) fn synthetic_psd_rgb_profile() -> Vec<u8> {
+    let icc = moxcms::ColorProfile::new_display_p3()
+        .encode()
+        .expect("Display P3 profile");
+    let f = psdmerged::synth((12, 9), (3, 3, 8), false, true, true, |x, y, c| {
+        ((x * 13 + y * 29 + u32::from(c) * 70) % 256) as u16
+    });
+    psdmerged::synth_with_profile(f, &icc)
+}
+
+/// A transparent CMYK Photoshop document, five bytes a pixel: the inks-and-transparency run
+/// loop, by the arithmetic reading a document without a profile gets.
+pub(super) fn synthetic_psd_cmyk_alpha() -> Vec<u8> {
+    psdmerged::synth((12, 9), (4, 5, 8), false, true, true, |x, y, c| match c {
+        4 => ((x * 21) % 256) as u16,
+        _ => ((x * 17 + y * 11 + u32::from(c) * 60) % 256) as u16,
+    })
+}
+
+/// The same document with a CMYK profile (resource 1039): the lookup-table parse and the ink
+/// transform every real CMYK document goes through.
+pub(super) fn synthetic_psd_cmyk_profile() -> Vec<u8> {
+    psdmerged::synth_with_profile(synthetic_psd_cmyk_alpha(), &super::cmyk_lut_icc())
+}

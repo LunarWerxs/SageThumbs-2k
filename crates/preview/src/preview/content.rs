@@ -498,6 +498,8 @@ pub(super) fn archive_listing(path: &str) -> Option<String> {
 const ZIP_DIR_CAP: u64 = 16 * 1024 * 1024 + 128 * 1024;
 /// Same bound as the whole-file path's listing (`st2k_codecs::container::list_archive`).
 const ZIP_LIST_MAX_ENTRIES: usize = 50_000;
+/// How long a big ZIP's entries are read for before the listing gives up and says so.
+const ZIP_LIST_TIME: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// An archive over the whole-file read cap. APKs, IPAs, MSIX bundles and fat JARs are routinely
 /// this big, and a ZIP's directory sits at its END, so the listing needs a few megabytes of the
@@ -573,7 +575,7 @@ impl std::io::Seek for DirBudget<'_> {
 /// `(name, uncompressed size, is_dir)` for a ZIP too big to read whole: the `zip` crate seeks
 /// to the end-of-central-directory record and reads the directory, and each entry's name and
 /// size come from that directory (plus the 30-byte local header it checks). `None` if the
-/// directory is unreadable or over [`ZIP_DIR_CAP`].
+/// directory is unreadable or over [`ZIP_DIR_CAP`], or its entries take over [`ZIP_LIST_TIME`].
 fn big_zip_entries(path: &str) -> Option<Vec<(String, u64, bool)>> {
     let budget = std::cell::Cell::new(ZIP_DIR_CAP);
     let reader = DirBudget {
@@ -582,10 +584,16 @@ fn big_zip_entries(path: &str) -> Option<Vec<(String, u64, bool)>> {
         left: &budget,
     };
     let mut zip = zip::ZipArchive::new(reader).ok()?;
-    // The directory is parsed; what follows is the bounded local-header peeks.
+    // The directory is parsed; what follows is the bounded local-header peeks. Each is a seek of
+    // its own on this window's thread, so tens of thousands of entries spread over a slow disk
+    // are given up on after ZIP_LIST_TIME rather than waited for.
     budget.set(u64::MAX);
+    let deadline = std::time::Instant::now() + ZIP_LIST_TIME;
     let mut out = Vec::new();
     for i in 0..zip.len().min(ZIP_LIST_MAX_ENTRIES) {
+        if std::time::Instant::now() > deadline {
+            return None;
+        }
         let Ok(f) = zip.by_index_raw(i) else {
             continue;
         };

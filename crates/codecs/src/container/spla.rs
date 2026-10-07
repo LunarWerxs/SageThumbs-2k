@@ -85,11 +85,14 @@ fn load_assets<R: Read + Seek>(
     // preview. Charged as each asset is KEPT, so the peak is this budget plus one asset.
     const MAX_TOTAL_DECODED_BYTES: u64 = 96 * 1024 * 1024;
     let mut decoded_bytes: u64 = 0;
+    // A frame may name one part any number of times. Each part is read once, kept or not: one
+    // skipped for the budget or a bad PNG was read and decoded again at every mention.
+    let mut tried = vec![false; assets.len()];
     for placed in frame {
-        let part = &rig.parts[placed.part];
-        if assets[placed.part].is_some() {
+        if std::mem::replace(&mut tried[placed.part], true) {
             continue;
         }
+        let part = &rig.parts[placed.part];
         let Some(path) = part.asset.as_deref() else {
             continue;
         };
@@ -736,7 +739,8 @@ mod tests {
 
     /// Over budget: parts that exceed the decoded-asset cap are skipped, but the kept ones
     /// still render. The user sees the pose minus the missing parts, not one random part from
-    /// the generic image pick.
+    /// the generic image pick. A skipped part the frame names many times is read once: until
+    /// 2026-10-07 each mention read and decoded its 64 MiB again, inside Explorer.
     #[test]
     fn spla_over_decoded_budget_still_renders_kept_parts() {
         use std::io::Write;
@@ -762,27 +766,31 @@ mod tests {
             out.into_inner()
         };
 
-        // Add files to the zip in stored (no compression) format.
-        let manifest = r#"{
+        // Add files to the zip in stored (no compression) format. The frame names the part that
+        // goes over the budget, c, forty times.
+        let c_again = r#"{"part": "c", "x": 0, "y": 0},"#.repeat(40);
+        let manifest = format!(
+            r#"{{
             "format": "spla",
             "version": 1,
             "name": "budget_test",
-            "canvas": {"width": 64, "height": 64},
+            "canvas": {{"width": 64, "height": 64}},
             "parts": [
-                {"id": "a", "asset": "assets/a.png", "pivot": {"x": 0, "y": 0}, "drawOrder": 1, "visible": true},
-                {"id": "b", "asset": "assets/b.png", "pivot": {"x": 0, "y": 0}, "drawOrder": 0, "visible": true},
-                {"id": "c", "asset": "assets/c.png", "pivot": {"x": 0, "y": 0}, "drawOrder": 0, "visible": true}
+                {{"id": "a", "asset": "assets/a.png", "pivot": {{"x": 0, "y": 0}}, "drawOrder": 1, "visible": true}},
+                {{"id": "b", "asset": "assets/b.png", "pivot": {{"x": 0, "y": 0}}, "drawOrder": 0, "visible": true}},
+                {{"id": "c", "asset": "assets/c.png", "pivot": {{"x": 0, "y": 0}}, "drawOrder": 0, "visible": true}}
             ],
             "animations": [
-                {"id": "idle", "fps": 24, "frames": [
-                    {"index": 0, "parts": [
-                        {"part": "b", "x": 0, "y": 0},
-                        {"part": "c", "x": 0, "y": 0},
-                        {"part": "a", "x": 32, "y": 32}
-                    ]}
-                ]}
+                {{"id": "idle", "fps": 24, "frames": [
+                    {{"index": 0, "parts": [
+                        {{"part": "b", "x": 0, "y": 0}},
+                        {c_again}
+                        {{"part": "a", "x": 32, "y": 32}}
+                    ]}}
+                ]}}
             ]
-        }"#;
+        }}"#
+        );
 
         let opts = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored);
@@ -802,8 +810,19 @@ mod tests {
         zw.finish().unwrap();
 
         let zip_bytes = zip_buf.into_inner();
-        let mut zip = ZipArchive::new(std::io::Cursor::new(zip_bytes)).expect("zip");
+        let len = zip_bytes.len() as u64;
+        let read = std::rc::Rc::new(std::cell::Cell::new(0u64));
+        let counted = Counted {
+            inner: std::io::Cursor::new(zip_bytes),
+            read: read.clone(),
+        };
+        let mut zip = ZipArchive::new(counted).expect("zip");
         let png_bytes = extract(&mut zip).expect("should render kept parts");
+        assert!(
+            read.get() < 2 * len,
+            "{} bytes read from a {len}-byte package: the skipped part was read again",
+            read.get()
+        );
         let img = image::load_from_memory(&png_bytes)
             .expect("valid png")
             .to_rgba8();
@@ -820,5 +839,25 @@ mod tests {
             red_pixel_found,
             "red pixel from part A should be in the output"
         );
+    }
+
+    /// A reader that counts the bytes read through it.
+    struct Counted<R> {
+        inner: R,
+        read: std::rc::Rc<std::cell::Cell<u64>>,
+    }
+
+    impl<R: Read> Read for Counted<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.read.set(self.read.get() + n as u64);
+            Ok(n)
+        }
+    }
+
+    impl<R: Seek> Seek for Counted<R> {
+        fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(pos)
+        }
     }
 }

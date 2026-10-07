@@ -28,8 +28,9 @@ const MAX_TRIS: usize = 2_000_000;
 /// more has its faces sampled and only the vertices the sample names kept (`read::read_ply_capped`),
 /// so it costs time, not memory, and shows a sampled picture rather than none.
 const MAX_VERTS: usize = 16_000_000;
-/// Aggregate rasterization budget, in bounding-box PIXEL-ITERATIONS across every triangle
-/// in one render — a multiple of the (supersampled) canvas area. `MAX_TRIS` bounds parse
+/// Aggregate rasterization budget, in PIXEL-ITERATIONS across every triangle in one render
+/// (each row of a triangle's bounding box scanned across that row's span of the triangle) —
+/// a multiple of the (supersampled) canvas area. `MAX_TRIS` bounds parse
 /// cost, not fill cost: nothing else stops a crafted mesh whose triangles all share the
 /// model's extreme bounding-box corners (finite, non-degenerate, so they pass every other
 /// check) from each rasterizing a bbox covering roughly the whole canvas — at MAX_TRIS
@@ -455,10 +456,10 @@ fn triangle_luminance(p: &[[f32; 3]], light: [f32; 3]) -> Option<u8> {
     Some((48.0 + 195.0 * ndl).min(255.0) as u8)
 }
 
-/// Project, light, and rasterize (barycentric over its screen-space bounding box) one
-/// triangle into the shared z-buffer/shade buffers. Returns the bounding-box pixel count
+/// Project, light, and rasterize (barycentric over each row's span of its screen-space
+/// bounding box) one triangle into the shared z-buffer/shade buffers. Returns the pixels
 /// scanned — the cost [`RASTER_BUDGET_CANVAS_MULTIPLE`] bounds, independent of how many of
-/// those pixels the barycentric test actually accepted (the box scan itself is the work a
+/// those pixels the barycentric test actually accepted (the scan itself is the work a
 /// pathological full-canvas triangle multiplies).
 #[allow(clippy::too_many_arguments)]
 fn rasterize_triangle(
@@ -513,8 +514,7 @@ fn rasterize_triangle(
         lum,
         zbuf,
         shade,
-    );
-    u64::from(maxx - minx + 1) * u64::from(maxy - miny + 1)
+    )
 }
 
 /// Whether a pixel's barycentric weights put it outside the triangle (any weight < 0).
@@ -523,7 +523,13 @@ fn barycentric_outside(w0: f32, w1: f32, w2: f32) -> bool {
 }
 
 /// Barycentric-fill one already-projected screen triangle into the shared buffers, writing
-/// `lum` where a pixel wins the depth test over the clamped box `[minx..=maxx]×[miny..=maxy]`.
+/// `lum` where a pixel wins the depth test inside the clamped box `[minx..=maxx]×[miny..=maxy]`,
+/// each row only across its [`row_span`]. Returns the pixels it scanned.
+///
+/// The span, not the box: a long diagonal sliver (the side of a cylinder lying flat, the way
+/// most 3D prints are saved) has a box of a quarter of the canvas and an area of a few pixels a
+/// row. Scanned and charged by its box, a few hundred of them spent the whole budget, and a
+/// finely divided rod or pipe came out with most of its sides missing.
 // Arg list mirrors the projection/fill state shared with `rasterize_triangle`.
 #[allow(clippy::too_many_arguments)]
 fn rasterize_fill(
@@ -534,10 +540,20 @@ fn rasterize_fill(
     lum: u8,
     zbuf: &mut [f32],
     shade: &mut [u8],
-) {
+) -> u64 {
     let [(x0, y0, z0), (x1, y1, z1), (x2, y2, z2)] = sxy;
+    let mut scanned = 0u64;
     for py in miny..=maxy {
-        for px in minx..=maxx {
+        let Some((lo, hi)) = row_span(&sxy, py as f32 + 0.5) else {
+            continue;
+        };
+        let first = lo.floor().max(minx as f32) as u32;
+        let last = hi.ceil().min(maxx as f32) as u32;
+        if first > last {
+            continue;
+        }
+        scanned += u64::from(last - first + 1);
+        for px in first..=last {
             let (fx, fy) = (px as f32 + 0.5, py as f32 + 0.5);
             let w0 = ((x2 - x1) * (fy - y1) - (y2 - y1) * (fx - x1)) / area;
             let w1 = ((x0 - x2) * (fy - y2) - (y0 - y2) * (fx - x2)) / area;
@@ -553,6 +569,31 @@ fn rasterize_fill(
             }
         }
     }
+    scanned
+}
+
+/// The columns the row at height `fy` (a pixel centre) can hold inside the screen triangle
+/// `sxy`: from the leftmost to the rightmost point where an edge reaching that height crosses
+/// it, widened a pixel each side so float rounding never drops a pixel the barycentric test
+/// would keep. An edge counts from half a pixel short of its ends (clamped to them), for the
+/// same reason. `None` when no edge comes near the row.
+fn row_span(sxy: &[(f32, f32, f32); 3], fy: f32) -> Option<(f32, f32)> {
+    let mut span: Option<(f32, f32)> = None;
+    for (a, b) in [(0, 1), (1, 2), (2, 0)] {
+        let ((xa, ya, _), (xb, yb, _)) = (sxy[a], sxy[b]);
+        if fy < ya.min(yb) - 0.5 || fy > ya.max(yb) + 0.5 {
+            continue;
+        }
+        // A flat edge lies along the row end to end.
+        let (l, r) = if ya == yb {
+            (xa.min(xb), xa.max(xb))
+        } else {
+            let x = xa + ((fy - ya) / (yb - ya)).clamp(0.0, 1.0) * (xb - xa);
+            (x, x)
+        };
+        span = Some(span.map_or((l, r), |(lo, hi)| (lo.min(l), hi.max(r))));
+    }
+    span.map(|(lo, hi)| (lo - 1.0, hi + 1.0))
 }
 
 /// Box-average SS×SS down into the final image; coverage becomes alpha, so edges blend
@@ -707,6 +748,20 @@ pub(crate) mod fuzzapi {
     }
     pub(crate) fn ply(b: &[u8]) {
         let _ = super::parse_ply(b);
+    }
+    pub(crate) fn render(b: &[u8]) {
+        let _ = render_ret(b);
+    }
+    /// The draw on a toy canvas, as a thumbnail is drawn: the framing, both reads (a cube's 12
+    /// triangles are past this cap of 8, a tetrahedron's 4 are not), the row spans and the depth
+    /// test, on whatever geometry a mutation left. The parser entries above reach none of it.
+    pub(crate) fn render_ret(b: &[u8]) -> Option<image::RgbaImage> {
+        const TOY: super::Limits = super::Limits {
+            tris: 8,
+            verts: 64,
+            edge: 16,
+        };
+        super::mesh_image(&mut std::io::Cursor::new(b), super::sniff(b)?, TOY)
     }
 }
 

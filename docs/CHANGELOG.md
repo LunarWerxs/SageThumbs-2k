@@ -116,6 +116,9 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   saved in the document, so a CMYK red came out a harsher, brighter red than Photoshop shows and
   a grayscale picture came out darker. Photoshop files in a wide colour space such as Adobe RGB
   were over-saturated the same way. All three now go through the document's own profile.
+- **The see-through edges of a CMYK Photoshop picture keep their colour.** Where a CMYK picture
+  with transparency fades out, its half-covered edge pixels came out darker and off-colour. They
+  now match the picture they fade from.
 - **CMYK JPEGs saved by Photoshop show their true colours.** A CMYK JPEG carries its own colour
   profile, but Photoshop (and most print tools) save its inks in a form SageThumbs did not take
   apart, so the profile was skipped and the picture came out with the same harsh colours as the
@@ -125,6 +128,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   a ZBrush sculpt) was drawn from a sample of them, and where its triangles are smaller than a
   pixel most of the surface came out see-through. Every triangle is now drawn. A model with more
   than 16 million points, which got no thumbnail at all, now gets one.
+- **3D models built from many long, thin triangles draw whole.** A pipe, rod or turned shape
+  divided into thousands of slim sides could come out with whole sides missing: SageThumbs
+  charged each triangle for the box around it, not the pixels it covers, and ran out of drawing
+  time early. It now charges each triangle only for what it covers.
+- **A 32-bit floating-point TIFF with an HDR colour profile is no longer darkened twice.** Its
+  brightness was squeezed into the screen's range once by the profile and again afterwards, so
+  it came out dull and dark. It is now squeezed once.
 - **Files past one of SageThumbs' size limits show what fits, instead of nothing.** Each limit is
   still there, to keep Explorer fast, but going over it no longer throws the whole picture away:
   - Android app bundles (`.xapk`, `.apks`, `.apkm`) whose `base.apk` is over 256 MB, and apps

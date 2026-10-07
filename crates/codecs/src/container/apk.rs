@@ -29,7 +29,7 @@ use std::io::{Cursor, Read, Seek};
 mod arsc;
 use arsc::*;
 
-use zip::ZipArchive;
+use zip::{CompressionMethod, ZipArchive};
 
 /// `Read + Seek` as one object-safe bound. A wrapper's inner archive is opened over a
 /// boxed reader of this type: [`from_archive`] is generic over its reader, and recursing
@@ -251,7 +251,10 @@ fn pick_wrapper_apk<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<usize> {
         }
         let is_base = name.eq_ignore_ascii_case("base.apk") || ends_with_ci(name, "/base.apk");
         let size = f.size();
-        if size == 0 {
+        // A compressed split past MAX_INNER_APK would have to be held whole, which
+        // `wrapper_icon` refuses: picked, it hid a smaller split that fits.
+        let unreadable = size > MAX_INNER_APK && f.compression() != CompressionMethod::Stored;
+        if size == 0 || unreadable {
             continue;
         }
         if better_wrapper_pick(pick, is_base, size) {

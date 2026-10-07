@@ -109,8 +109,7 @@ pub(super) fn installer_asset_from_json_for_arch(
             .is_some_and(|n| n.eq_ignore_ascii_case(&expected_name))
     })?;
     let url = asset.get("browser_download_url")?.as_str()?.to_string();
-    let (host, path) = crate::http::split_https(&url)?;
-    if host != "github.com" || !path.starts_with("/LunarWerxs/SageThumbs-2k/releases/download/") {
+    if !on_release_path(&url) {
         return None;
     }
     let size = asset
@@ -129,6 +128,8 @@ pub(super) fn installer_asset_from_json_for_arch(
     // that way so the existing digest-verification loop (step 5) covers it for free. Its
     // absence is not a lookup failure: an unsigned release is a real (refused) state, not a
     // malformed one, so this stays `Option` rather than folding into the `?` chain above.
+    // It is held to the installer's own address rule: one served from anywhere else counts
+    // as absent, so the release is refused as unsigned rather than fetched from that host.
     let sig_name = format!("{expected_name}.sig");
     let sig_url = json.get("assets")?.as_array()?.iter().find_map(|a| {
         a.get("name")
@@ -136,6 +137,7 @@ pub(super) fn installer_asset_from_json_for_arch(
             .filter(|n| n.eq_ignore_ascii_case(&sig_name))
             .and_then(|_| a.get("browser_download_url"))
             .and_then(|u| u.as_str())
+            .filter(|u| on_release_path(u))
             .map(str::to_string)
     });
 
@@ -148,6 +150,13 @@ pub(super) fn installer_asset_from_json_for_arch(
             sig_url,
         },
     ))
+}
+
+/// Whether `url` is an https download from this project's own GitHub releases.
+fn on_release_path(url: &str) -> bool {
+    crate::http::split_https(url).is_some_and(|(host, path)| {
+        host == "github.com" && path.starts_with("/LunarWerxs/SageThumbs-2k/releases/download/")
+    })
 }
 
 /// SHA-256 of `data` as lowercase hex, via Windows CNG (no extra crate). None on failure.

@@ -306,3 +306,19 @@ fn a_cached_blur_follows_the_pixels_under_it() {
         assert_eq!(again.pixels(), first.pixels());
     }
 }
+
+/// A blur rect can be one pixel wide or tall, far narrower than the strongest radius. The
+/// sliding window repeats the border pixel, so a one-colour block of any size stays exactly
+/// that colour and its alpha is never touched.
+#[test]
+fn the_strongest_blur_on_a_tiny_block_keeps_its_colour() {
+    let radius = st2k_base::settings::SHOT_BLUR_MAX as usize;
+    for (w, h) in [(1, 1), (2, 2), (1, 7), (7, 1), (3, 2)] {
+        let mut px = [40u8, 120, 200, 77].repeat(w * h);
+        box_blur3(&mut px, w, h, radius);
+        assert!(
+            px.chunks(4).all(|p| p == [40, 120, 200, 77]),
+            "{w}x{h}: {px:?}"
+        );
+    }
+}

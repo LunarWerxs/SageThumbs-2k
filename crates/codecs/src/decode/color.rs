@@ -582,8 +582,14 @@ pub(crate) fn apply_icc_to_srgb(img: DynamicImage, icc: Option<Vec<u8>>) -> Dyna
     // measures as PQ - describes integer samples still wearing the HDR curve. Colour-managing
     // those treats 10 000 nits as white and renders the picture near black: the shape of
     // issue #38, in a 16-bit TIFF or a JPEG instead of a JPEG XL. They take the conversion and
-    // tone map an HDR PNG does, with the profile's own primaries.
-    if let Some(cicp) = icc_hdr_cicp(&src) {
+    // tone map an HDR PNG does, with the profile's own primaries. Float samples are linear light
+    // already, never on the curve, and their caller tone-maps them itself: converting them here
+    // tone-mapped a float picture twice.
+    let float = matches!(
+        img,
+        DynamicImage::ImageRgb32F(_) | DynamicImage::ImageRgba32F(_)
+    );
+    if let Some(cicp) = icc_hdr_cicp(&src).filter(|_| !float) {
         if let Some(linear) = super::cicp::cicp_hdr_to_linear(&img, &cicp) {
             return tone_map_float(&linear);
         }
@@ -656,6 +662,19 @@ pub(super) fn colr_profile(body: &[u8]) -> Option<Vec<u8>> {
             }
         }
         _ => None,
+    }
+}
+
+/// The CMYK JPEG reading by name, for the fuzz harness: the marker walks and the decode, inks
+/// and profile transform. A module, as `mesh::fuzzapi` is, so `cargo fix` cannot strip it.
+#[cfg(test)]
+pub(crate) mod fuzzapi {
+    pub(crate) fn cmyk_jpeg(b: &[u8]) {
+        let _ = super::is_cmyk_jpeg(b);
+        let _ = decodes(b);
+    }
+    pub(crate) fn decodes(b: &[u8]) -> bool {
+        super::decode_cmyk_jpeg(b).is_some()
     }
 }
 

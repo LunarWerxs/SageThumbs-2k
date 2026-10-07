@@ -35,6 +35,13 @@ fn every_seed_reaches_its_parser() {
         eps::extract_ascii_preview(&by("epsi")).is_some(),
         "epsi ascii preview"
     );
+    assert!(
+        matches!(
+            eps::extract_ascii_preview(&by("eps-photoshop")),
+            Some(CoverOut::Bytes(_))
+        ),
+        "eps Photoshop resource thumbnail"
+    );
     assert!(ole::looks_like_ole(&by("ole")), "ole magic");
     assert!(
         ole::read_stream(&by("ole"), "\u{5}SummaryInformation").is_some(),
@@ -178,6 +185,32 @@ fn every_seed_reaches_its_parser() {
         psdmerged::from_reader(std::io::Cursor::new(by("psd-layers")), 64)
             .is_some_and(|img| img.to_rgba8().pixels().any(|p| p.0[0] != 255)),
         "psd layers flattened, not the white composite"
+    );
+    // The profile seeds must reach the transforms, not the plain reading the reader falls back
+    // to when a profile does not load: linear grey 20 is about 79 in sRGB, and Display P3's
+    // (13, 83, 153) is another colour in sRGB.
+    assert!(
+        psdmerged::from_reader(std::io::Cursor::new(by("psd-grey-profile")), 64)
+            .is_some_and(|img| img.to_rgba8().get_pixel(1, 0).0[0] > 40),
+        "psd grey through its own profile"
+    );
+    assert!(
+        psdmerged::from_reader(std::io::Cursor::new(by("psd-rgb-profile")), 64)
+            .is_some_and(|img| img.to_rgba8().get_pixel(1, 0).0 != [13, 83, 153, 255]),
+        "psd RGB through its own profile"
+    );
+    assert!(
+        psdmerged::from_reader(std::io::Cursor::new(by("psd-cmyk-alpha")), 64)
+            .is_some_and(|img| img.to_rgba8().pixels().any(|p| p.0[3] < 255)),
+        "psd CMYK inks with their transparency"
+    );
+    let plain = psdmerged::from_reader(std::io::Cursor::new(by("psd-cmyk-alpha")), 64)
+        .map(|img| img.to_rgba8());
+    let managed = psdmerged::from_reader(std::io::Cursor::new(by("psd-cmyk-profile")), 64)
+        .map(|img| img.to_rgba8());
+    assert!(
+        managed.is_some() && managed != plain,
+        "psd CMYK through its own profile, not the arithmetic reading"
     );
     assert!(
         vtf::extract(&by("vtf")).is_some(),

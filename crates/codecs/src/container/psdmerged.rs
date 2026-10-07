@@ -606,13 +606,15 @@ fn lab_to_srgb(rgba: &mut [u8]) {
 /// Photoshop stores a transparent composite already blended over white. Take the white back
 /// out, as ImageMagick does (`psd:alpha-unblend`, its default), so a cut-out's edges keep
 /// their colour instead of a white fringe; fully transparent pixels are left as they are.
-fn unblend(rgba: &mut [u8]) {
-    for p in rgba.as_chunks_mut::<4>().0 {
-        let a = u32::from(p[3]);
+/// `N`-byte cells, transparency last, white 255 in every other byte: RGBA, or CMYK's stored
+/// inks (255 is no ink, the paper's white).
+fn unblend<const N: usize>(cells: &mut [u8]) {
+    for p in cells.as_chunks_mut::<N>().0 {
+        let a = u32::from(p[N - 1]);
         if a == 0 || a == 255 {
             continue;
         }
-        for s in &mut p[..3] {
+        for s in &mut p[..N - 1] {
             *s = ((u32::from(*s) + a).saturating_sub(255) * 255 / a).min(255) as u8;
         }
     }
@@ -638,18 +640,29 @@ fn composite<R: Read + Seek>(r: &mut R, head: &Head, target_edge: u32) -> Option
     for (c, rows) in spans.chunks(grid.th).enumerate() {
         paint_channel(r, head, packed, (&grid, c), rows, &mut px)?;
     }
-    let mut rgba = match head.mode {
-        Mode::Cmyk => head.profile.cmyka_to_rgba(&px)?,
-        _ => px,
-    };
-    if head.mode == Mode::Lab {
-        lab_to_srgb(&mut rgba);
-    }
-    if head.alpha {
-        unblend(&mut rgba);
-    }
+    let rgba = straight_rgba(head, px)?;
     let img = RgbaImage::from_raw(grid.tw as u32, grid.th as u32, rgba)?;
     Some(head.profile.finish(DynamicImage::ImageRgba8(img)))
+}
+
+/// The composite's cells as RGBA with Photoshop's white taken back out: CMYK through the
+/// profile, Lab to sRGB. A CMYK document was blended over white in its inks, so the white comes
+/// out of the inks, before the black's scaling or the profile's curves make them RGB: taken out
+/// of the RGB afterwards, a half-covered cyan-and-black edge lost its cyan.
+fn straight_rgba(head: &Head, mut px: Vec<u8>) -> Option<Vec<u8>> {
+    if head.mode == Mode::Cmyk {
+        if head.alpha {
+            unblend::<5>(&mut px);
+        }
+        return head.profile.cmyka_to_rgba(&px);
+    }
+    if head.mode == Mode::Lab {
+        lab_to_srgb(&mut px);
+    }
+    if head.alpha {
+        unblend::<4>(&mut px);
+    }
+    Some(px)
 }
 
 /// The document's picture, sampled to at least `target_edge` (the caller's resize takes it the
@@ -688,4 +701,10 @@ pub(crate) fn synth(
 #[cfg(test)]
 pub(crate) fn synth_layered() -> Vec<u8> {
     tests::fuzz_seed_layered()
+}
+
+/// A [`synth`] document carrying `icc` as its colour profile (resource 1039), for the fuzz seeds.
+#[cfg(test)]
+pub(crate) fn synth_with_profile(f: Vec<u8>, icc: &[u8]) -> Vec<u8> {
+    tests::with_profile(f, icc)
 }

@@ -265,7 +265,7 @@ fn find_table(f: &[u8]) -> usize {
 }
 
 /// A Photoshop document built by [`synth`], with `icc` as its colour profile (resource 1039).
-fn with_profile(mut f: Vec<u8>, icc: &[u8]) -> Vec<u8> {
+pub(super) fn with_profile(mut f: Vec<u8>, icc: &[u8]) -> Vec<u8> {
     let mut block = b"8BIM".to_vec();
     block.extend_from_slice(&ICC_PROFILE.to_be_bytes());
     block.extend_from_slice(&[0, 0]);
@@ -278,6 +278,26 @@ fn with_profile(mut f: Vec<u8>, icc: &[u8]) -> Vec<u8> {
     f.splice(34..34, block.iter().copied());
     f[30..34].copy_from_slice(&((len + block.len()) as u32).to_be_bytes());
     f
+}
+
+/// A transparent CMYK composite is blended over white in its inks, so the white comes out of
+/// the inks: half-covered cyan 100 and black 100 (stored 178 after the blend) read as the
+/// arithmetic reads the unblended inks, about (40, 101, 101). Taking the white out of the RGB
+/// afterwards, as until 2026-10-07, read (0, 101, 101): the cyan's red was lost.
+#[test]
+fn a_transparent_cmyk_edge_keeps_its_colour() {
+    let f = synth((4, 4), (4, 5, 8), false, true, true, |_, _, c| {
+        [178, 255, 255, 178, 128][usize::from(c)]
+    });
+    let px = decode(&f, 64).unwrap().get_pixel(1, 1).0;
+    assert!(
+        px[..3]
+            .iter()
+            .zip([40u8, 101, 101])
+            .all(|(&got, want)| got.abs_diff(want) <= 2)
+            && px[3] == 128,
+        "{px:?}"
+    );
 }
 
 /// A document's own profile carries its samples to sRGB: a grey level through a linear grey

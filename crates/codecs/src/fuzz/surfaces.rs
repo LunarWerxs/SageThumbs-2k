@@ -119,6 +119,8 @@ pub(super) fn new_surface_seeds() -> Vec<(&'static str, Vec<u8>)> {
         ("stl-cube", mesh_seed_stl()),
         ("obj-tetra", mesh_seed_obj()),
         ("ply-tetra", mesh_seed_ply()),
+        ("jpeg-cmyk-icc", fs::cmyk_jpeg(0)),
+        ("jpeg-ycck-icc", fs::cmyk_jpeg(2)),
         ("h264-avcc", h264_avcc()),
         ("h264-sps", H264_SPS.to_vec()),
         // Issue #52's shape: a real High 10 Matroska file (ffmpeg, 72x48), so the Cues walk and
@@ -397,6 +399,23 @@ pub(super) fn every_new_surface_seed_reaches_its_parser() {
         crate::decode::jp2_fuzzapi::seed_decodes(),
         "jp2-codestream seed no longer reaches the JPEG 2000 decoder"
     );
+    // The CMYK JPEG seeds through the colour-managed decode, ink and YCCK storage both.
+    for transform in [0, 2] {
+        assert!(
+            crate::decode::color_fuzzapi::decodes(&crate::container::fuzzseed::cmyk_jpeg(transform)),
+            "jpeg seed with Adobe transform {transform} no longer reaches the CMYK profile transform"
+        );
+    }
+    // The mesh seeds through the draw, the cube past the toy cap so the second read runs too.
+    for (label, seed) in [
+        ("stl-cube", mesh_seed_stl()),
+        ("obj-tetra", mesh_seed_obj()),
+        ("ply-tetra", mesh_seed_ply()),
+    ] {
+        let img = crate::decode::mesh_fuzzapi::render_ret(&seed)
+            .unwrap_or_else(|| panic!("{label} seed no longer reaches the mesh rasterizer"));
+        assert!(img.pixels().any(|p| p[3] > 0), "{label} seed draws nothing");
+    }
 }
 
 /// The measurement behind [`inner_targets`]: mutating an APK does not fuzz the APK parsers.

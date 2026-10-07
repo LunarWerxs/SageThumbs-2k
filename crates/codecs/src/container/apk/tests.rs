@@ -383,6 +383,36 @@ fn wrapper_extracts_from_a_deflated_inner_apk_via_the_materialize_fallback() {
     assert_eq!(extract(&xapk).as_deref(), Some(icon.as_slice()));
 }
 
+/// A bundle with no `base.apk` whose biggest split is compressed and past `MAX_INNER_APK`: that
+/// split cannot be opened without holding it whole, so the next split, which can, gives the icon.
+/// Until 2026-10-07 the big one was picked by size and the bundle got no icon at all.
+#[test]
+fn wrapper_passes_over_a_compressed_split_too_big_to_hold() {
+    let icon = png(12, 12);
+    let path = "res/mipmap/ic_launcher.png";
+    let app = zip_of(&[
+        ("AndroidManifest.xml", &axml_string_icon(path)),
+        (path, &icon),
+    ]);
+    let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let deflated = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    w.start_file("feature.apk", deflated).unwrap();
+    w.write_all(&[7u8; 4096]).unwrap();
+    w.start_file("app.apk", deflated).unwrap();
+    w.write_all(&app).unwrap();
+    let mut xapk = w.finish().unwrap().into_inner();
+    // The size a 300 MiB split declares, written into the central directory, where the pick
+    // reads it: building a real one would take the test a 300 MiB buffer.
+    let entry = (0..xapk.len() - 46)
+        .find(|&i| xapk[i..].starts_with(b"PK\x01\x02") && xapk[i + 46..].starts_with(b"feature"))
+        .expect("feature.apk's central directory entry");
+    xapk[entry + 24..entry + 28].copy_from_slice(&(300u32 << 20).to_le_bytes());
+
+    assert!(looks_like_apk(&xapk));
+    assert_eq!(extract(&xapk).as_deref(), Some(icon.as_slice()));
+}
+
 /// A `.apk`-suffixed entry buried several folders deep is far more likely
 /// to be a stray file inside an unrelated ordinary zip than a real split-bundle
 /// member. It must not trip the wrapper sniff — a plain zip carrying one still

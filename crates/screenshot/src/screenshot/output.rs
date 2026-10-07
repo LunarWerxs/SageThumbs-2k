@@ -169,13 +169,18 @@ fn clean_component(c: &str) -> String {
 }
 
 /// A component moved off the DOS device names (`CON`, `NUL`, `COM1`, ...), which Windows will
-/// not create as a file or folder whatever extension follows.
+/// not create as a file or folder whatever extension follows. Windows counts the superscript
+/// digits `¹` `²` `³` as digits there too, so `COM¹` is a device as well.
 fn not_reserved(c: String) -> String {
     const RESERVED: &[&str] = &["CON", "PRN", "AUX", "NUL"];
     let stem = c.split('.').next().unwrap_or_default().trim_end();
     let upper = stem.to_ascii_uppercase();
     let numbered = |prefix: &str| {
-        upper.len() == 4 && upper.starts_with(prefix) && matches!(upper.as_bytes()[3], b'1'..=b'9')
+        let mut n = upper.strip_prefix(prefix).unwrap_or_default().chars();
+        matches!(
+            (n.next(), n.next()),
+            (Some('1'..='9' | '¹' | '²' | '³'), None)
+        )
     };
     if RESERVED.contains(&upper.as_str()) || numbered("COM") || numbered("LPT") {
         format!("_{c}")
@@ -536,6 +541,8 @@ mod tests {
             ("nul.txt", "_nul.txt.png"),
             ("com1", "_com1.png"),
             ("LPT9", "_LPT9.png"),
+            ("COM¹", "_COM¹.png"),
+            ("lpt³.log", "_lpt³.log.png"),
             ("COM0", "COM0.png"),
             ("CONSOLE", "CONSOLE.png"),
             ("../../evil", "evil.png"),

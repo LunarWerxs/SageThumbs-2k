@@ -611,3 +611,30 @@ fn esc_cancels_a_pending_crop_without_closing_the_capture() {
         let _ = DestroyWindow(hwnd);
     }
 }
+
+/// A crop drag that keeps less than 3 pixels of the selection either way is a mis-click:
+/// it arms no crop, so Enter cannot shrink the capture to a sliver or to nothing.
+#[test]
+fn a_drag_that_keeps_almost_none_of_the_selection_arms_no_crop() {
+    unsafe {
+        let hwnd = test_window();
+        {
+            let s = &mut *shot_ptr(hwnd);
+            s.sel = Some(rect(10, 10, 190, 140));
+            s.tool = Tool::Crop;
+            let drags = [
+                ((200, 150), (300, 250)), // wholly outside the selection
+                ((50, 20), (52, 100)),    // 2 px wide
+                ((0, 0), (100, 12)),      // 2 px of it left after clipping
+            ];
+            for ((ax, ay), (bx, by)) in drags {
+                assert!(
+                    !finish_shape(s, POINT { x: ax, y: ay }, POINT { x: bx, y: by }),
+                    "({ax}, {ay}) to ({bx}, {by})"
+                );
+                assert!(s.crop_pending.is_none(), "({ax}, {ay}) to ({bx}, {by})");
+            }
+        }
+        let _ = DestroyWindow(hwnd);
+    }
+}
