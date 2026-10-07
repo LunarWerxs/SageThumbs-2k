@@ -7,7 +7,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 3.7.0
 
 - **The right-click menu is in groups again, most-used first.** Since 2.0.0 the SageThumbs
   submenu had lost every divider and read as one long list. Its groups show again, in a new

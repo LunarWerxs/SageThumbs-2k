@@ -69,7 +69,7 @@ image = { version = "0.25", default-features = false, features = [
 ] }
 
 [workspace.package]
-version = "3.6.0"
+version = "3.7.0"
 rust-version = "1.95"   # windows-core/-future/-implement 0.100 need it; see the note below
 # Raised from 1.93 on 2026-09-20, on the owner's word. The old floor was set by
 # sevenz-rust2 (the comment said 0.21.4; the lock had moved to 0.22.2, which also declares
