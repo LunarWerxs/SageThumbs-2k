@@ -27,6 +27,18 @@
 //! which bounds the eager reservation regardless of how large the input is. Only the
 //! ZIP64 path matters — a plain EOCD's count is a `u16` (<= 65_535 -> ~15 MiB), below
 //! the ceiling by construction.
+//!
+//! ## Residual limit (by design, not a gap)
+//!
+//! The crate's `find_central_directory` scans EOCD signatures backward over the WHOLE
+//! file and retries earlier candidates when one fails to parse, and its relaxed
+//! "garbage after comment" rule lets a valid EOCD sit further than this pre-check's
+//! tail window from EOF. A crafted archive can therefore still place its real ZIP64
+//! EOCD outside the window and reach the crate's own reservation — bounded by the
+//! crate to ~`file_len/46` entries (~5x the input). This guard closes the cheap
+//! bypass (it checks every EOCD candidate in the tail window, not just the last) and
+//! caps the reservation for every archive whose EOCD is where real writers put it; it
+//! is deliberately not the O(file) full scan the crate itself performs.
 
 use std::io::{Read, Seek, SeekFrom};
 
@@ -51,37 +63,45 @@ const EOCD_MAX_BACK: u64 = 22 + 65_535;
 /// `zip::ZipArchive::new`: same signature and error type, so every untrusted call
 /// site routes through it by name alone.
 pub fn open<R: Read + Seek>(mut reader: R) -> ZipResult<ZipArchive<R>> {
-    if let Some(declared) = declared_zip64_entry_count(&mut reader) {
-        if declared > MAX_ZIP_DECLARED_ENTRIES {
-            return Err(ZipError::UnsupportedArchive(
-                "declared central directory entry count exceeds SageThumbs limit",
-            ));
-        }
+    if zip64_declares_over_ceiling(&mut reader) {
+        return Err(ZipError::UnsupportedArchive(
+            "declared central directory entry count exceeds SageThumbs limit",
+        ));
     }
     // `ZipArchive::new` re-seeks to the end itself, so our cursor position is moot.
     ZipArchive::new(reader)
 }
 
-/// The total entry count a ZIP64 end-of-central-directory record declares, or `None`.
+/// Whether ANY end-of-central-directory candidate in the tail window resolves to a
+/// ZIP64 record declaring more than [`MAX_ZIP_DECLARED_ENTRIES`].
 ///
-/// Fail-open by design: any parse that does not cleanly resolve the
-/// EOCD -> locator -> EOCD64 chain returns `None`, leaving the archive to the crate's
-/// own (already file-size-bounded) handling. It can therefore only ever *add* a
-/// rejection for an unambiguously over-declared ZIP64 archive, never false-reject a
-/// legitimate one. A plain (non-ZIP64) archive also returns `None` — its `u16` count
-/// cannot exceed the ceiling.
-fn declared_zip64_entry_count<R: Read + Seek>(reader: &mut R) -> Option<u64> {
-    let len = reader.seek(SeekFrom::End(0)).ok()?;
-    if len < 22 {
-        return None;
+/// Every candidate is checked, not just the last, because the crate's own directory
+/// finder scans EOCD signatures backward and retries earlier ones when a candidate
+/// fails — so a junk EOCD at EOF cannot be used to slip an earlier real ZIP64 record
+/// past this pre-check (the module docs note the one residual bypass this does not
+/// cover). Fail-open: any candidate whose EOCD -> locator -> EOCD64 chain does not
+/// cleanly resolve is skipped, so this only ever *adds* a rejection for an
+/// unambiguously over-declared archive, never false-rejects a legitimate one.
+fn zip64_declares_over_ceiling<R: Read + Seek>(reader: &mut R) -> bool {
+    let len = match reader.seek(SeekFrom::End(0)) {
+        Ok(len) if len >= 22 => len,
+        _ => return false,
+    };
+    let Some(tail) = read_eocd_tail(reader, len) else {
+        return false;
+    };
+    for eocd in eocd_offsets(&tail) {
+        if !eocd_claims_zip64(&tail, eocd) {
+            continue;
+        }
+        let Some(off) = locator_eocd64_offset(&tail, eocd, len) else {
+            continue;
+        };
+        if eocd64_total_entries(reader, off).is_some_and(|n| n > MAX_ZIP_DECLARED_ENTRIES) {
+            return true;
+        }
     }
-    let tail = read_eocd_tail(reader, len)?;
-    let eocd = last_eocd(&tail)?;
-    if !eocd_claims_zip64(&tail, eocd) {
-        return None;
-    }
-    let eocd64_off = locator_eocd64_offset(&tail, eocd, len)?;
-    eocd64_total_entries(reader, eocd64_off)
+    false
 }
 
 /// The trailing bytes that can hold the EOCD and its preceding ZIP64 locator.
@@ -93,11 +113,11 @@ fn read_eocd_tail<R: Read + Seek>(reader: &mut R, len: u64) -> Option<Vec<u8>> {
     Some(tail)
 }
 
-/// Offset of the last EOCD signature in `tail` (the crate scans backward likewise).
-fn last_eocd(tail: &[u8]) -> Option<usize> {
+/// Every EOCD signature offset in `tail`, latest first (the crate scans backward).
+fn eocd_offsets(tail: &[u8]) -> impl Iterator<Item = usize> + '_ {
     (0..=tail.len().saturating_sub(22))
         .rev()
-        .find(|&i| tail[i..i + 4] == EOCD_SIG)
+        .filter(|&i| tail[i..i + 4] == EOCD_SIG)
 }
 
 /// Whether the EOCD at `eocd` carries a ZIP64 sentinel in its count or CD-offset field.
@@ -119,7 +139,9 @@ fn locator_eocd64_offset(tail: &[u8], eocd: usize, len: u64) -> Option<u64> {
         return None;
     }
     let off = u64::from_le_bytes(tail[loc + 8..loc + 16].try_into().ok()?);
-    (off + 40 <= len).then_some(off)
+    // `off` is attacker-controlled: `off + 40` would overflow (panic under
+    // overflow-checks, defeating the fail-open contract) for a value near u64::MAX.
+    (off <= len.saturating_sub(40)).then_some(off)
 }
 
 /// The total-entries field (record offset 32) of the EOCD64 at `off`.
@@ -251,6 +273,45 @@ mod tests {
         if let Err(ZipError::UnsupportedArchive(msg)) = open(Cursor::new(bytes)) {
             assert!(!msg.contains("declared central directory entry count"));
         }
+    }
+
+    /// The scan must not stop at the LAST EOCD signature: a junk EOCD appended at EOF
+    /// (the crate would skip it and retry the earlier real record) must not hide an
+    /// over-declared ZIP64 EOCD sitting before it. Red on the old single-candidate
+    /// `last_eocd` code, which returned the junk one and failed open.
+    #[test]
+    fn rejects_overdeclared_behind_trailing_junk_eocd() {
+        let declared = MAX_ZIP_DECLARED_ENTRIES + 1;
+        let total_len = (declared as usize) * 47 + 4096;
+        let mut bytes = zip64_declaring(total_len, declared);
+        // Append a minimal non-ZIP64 EOCD so the real one is no longer the last.
+        let mut junk = vec![0x50, 0x4b, 0x05, 0x06];
+        junk.resize(22, 0);
+        bytes.extend_from_slice(&junk);
+
+        match open(Cursor::new(bytes)) {
+            Err(ZipError::UnsupportedArchive(msg)) => assert!(
+                msg.contains("declared central directory entry count"),
+                "wrong rejection: {msg}"
+            ),
+            other => panic!("expected the guard's rejection, got {other:?}"),
+        }
+    }
+
+    /// A ZIP64 locator whose EOCD64 offset is near `u64::MAX` must not panic the
+    /// parse (`off + 40` would overflow under overflow-checks). Fail-open: return
+    /// `None`. Red on the pre-fix `off + 40 <= len` in any overflow-checked build.
+    #[test]
+    fn huge_locator_offset_does_not_overflow() {
+        // A 20-byte ZIP64 locator carrying offset u64::MAX, then a 22-byte EOCD.
+        let mut tail = vec![0x50, 0x4b, 0x06, 0x07];
+        le(&mut tail, 0, 4);
+        le(&mut tail, u64::MAX, 8);
+        le(&mut tail, 1, 4);
+        let eocd = tail.len();
+        tail.extend_from_slice(&[0x50, 0x4b, 0x05, 0x06]);
+        tail.resize(eocd + 22, 0);
+        assert_eq!(locator_eocd64_offset(&tail, eocd, tail.len() as u64), None);
     }
 
     /// An ordinary small archive is unaffected: the guard returns `None` (no ZIP64

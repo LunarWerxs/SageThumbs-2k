@@ -246,7 +246,10 @@ impl Bundle<FrameContext<'_>> for Frame {
                 .values()
                 .any(|&(minshift, maxshift)| (minshift..maxshift).contains(&shift))
         };
-        if passes.last_pass.iter().any(|&pass| pass >= passes.num_passes)
+        if passes
+            .last_pass
+            .iter()
+            .any(|&pass| pass >= passes.num_passes)
             || !(0..3).all(covered)
         {
             return Err(jxl_bitstream::Error::ValidationFailed(
@@ -594,7 +597,7 @@ impl Frame {
         &self,
         pass_idx: u32,
         group_idx: u32,
-    ) -> Option<Result<PassGroupBitstream>> {
+    ) -> Option<Result<PassGroupBitstream<'_>>> {
         Some(if self.toc.is_single_entry() {
             if self.all_group_offsets.has_error.load(Ordering::Relaxed) != 0 {
                 return Some(Err(Error::HadError));
