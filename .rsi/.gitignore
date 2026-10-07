@@ -1,0 +1,2 @@
+# RSI trial records live in Project Hydra's per-machine state, never in git (decision 12).
+/trials/
