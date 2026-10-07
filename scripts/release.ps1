@@ -20,10 +20,11 @@
 [CmdletBinding()]
 param(
     [switch]$SkipBuild,
-    # Publish without waiting for the ARM64 portable zip to run on real ARM64 silicon
-    # (step [5a/6]). Only for a release with no ARM64 artifact of its own to prove, or when
-    # the windows-11-arm runner pool is down; the outcome line says OVERRIDDEN so the record
-    # shows the gate was not run.
+    # Publish without waiting for the draft gate (step [5a/6]): the ARM64 portable zip on real
+    # ARM64 silicon, and both setups installed and updated in place on clean runners. Only for a
+    # release with no ARM64 artifact of its own to prove, or when the windows-11-arm runner pool
+    # is down; the outcome line says OVERRIDDEN so the record shows the gate was not run. Refused
+    # when [4d/6] handed the x64 self-update to that gate.
     [switch]$SkipArm64Gate,
     # Publish without running the suite against the RELEASE-profile, shipped-feature binaries
     # (step [3b/6]). CI only ever tests the debug build with default features, so this is the
@@ -53,12 +54,13 @@ $UpdatePublicKeyHex = '169fce0ade4aeced2dcb36a376c127743844779184f5109bc38c00603
 # that call site happened to use, so scanning the run's own console output (its only record -
 # this script writes no separate run log) could not tell the two apart at a glance. Every
 # stage that can do something other than a plain pass/throw goes through this so the outcome
-# word is always one of: PASSED, FAILED (non-fatal), SKIPPED (optional), OVERRIDDEN. A stage
+# word is always one of: PASSED, FAILED (non-fatal), SKIPPED (optional), OVERRIDDEN, HANDED TO
+# CI (this machine cannot run the check; a later gate in this run proves it instead). A stage
 # whose only outcomes are "ran fine" or "threw and aborted the release" needs no call here -
 # the throw itself is already an unambiguous FAILED.
 function Write-ReleaseStageOutcome {
     param(
-        [Parameter(Mandatory)][ValidateSet('PASSED', 'FAILED (non-fatal)', 'SKIPPED (optional)', 'OVERRIDDEN')]
+        [Parameter(Mandatory)][ValidateSet('PASSED', 'FAILED (non-fatal)', 'SKIPPED (optional)', 'OVERRIDDEN', 'HANDED TO CI')]
         [string]$Outcome,
         [Parameter(Mandatory)][string]$Stage,
         [Parameter(Mandatory)][string]$Reason
@@ -413,9 +415,23 @@ try {
     # else below cannot run today; it stays so the skip is labelled if that rule ever relaxes
     # (test-release-pipeline.ps1 pins the label).
     $x64Artifact = $releaseArtifacts | Where-Object { $_.Architecture -eq 'x64' } | Select-Object -First 1
+    $selfUpdateHandedToCi = $false
     if ($x64Artifact) {
         & (Join-Path $PSScriptRoot 'test-self-update.ps1') -Setup $x64Artifact.Setup.FullName
-        if ($LASTEXITCODE) { throw 'Self-update smoke FAILED - NOT publishing.' }
+        $smokeExit = $LASTEXITCODE
+        if ($smokeExit -eq 3) {
+            # The harness's "Windows has to restart first": an earlier update on THIS machine left
+            # files queued for a restart, so no setup can install here until Windows restarts.
+            # That says nothing about the build, so the release does not wait on this PC's reboot:
+            # the draft gate at [5a/6] installs this exact setup on a clean x64 runner and has it
+            # update itself in place with files held open, and [5a/6] refuses to publish without it.
+            $selfUpdateHandedToCi = $true
+            Write-ReleaseStageOutcome -Outcome 'HANDED TO CI' -Stage 'self-update smoke' -Reason (
+                "this machine must restart before any setup installs here; [5a/6] runs $($x64Artifact.Setup.Name)'s " +
+                'self-update on a clean windows-latest runner instead, and publishing waits on it')
+        } elseif ($smokeExit) {
+            throw 'Self-update smoke FAILED - NOT publishing.'
+        }
     } else {
         Write-ReleaseStageOutcome -Outcome 'SKIPPED (optional)' -Stage 'self-update smoke' -Reason (
             "no x64 artifact in this run (ARM64-only builds can't upgrade an x64 host)"
@@ -615,15 +631,23 @@ try {
     # it ever started. Dispatching it here against the DRAFT (the workflow resolves draft
     # releases through the API, which is why it carries `contents: write`) and waiting for green
     # turns it into a gate: a failure leaves $tag a draft, nothing public. Same polling shape as
-    # the CI wait at [3/6]; no `gh run watch` (headless TTY trap, see there).
-    Write-Host "[5a/6] ARM64 portable zip on real ARM64 silicon (gate)" -ForegroundColor Green
+    # the CI wait at [3/6]; no `gh run watch` (headless TTY trap, see there). The same run also
+    # installs both setups on clean runners and has each update itself in place, the x64 one
+    # with files held open: the proof [4d/6] hands over when this machine awaits a restart.
+    Write-Host "[5a/6] the draft on clean runners: ARM64 portable zip on ARM64 silicon, both setups' self-update (gate)" -ForegroundColor Green
     $armArtifact = $releaseArtifacts | Where-Object Architecture -eq 'arm64' | Select-Object -First 1
+    if ($selfUpdateHandedToCi -and (-not $armArtifact -or $SkipArm64Gate)) {
+        throw ("[4d/6] handed the x64 self-update to this gate, which will not run (" +
+            $(if ($SkipArm64Gate) { '-SkipArm64Gate' } else { 'no ARM64 artifact' }) +
+            "); restart Windows and re-run, or run it without -SkipArm64Gate. $tag remains a draft")
+    }
     if (-not $armArtifact) {
         Write-ReleaseStageOutcome -Outcome 'SKIPPED (optional)' -Stage 'ARM64 silicon verify' -Reason 'this release ships no ARM64 artifact'
     } elseif ($SkipArm64Gate) {
         Write-ReleaseStageOutcome -Outcome 'OVERRIDDEN' -Stage 'ARM64 silicon verify' -Reason (
-            "-SkipArm64Gate flag: $($armArtifact.Portable.Name) was NOT run on ARM64 silicon before publishing; " +
-            'the post-publish run of arm64-portable-verify.yml is the only proof it works')
+            "-SkipArm64Gate flag: $($armArtifact.Portable.Name) was NOT run on ARM64 silicon, and neither setup " +
+            'updated itself on a clean runner, before publishing; the post-publish run of arm64-portable-verify.yml ' +
+            'is the only proof they work')
     } else {
         $dispatchedAt = (Get-Date).ToUniversalTime().AddSeconds(-2).ToString('o')
         gh workflow run 'arm64-portable-verify.yml' -f "tag=$tag"
@@ -639,9 +663,11 @@ try {
         Write-Host "      run $armRunId found - waiting for the ARM64 runner..." -ForegroundColor Green
         $armConcl = Wait-ReleaseRunConclusion -RunId $armRunId -MaxMinutes 45
         if ($armConcl -ne 'success') {
-            throw "the ARM64 portable zip failed on real ARM64 silicon (run $armRunId finished '$armConcl'); $tag remains a draft - pull the artifact apart before anyone downloads it"
+            throw "the draft gate failed (run $armRunId finished '$armConcl': the ARM64 portable zip on ARM64 silicon, or a setup's in-place self-update on a clean runner); $tag remains a draft - pull the artifact apart before anyone downloads it"
         }
-        Write-ReleaseStageOutcome -Outcome 'PASSED' -Stage 'ARM64 silicon verify' -Reason "$($armArtifact.Portable.Name) ran on windows-11-arm (run $armRunId)"
+        Write-ReleaseStageOutcome -Outcome 'PASSED' -Stage 'ARM64 silicon verify' -Reason (
+            "$($armArtifact.Portable.Name) ran on windows-11-arm, and both setups installed and updated themselves " +
+            "in place on clean runners, the x64 one on windows-latest with files held (run $armRunId)")
     }
 
     gh release edit $tag --draft=false

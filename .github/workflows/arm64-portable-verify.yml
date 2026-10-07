@@ -12,10 +12,11 @@
 # publishes only on green, so a broken ARM64 payload never becomes downloadable. The
 # `release: published` trigger stays as the record for anything published another way.
 #
-# The second job does the same for the ARM64 INSTALLER, which nothing ever ran either: it
+# The second job does the same for the INSTALLERS, which nothing ran from the release either: it
 # installs the published ARM64 setup on ARM64 silicon, then has the installed app update itself
 # in place through the same `test-self-update.ps1` harness ci.yml runs on x64 (the in-app
-# updater picks the `-arm64.exe` asset on these machines, so this is the update they get).
+# updater picks the `-arm64.exe` asset on these machines, so this is the update they get). Its
+# x64 row does the same with the x64 setup on a clean x64 runner, with files held open.
 name: ARM64 portable verify
 # The dispatched run is titled with the tag it verifies, so release.ps1 can pick OUR run by
 # commit AND tag rather than by "the first run after we dispatched" (2026-09-19 audit).
@@ -243,30 +244,48 @@ jobs:
           }
           Write-Host 'portable ini honoured on ARM64'
 
+  # The x64 row is the release's x64 self-update gate on a clean machine, with files held the
+  # way a scanner holds them (-Hold): release.ps1 [4d/6] runs the same harness on the release
+  # PC, and hands over to this row when that PC cannot install anything until Windows restarts.
   installer:
     timeout-minutes: 30
-    name: install the ARM64 setup and update it in place on ARM64
-    runs-on: windows-11-arm
+    name: install the ${{ matrix.arch }} setup and update it in place${{ matrix.hold && ', files held' || '' }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: ARM64
+            runner: windows-11-arm
+            suffix: '-arm64'
+            hold: false
+          - arch: AMD64
+            runner: windows-latest
+            suffix: ''
+            hold: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Confirm this really is ARM64 silicon
+      - name: Confirm the runner's architecture
         shell: pwsh
+        env:
+          ARCH: ${{ matrix.arch }}
         run: |
           $arch = $env:PROCESSOR_ARCHITECTURE
           Write-Host "PROCESSOR_ARCHITECTURE = $arch"
-          if ($arch -ne 'ARM64') { throw "expected ARM64 host, got '$arch'" }
+          if ($arch -ne $env:ARCH) { throw "expected a $env:ARCH host, got '$arch'" }
 
-      - name: Download the ARM64 setup (draft or published release)
+      - name: Download the setup (draft or published release)
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
+          SUFFIX: ${{ matrix.suffix }}
         run: |
           $tag = $env:TAG
           if ($tag -notmatch '^v?\d+(\.\d+)*(-[0-9A-Za-z.]+)?$') { throw "not a release tag: '$tag'" }
           $ver = $tag.TrimStart('v')
-          $asset = "SageThumbs2K-Setup-$ver-arm64.exe"
+          $asset = "SageThumbs2K-Setup-$ver$env:SUFFIX.exe"
           $repo = '${{ github.repository }}'
           # By asset id from the release list, for the same draft reason as the portable job.
           $assetId = gh api "repos/$repo/releases?per_page=30" `
@@ -289,6 +308,9 @@ jobs:
 
       - name: Install it, then let the installed app update itself in place
         shell: pwsh
+        env:
+          HOLD: ${{ matrix.hold }}
         run: |
           # The harness installs it first (bounded), then runs the installed app's updater.
-          ./scripts/test-self-update.ps1 -Setup $env:setup -App (Join-Path $env:ProgramFiles 'SageThumbs2K\SageThumbs2K.exe')
+          $hold = @{ Hold = ($env:HOLD -eq 'true') }
+          ./scripts/test-self-update.ps1 -Setup $env:setup -App (Join-Path $env:ProgramFiles 'SageThumbs2K\SageThumbs2K.exe') @hold

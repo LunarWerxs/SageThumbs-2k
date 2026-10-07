@@ -14,7 +14,8 @@
 #   1. If SageThumbs 2K is not installed, silent-install $Setup as the baseline.
 #   2. Run `$App --update-selftest $Setup` - the app-side verify -> locked-temp-copy ->
 #      elevated-silent-launch pipeline, through the same functions the About-card updater
-#      calls (only the network download is substituted).
+#      calls (only the network download is substituted). If the app answers that Windows must
+#      restart first (this machine still has an earlier update's files queued), exit 3.
 #   3. Poll until the INSTALLED exe is replaced and its version matches $App's, i.e. the
 #      in-place upgrade genuinely completed. Throw on timeout or mismatch.
 #
@@ -269,7 +270,11 @@ try {
     $null = $p.Handle
     Wait-Setup $p 'The update the app launched'
     if ($p.ExitCode -eq $restartFirst) {
-        throw "--update-selftest refused: Windows still has to restart to finish an earlier update of this install, and setup would refuse too. Restart Windows, then run this again. See %LOCALAPPDATA%\SageThumbs2K.log (update-selftest lines)."
+        # Its own exit code, not a throw: this machine cannot install anything until Windows
+        # restarts, which says nothing about the build. release.ps1 [4d/6] hands that case to the
+        # draft gate's clean x64 runner; anywhere else it is still a non-zero exit.
+        Write-Host "  [self-update] REFUSED: Windows still has to restart to finish an earlier update of this install, and setup would refuse too. Restart Windows, then run this again. See %LOCALAPPDATA%\SageThumbs2K.log (update-selftest lines)." -ForegroundColor Red
+        exit $restartFirst
     }
     if ($p.ExitCode) {
         throw "--update-selftest exited $($p.ExitCode): the updater could not verify, lock, or LAUNCH the installer. See %LOCALAPPDATA%\SageThumbs2K.log (update-selftest lines)."
