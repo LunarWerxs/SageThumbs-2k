@@ -22,5 +22,18 @@ for fname in ("ids.rs", "navrail.rs"):
                 IDS[k] = int(m.group(1))
 NAV_BASE, NCAT = IDS["ID_NAV_BASE"], IDS["NCAT"]
 ID_SWITCH, ID_FIELD, ID_CAPTION = IDS["ID_PREVIEW_ENABLED"], IDS["ID_PREVIEW_BLOCKED_EXTS"], IDS["ID_LBL_PREVIEW_BLOCKED_EXTS"]
+
+# ---- page indices by nav key, from navrail.rs's `nav_key` table ---------------------------
+# Never a number literal: inserting a page shifts every index after it, and the live toggle
+# once went on sampling the page next to Quick preview (2026-10-07, Screenshot files at 6).
+PAGES = {"nav_filetypes": 2, "nav_quickpreview": 9}
+nav = src / "navrail.rs"
+if nav.exists():
+    nav_text = nav.read_text(encoding="utf-8", errors="replace")
+    for key in PAGES:
+        m = re.search(rf'(\d+) => "{key}"', nav_text)
+        if m:
+            PAGES[key] = int(m.group(1))
 # The File types page holds a zebra-striped list: two tones by design, so rule 1 skips it.
-ZEBRA_PAGE = 2
+ZEBRA_PAGE = PAGES["nav_filetypes"]
+PREVIEW_PAGE = PAGES["nav_quickpreview"]

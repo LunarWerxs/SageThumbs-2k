@@ -61,18 +61,34 @@ pub(crate) fn has_initial_sync_pending() -> bool {
 /// DEVELOPMENT_GOTCHAS.md, "a string a test parses is an API").
 pub(super) const OFFLINE_VALUE: &str = "ConnectionsLastAttemptOffline";
 
+/// In `#[cfg(test)]` builds the three below use [`TEST_OFFLINE`] (thread-local) instead of the
+/// registry: the scripted `push_snapshot` tests run the real loop, which marks and clears
+/// this, and on the real root that flipped the developer's own marker on every test run
+/// (2026-10-07, caught by verify.ps1's user-state check).
 pub(super) fn mark_offline() {
+    #[cfg(test)]
+    TEST_OFFLINE.with(|f| f.set(true));
+    #[cfg(not(test))]
     set_marker(OFFLINE_VALUE);
 }
 
 pub(super) fn clear_offline() {
+    #[cfg(test)]
+    TEST_OFFLINE.with(|f| f.set(false));
+    #[cfg(not(test))]
     clear_marker(OFFLINE_VALUE);
 }
 
 /// Did the most recent sync attempt (initial sync, push, or disconnect's delete) fail to
 /// reach the server at all, as opposed to the server answering with a rejection?
+#[cfg(not(test))]
 pub(crate) fn last_attempt_was_offline() -> bool {
     marker_set(OFFLINE_VALUE)
+}
+
+#[cfg(test)]
+pub(crate) fn last_attempt_was_offline() -> bool {
+    TEST_OFFLINE.with(std::cell::Cell::get)
 }
 
 /// Whether `name` is one of this module's sync-state markers. Retry state, not a

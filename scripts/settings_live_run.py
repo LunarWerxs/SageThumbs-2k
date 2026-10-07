@@ -10,7 +10,7 @@ import time
 import winreg
 
 from settings_live_ids import (BM_CLICK, CLASS, ID_CAPTION, ID_FIELD, ID_SWITCH, NAV_BASE, NCAT, ROOT,
-                               WM_CLOSE, WM_COMMAND, ZEBRA_PAGE)
+                               PREVIEW_PAGE, WM_CLOSE, WM_COMMAND, ZEBRA_PAGE)
 from settings_live_win32 import capture, fails, field_checks, mode, pixels, rival_tones, to_window, u32
 
 
@@ -69,7 +69,7 @@ def run(exe, theme, outdir):
             print(f"[settings-live] {theme} tab{tab}: fields={nf} tones={'ok' if not rv else rv}")
 
         # ---- the live toggle on the Quick preview page
-        u32.PostMessageW(hwnd, WM_COMMAND, NAV_BASE + 8, 0)
+        u32.PostMessageW(hwnd, WM_COMMAND, NAV_BASE + PREVIEW_PAGE, 0)
         time.sleep(0.45)
         sw, fld, lbl = (u32.GetDlgItem(hwnd, i) for i in (ID_SWITCH, ID_FIELD, ID_CAPTION))
         if not (sw and fld and lbl):

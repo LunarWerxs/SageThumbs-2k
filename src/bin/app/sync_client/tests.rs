@@ -605,9 +605,9 @@ fn push_retries_a_5xx_up_to_the_transient_bound_then_gives_up() {
 /// Item 4a(iv): no response at all (`None`) is retried as a transient failure and, once
 /// the bound is exhausted, `push_snapshot` reports the SAME "couldn't reach" wording
 /// `mark_offline` is paired with everywhere else in this module (see the
-/// `store_get`/`store_delete` branches, and `access_token`'s own classification test) -
-/// deliberately NOT asserted here via the real `last_attempt_was_offline()` marker, so
-/// this test never writes to this machine's actual registry/portable-ini state.
+/// `store_get`/`store_delete` branches, and `access_token`'s own classification test), and
+/// leaves the offline marker set, which is what Settings reads to say "offline". In test
+/// builds that marker is thread-local, so this never writes the machine's own settings.
 #[test]
 fn push_gives_up_with_the_offline_wording_after_exhausting_transient_retries_on_no_response() {
     reset_test_network_state();
@@ -617,4 +617,8 @@ fn push_gives_up_with_the_offline_wording_after_exhausting_transient_retries_on_
     }
     let err = push_snapshot("tok").unwrap_err();
     assert_eq!(err, "couldn't reach the sync server");
+    assert!(
+        last_attempt_was_offline(),
+        "a push nobody answered must mark offline"
+    );
 }

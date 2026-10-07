@@ -97,6 +97,8 @@ thread_local! {
     /// Every duration [`sync_sleep`] was asked to wait, in call order, for a test to assert
     /// against instead of a real test run actually waiting.
     static RECORDED_SLEEPS: std::cell::RefCell<Vec<Duration>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The offline marker in test builds (see `markers::mark_offline`), never the registry.
+    static TEST_OFFLINE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Queue one scripted response for the next [`sync_http_request`] call on THIS thread.
@@ -113,6 +115,7 @@ fn script_response(resp: ScriptedResponse) {
 fn reset_test_network_state() {
     SCRIPTED_RESPONSES.with(|q| q.borrow_mut().clear());
     RECORDED_SLEEPS.with(|s| s.borrow_mut().clear());
+    TEST_OFFLINE.with(|f| f.set(false));
 }
 
 #[cfg(test)]
