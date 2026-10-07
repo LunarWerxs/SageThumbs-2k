@@ -198,7 +198,7 @@ fn line_word_boxes(line: &OcrLine) -> Vec<table::WordBox> {
         let Ok(word) = words.GetAt(j) else { continue };
         if let (Ok(text), Ok(r)) = (word.Text(), word.BoundingRect()) {
             row.push(table::WordBox {
-                text: text.to_string(),
+                text: fix_slashed_zeros(&text.to_string()),
                 x: r.X,
                 y: r.Y,
                 w: r.Width,
@@ -228,10 +228,46 @@ fn collect_lines(result: &OcrResult) -> (String, Vec<Vec<table::WordBox>>) {
             if !out.is_empty() {
                 out.push('\n');
             }
-            out.push_str(&text.to_string());
+            out.push_str(&fix_slashed_zeros(&text.to_string()));
         }
     }
     (out, word_lines)
+}
+
+/// Undo the engine's slashed-zero misread. Monospace and small UI fonts draw zero with a
+/// slash, and the engine reads that glyph as `ø`/`Ø`: 269 of them across a 68-image corpus,
+/// in hex codes, dates, versions and addresses. In a whitespace-separated token that holds at
+/// least one ASCII digit, each `ø`/`Ø` becomes `0`; a token with no digit is left alone, so
+/// "København" and "Øre" survive. Whitespace passes through untouched, newlines and tabs
+/// included. Every text this module hands out goes through here: each line, each word box
+/// (the table assembler and the searchable-PDF layer read those) and the engine's own
+/// joined text.
+fn fix_slashed_zeros(text: &str) -> String {
+    if !text.contains(['ø', 'Ø']) {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        let token_start = rest
+            .find(|c: char| !c.is_whitespace())
+            .unwrap_or(rest.len());
+        out.push_str(&rest[..token_start]);
+        rest = &rest[token_start..];
+        let token_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let token = &rest[..token_end];
+        if token.bytes().any(|b| b.is_ascii_digit()) {
+            out.extend(
+                token
+                    .chars()
+                    .map(|c| if matches!(c, 'ø' | 'Ø') { '0' } else { c }),
+            );
+        } else {
+            out.push_str(token);
+        }
+        rest = &rest[token_end..];
+    }
+    out
 }
 
 fn recognize(bytes: &[u8]) -> Result<String> {
@@ -241,7 +277,7 @@ fn recognize(bytes: &[u8]) -> Result<String> {
         return Ok(tsv);
     }
     if out.is_empty() {
-        out = result.Text()?.to_string();
+        out = fix_slashed_zeros(&result.Text()?.to_string());
     }
     Ok(out)
 }
@@ -438,6 +474,35 @@ mod tests {
         assert_eq!((w.x, w.y, w.w, w.h), (30.0, 10.0, 20.0, 5.0));
         let same = unscale_lines(vec![vec![word(90.0)]], 1);
         assert_eq!(same[0][0].x, 90.0, "no upscale means no change");
+    }
+
+    /// The engine's slashed-zero misread is undone inside any token that carries a digit, and
+    /// nowhere else: a Scandinavian word, or a lone letter, keeps its `ø`/`Ø`.
+    #[test]
+    fn slashed_zeros_become_zeros_only_beside_digits() {
+        for (read, want) in [
+            ("Øx80070005", "0x80070005"),
+            ("2Ø26-1Ø-07", "2026-10-07"),
+            ("v1.ø.3", "v1.0.3"),
+            ("192.168.1.254", "192.168.1.254"),
+            ("København", "København"),
+            ("Øre", "Øre"),
+            ("Ø", "Ø"),
+            (
+                "Error Øx8ØØ7ØØØ5 at 1Ø:3Ø in København",
+                "Error 0x80070005 at 10:30 in København",
+            ),
+        ] {
+            assert_eq!(fix_slashed_zeros(read), want, "{read:?}");
+        }
+    }
+
+    /// Lines and table cells are separated by whitespace the caller relies on, so the fix must
+    /// hand every newline, tab and run of spaces back exactly as it got them.
+    #[test]
+    fn slashed_zero_fix_keeps_whitespace_exactly() {
+        let read = "  Port\t8Ø8Ø \n\nØre  2Ø\r\n";
+        assert_eq!(fix_slashed_zeros(read), "  Port\t8080 \n\nØre  20\r\n");
     }
 
     /// Degenerate dimensions must be rejected outright, not treated as "fits everything".
