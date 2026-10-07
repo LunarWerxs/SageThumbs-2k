@@ -16,7 +16,7 @@
 # ci.yml, which this file does not touch. No test-corpus exists on a runner, so the sessions
 # fuzz their synthetic seeds; the corpus pass stays a local, by-hand run.
 #
-# Dispatch by hand with a longer budget:  gh workflow run fuzz-nightly.yml -f seconds=1800
+# Dispatch by hand with a longer budget:  gh workflow run fuzz-nightly.yml -f seconds=3600
 name: Nightly fuzz
 
 on:
@@ -27,14 +27,14 @@ on:
       seconds:
         description: 'Time budget per deep session, in seconds'
         required: false
-        default: '900'
+        default: '1800'
 
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
-  ST2K_FUZZ_SECS: ${{ github.event.inputs.seconds || '900' }}
+  ST2K_FUZZ_SECS: ${{ github.event.inputs.seconds || '1800' }}
   # Every panicking input is saved here whole (the log line carries only its first 48 bytes)
   # and uploaded when the run fails, so a finding is a regression fixture, not a replay job.
   ST2K_FUZZ_DUMP: ${{ github.workspace }}/fuzz-failures
@@ -68,9 +68,11 @@ jobs:
 
       # The two deep sessions overlap: each is one thread looping to its ST2K_FUZZ_SECS deadline
       # and neither reads the other's output. The sweep above stays alone: it uses every core
-      # under a 600 ms per-pair cap, so sharing the CPU would quietly cut its mutations. Serial
-      # baselines (run 37567729810): 'deep fuzz: 239599456 inputs', 'deep pipeline fuzz: 227444
-      # cases'; a large drop means a shallower fuzz, so revert.
+      # under a 600 ms per-pair cap, so sharing the CPU would quietly cut its mutations. At 900 s
+      # each, overlapped (run 37587071625), they reached 224043040 inputs and 201562 cases against
+      # 236-240 M and 213-227 k one after the other (runs 37409711589, 37567729810), and the job
+      # took 22 min instead of 37. Nobody waits on a nightly, so the time went back into depth:
+      # 1800 s each keeps the job near 37 min with about twice the fuzzing.
       - name: Deep session over the newer parsers
         if: ${{ !cancelled() }}
         background: true
