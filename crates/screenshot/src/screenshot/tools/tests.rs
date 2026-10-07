@@ -113,3 +113,183 @@ fn drag_endpoint_only_constrains_shifted_lines_and_arrows() {
     assert_eq!(drag_endpoint(Tool::Rect, a, raw, true), raw);
     assert_eq!(drag_endpoint(Tool::Pen, a, raw, true), raw);
 }
+
+/// A memory DC over a `w`x`h` top-down 32bpp DIB, its grey pixels painted from `shade(x, y)`,
+/// so a test can draw a shape through the real GDI path and read back exactly what it did.
+struct Canvas {
+    dc: HDC,
+    bmp: windows::Win32::Graphics::Gdi::HBITMAP,
+    old: HGDIOBJ,
+    bits: *mut u8,
+    w: i32,
+    h: i32,
+}
+
+impl Canvas {
+    unsafe fn new(w: i32, h: i32, shade: impl Fn(i32, i32) -> u8) -> Self {
+        let (bmp, bits) = st2k_base::safety::create_dib_section(w, h).expect("dib section");
+        let dc = CreateCompatibleDC(None);
+        let old = SelectObject(dc, HGDIOBJ(bmp.0));
+        let c = Canvas {
+            dc,
+            bmp,
+            old,
+            bits: bits.cast(),
+            w,
+            h,
+        };
+        let px = std::slice::from_raw_parts_mut(c.bits, (w * h * 4) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                let v = shade(x, y);
+                let o = ((y * w + x) * 4) as usize;
+                px[o..o + 4].copy_from_slice(&[v, v, v, 255]);
+            }
+        }
+        c
+    }
+
+    /// The canvas's pixels as they are now (GDI flushed first).
+    unsafe fn pixels(&self) -> Vec<u8> {
+        let _ = GdiFlush();
+        std::slice::from_raw_parts(self.bits, (self.w * self.h * 4) as usize).to_vec()
+    }
+}
+
+impl Drop for Canvas {
+    fn drop(&mut self) {
+        unsafe {
+            SelectObject(self.dc, self.old);
+            let _ = DeleteObject(HGDIOBJ(self.bmp.0));
+            let _ = DeleteDC(self.dc);
+        }
+    }
+}
+
+/// Fine stripes in both directions: an edge every few pixels, so any blur shows.
+fn stripes(x: i32, y: i32) -> u8 {
+    if (x / 3 + y / 5) % 2 == 0 {
+        230
+    } else {
+        20
+    }
+}
+
+fn blur(r: RECT, radius: i32) -> Shape {
+    Shape::Blur {
+        r,
+        radius,
+        cache: BlurCache::default(),
+    }
+}
+
+/// How much the blue channel changes between neighbours inside `r`: the edge energy a blur
+/// takes away.
+fn variation(px: &[u8], w: i32, r: RECT) -> u64 {
+    let at = |x: i32, y: i32| i64::from(px[((y * w + x) * 4) as usize]);
+    let mut sum = 0u64;
+    for y in r.top..r.bottom - 1 {
+        for x in r.left..r.right - 1 {
+            sum +=
+                (at(x + 1, y) - at(x, y)).unsigned_abs() + (at(x, y + 1) - at(x, y)).unsigned_abs();
+        }
+    }
+    sum
+}
+
+/// The Blur tool changes the pixels inside its rect and not one pixel outside it, also when
+/// drawn with the offset `compose` uses to bake shapes into the cropped output.
+#[test]
+fn blur_changes_only_the_pixels_inside_its_rect() {
+    unsafe {
+        let (w, h) = (64, 48);
+        let inside = RECT {
+            left: 16,
+            top: 12,
+            right: 48,
+            bottom: 36,
+        };
+        // Stored in screen space, drawn shifted back by (8, 4), as compose() does.
+        let stored = RECT {
+            left: inside.left + 8,
+            top: inside.top + 4,
+            right: inside.right + 8,
+            bottom: inside.bottom + 4,
+        };
+        let c = Canvas::new(w, h, stripes);
+        let before = c.pixels();
+        draw_shape(c.dc, -8, -4, &blur(stored, 6));
+        let after = c.pixels();
+        let mut changed_inside = 0;
+        for y in 0..h {
+            for x in 0..w {
+                let o = ((y * w + x) * 4) as usize;
+                let differs = before[o..o + 4] != after[o..o + 4];
+                let is_inside =
+                    x >= inside.left && x < inside.right && y >= inside.top && y < inside.bottom;
+                if is_inside {
+                    changed_inside += usize::from(differs);
+                } else {
+                    assert!(!differs, "pixel ({x}, {y}) outside the blur changed");
+                }
+            }
+        }
+        let area = ((inside.right - inside.left) * (inside.bottom - inside.top)) as usize;
+        assert!(
+            changed_inside * 2 > area,
+            "only {changed_inside} of {area} pixels inside the blur changed"
+        );
+    }
+}
+
+/// A higher strength blurs more: less edge energy is left inside the rect at each step up.
+#[test]
+fn a_stronger_blur_is_blurrier() {
+    unsafe {
+        let r = RECT {
+            left: 8,
+            top: 8,
+            right: 56,
+            bottom: 40,
+        };
+        let original = variation(&Canvas::new(64, 48, stripes).pixels(), 64, r);
+        let mut last = original;
+        for radius in [2, 6, 16] {
+            let c = Canvas::new(64, 48, stripes);
+            draw_shape(c.dc, 0, 0, &blur(r, radius));
+            let v = variation(&c.pixels(), 64, r);
+            assert!(v < last, "radius {radius} left {v}, not less than {last}");
+            last = v;
+        }
+    }
+}
+
+/// The blur cache must never paint a stale result: the same Blur shape drawn over different
+/// pixels (an annotation underneath changed, or the blur was moved) is blurred afresh, and
+/// over the same pixels again gives the same picture.
+#[test]
+fn a_cached_blur_follows_the_pixels_under_it() {
+    unsafe {
+        let r = RECT {
+            left: 4,
+            top: 4,
+            right: 28,
+            bottom: 20,
+        };
+        let shape = blur(r, 5);
+        let first = Canvas::new(32, 24, stripes);
+        draw_shape(first.dc, 0, 0, &shape);
+        let other = Canvas::new(32, 24, |x, y| ((x * 7 + y * 3) % 256) as u8);
+        draw_shape(other.dc, 0, 0, &shape);
+        let fresh = Canvas::new(32, 24, |x, y| ((x * 7 + y * 3) % 256) as u8);
+        draw_shape(fresh.dc, 0, 0, &blur(r, 5));
+        assert_eq!(
+            other.pixels(),
+            fresh.pixels(),
+            "the cached shape painted its old result over new pixels"
+        );
+        let again = Canvas::new(32, 24, stripes);
+        draw_shape(again.dc, 0, 0, &shape);
+        assert_eq!(again.pixels(), first.pixels());
+    }
+}

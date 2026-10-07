@@ -2,21 +2,22 @@
 //! No window or capture state lives here — `overlay.rs` owns that and calls these to
 //! paint. Outline shapes (rect/ellipse/line/arrow/pen/number ring) draw through GDI+
 //! ([`gdip`](st2k_appkit::gdip)) so they're anti-aliased; the region effects (highlight/
-//! pixelate/invert) and text stay on plain GDI (they're alpha/pixel/text ops, not
+//! pixelate/blur/invert) and text stay on plain GDI (they're alpha/pixel/text ops, not
 //! outlines). Every draw takes an `(ox, oy)` offset added to all coordinates: it's
 //! `(0, 0)` for the live overlay, and `(-sel.left, -sel.top)` when `overlay::compose`
 //! bakes the shapes into the cropped output. (We can't use `SetViewportOrgEx` for
 //! this — GDI+ ignores the DC's viewport origin, only plain GDI honours it.)
 
 use core::ffi::c_void;
+use std::cell::RefCell;
 
 use windows::Win32::Foundation::{COLORREF, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
-    AlphaBlend, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontIndirectW, CreatePen,
-    CreateSolidBrush, DeleteDC, DeleteObject, FillRect, GetObjectW, GetStockObject, PatBlt,
-    Rectangle, SelectObject, SetBkMode, SetStretchBltMode, SetTextColor, StretchBlt, TextOutW,
-    AC_SRC_OVER, BLENDFUNCTION, COLORONCOLOR, DSTINVERT, HDC, HGDIOBJ, LOGFONTW, NULL_BRUSH,
-    PS_SOLID, SRCCOPY, TRANSPARENT,
+    AlphaBlend, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontIndirectW, CreatePen,
+    CreateSolidBrush, DeleteDC, DeleteObject, FillRect, GdiFlush, GetObjectW, GetStockObject,
+    PatBlt, Rectangle, SelectObject, SetBkMode, SetStretchBltMode, SetTextColor, StretchBlt,
+    TextOutW, AC_SRC_OVER, BLENDFUNCTION, COLORONCOLOR, DSTINVERT, HDC, HGDIOBJ, LOGFONTW,
+    NULL_BRUSH, PS_SOLID, SRCCOPY, TRANSPARENT,
 };
 
 use st2k_appkit::dark::rgb;
@@ -37,6 +38,11 @@ pub(super) enum Tool {
     Highlight,
     Pixelate,
     Invert,
+    /// A soft blur over a region. Pixelate is the safer way to hide text: a light blur can
+    /// leave large text readable, which is why the strength defaults high.
+    Blur,
+    /// Drag the part of the selection to keep; Enter crops to it, Esc drops it.
+    Crop,
     /// Sample the colour of a pixel in the frozen screenshot (copies its hex to the
     /// clipboard + sets the active colour). Doesn't draw — it's a pick-and-go tool.
     Eyedropper,
@@ -65,11 +71,12 @@ impl Tool {
 
     /// The tools offered as a STARTING tool, in the order the Settings dropdown lists them.
     ///
-    /// Deliberately not every variant: `Eyedropper` and `Move` don't draw anything, so opening
-    /// the editor already in one of them looks like the editor is broken. This array IS the
-    /// stored format — a setting holds an INDEX into it — so only ever APPEND, never reorder
-    /// or remove, or existing users silently get a different tool than the one they chose.
-    pub(super) const DEFAULTABLE: [Tool; 10] = [
+    /// Deliberately not every variant: `Eyedropper` and `Move` don't draw anything, and `Crop`
+    /// is a one-off edit, so opening the editor already in one of them looks like the editor
+    /// is broken. This array IS the stored format — a setting holds an INDEX into it — so only
+    /// ever APPEND, never reorder or remove, or existing users silently get a different tool
+    /// than the one they chose.
+    pub(super) const DEFAULTABLE: [Tool; 11] = [
         Tool::Arrow,
         Tool::Rect,
         Tool::Ellipse,
@@ -80,6 +87,7 @@ impl Tool {
         Tool::Highlight,
         Tool::Pixelate,
         Tool::Invert,
+        Tool::Blur,
     ];
 
     /// The starting tool for a stored setting index, falling back to the first entry
@@ -106,6 +114,8 @@ fn tool_strings(tool: Tool) -> (&'static str, &'static str) {
         Tool::Highlight => ("Highlight", "shot_tool_short_highlight"),
         Tool::Pixelate => ("Pixelate", "shot_tool_short_pixelate"),
         Tool::Invert => ("Invert", "shot_tool_short_invert"),
+        Tool::Blur => ("Blur", "shot_tool_short_blur"),
+        Tool::Crop => ("Crop", "shot_tool_short_crop"),
         Tool::Eyedropper => ("Pick", "shot_tool_short_eyedropper"),
         Tool::Move => ("Move", "shot_tool_short_move"),
     }
@@ -143,11 +153,11 @@ mod default_tool_tests {
         }
     }
 
-    /// The non-drawing tools must never be offered as a starting tool.
+    /// The non-drawing tools (and the one-off Crop) must never be offered as a starting tool.
     #[test]
     fn non_drawing_tools_are_not_offered() {
         for t in Tool::DEFAULTABLE {
-            assert!(!matches!(t, Tool::Eyedropper | Tool::Move));
+            assert!(!matches!(t, Tool::Eyedropper | Tool::Move | Tool::Crop));
         }
     }
 
@@ -169,6 +179,8 @@ mod default_tool_tests {
             (Tool::Highlight, "shot_tool_short_highlight"),
             (Tool::Pixelate, "shot_tool_short_pixelate"),
             (Tool::Invert, "shot_tool_short_invert"),
+            (Tool::Blur, "shot_tool_short_blur"),
+            (Tool::Crop, "shot_tool_short_crop"),
             (Tool::Eyedropper, "shot_tool_short_eyedropper"),
             (Tool::Move, "shot_tool_short_move"),
         ];
@@ -255,6 +267,99 @@ pub(super) enum Shape {
     Invert {
         r: RECT,
     },
+    /// Blur the pixels under a region by `radius` (see [`box_blur3`]). `cache` keeps the
+    /// last result, because the live overlay repaints every shape on every frame and a
+    /// full-screen blur each frame would make dragging anything else stutter.
+    Blur {
+        r: RECT,
+        radius: i32,
+        cache: BlurCache,
+    },
+    /// An applied crop: the selection went from `prev` to `r`. Draws nothing; it sits on the
+    /// shape stack only so Undo and Redo step over it like any other edit.
+    Crop {
+        prev: RECT,
+        r: RECT,
+    },
+}
+
+/// The last blur a [`Shape::Blur`] painted, keyed on the exact pixels, size and radius it
+/// started from, so the same input is never blurred twice. Keying on the pixels (not the
+/// rect) keeps it right when a shape underneath changes or the blur itself is moved.
+#[derive(Default)]
+pub(super) struct BlurCache(RefCell<Option<(u64, Vec<u8>)>>);
+
+impl BlurCache {
+    /// Blur `px` (`w`x`h` BGRA) in place by `radius`, reusing the last output when these
+    /// exact pixels were blurred last time.
+    fn apply(&self, px: &mut [u8], w: usize, h: usize, radius: usize) {
+        let key = pixel_key(px, w, h, radius);
+        let mut slot = self.0.borrow_mut();
+        if let Some((k, out)) = slot.as_ref() {
+            if *k == key && out.len() == px.len() {
+                px.copy_from_slice(out);
+                return;
+            }
+        }
+        box_blur3(px, w, h, radius);
+        *slot = Some((key, px.to_vec()));
+    }
+}
+
+/// A fast 64-bit fingerprint of a pixel block plus its size and the blur radius.
+fn pixel_key(px: &[u8], w: usize, h: usize, radius: usize) -> u64 {
+    const K: u64 = 0x517c_c1b7_2722_0a95;
+    let mut key = (w as u64) ^ ((h as u64) << 21) ^ ((radius as u64) << 42);
+    let (chunks, rest) = px.as_chunks::<8>();
+    for c in chunks {
+        key = (key.rotate_left(5) ^ u64::from_le_bytes(*c)).wrapping_mul(K);
+    }
+    for &b in rest {
+        key = (key.rotate_left(5) ^ u64::from(b)).wrapping_mul(K);
+    }
+    key
+}
+
+/// Three passes of a `radius` box blur over `w`x`h` BGRA pixels, each pass horizontal then
+/// vertical. Three boxes come within a few percent of a Gaussian (sigma close to `radius`),
+/// at a cost that does not grow with the radius. The border pixel repeats past each edge, so
+/// nothing from outside the block bleeds in. Alpha is left alone.
+pub(super) fn box_blur3(px: &mut [u8], w: usize, h: usize, radius: usize) {
+    if w == 0 || h == 0 || radius == 0 || px.len() < w * h * 4 {
+        return;
+    }
+    let mut line = Vec::with_capacity(w.max(h) * 4);
+    for _ in 0..3 {
+        for y in 0..h {
+            box_line(px, y * w * 4, 4, w, radius, &mut line);
+        }
+        for x in 0..w {
+            box_line(px, x * 4, w * 4, h, radius, &mut line);
+        }
+    }
+}
+
+/// Box-blur, in place, the line of `n` pixels that starts at byte `start` and steps `step`
+/// bytes per pixel (4 along a row, a whole row down a column). `line` is scratch space.
+fn box_line(px: &mut [u8], start: usize, step: usize, n: usize, r: usize, line: &mut Vec<u8>) {
+    line.clear();
+    for i in 0..n {
+        let o = start + i * step;
+        line.extend_from_slice(&px[o..o + 4]);
+    }
+    let last = n as isize - 1;
+    let at = |i: isize| i.clamp(0, last) as usize * 4;
+    let span = (2 * r + 1) as u32;
+    let r = r as isize;
+    for c in 0..3 {
+        let mut sum: u32 = (-r..=r).map(|k| u32::from(line[at(k) + c])).sum();
+        for i in 0..n {
+            px[start + i * step + c] = ((sum + span / 2) / span) as u8;
+            let i = i as isize;
+            sum += u32::from(line[at(i + r + 1) + c]);
+            sum -= u32::from(line[at(i - r) + c]);
+        }
+    }
 }
 
 /// Shared bounds for the Text tool's font size, so every entry point that changes it —
@@ -371,6 +476,8 @@ pub(super) unsafe fn draw_shape(hdc: HDC, ox: i32, oy: i32, sh: &Shape) {
         Shape::Highlight { r, color } => draw_highlight(hdc, ox, oy, *r, *color),
         Shape::Pixelate { r } => draw_pixelate(hdc, ox, oy, *r),
         Shape::Invert { r } => draw_invert(hdc, ox, oy, *r),
+        Shape::Blur { r, radius, cache } => draw_blur(hdc, ox, oy, *r, *radius, cache),
+        Shape::Crop { .. } => {}
     }
 }
 
@@ -431,6 +538,32 @@ unsafe fn draw_pixelate(hdc: HDC, ox: i32, oy: i32, r: RECT) {
     let _ = DeleteDC(tmp);
 }
 
+/// Blur `r` in place: copy the pixels under it into a DIB, blur them (or reuse the cached
+/// result when they have not changed since the last frame) and copy them back.
+unsafe fn draw_blur(hdc: HDC, ox: i32, oy: i32, r: RECT, radius: i32, cache: &BlurCache) {
+    let (w, h) = (r.right - r.left, r.bottom - r.top);
+    if w < 2 || h < 2 {
+        return;
+    }
+    let (x, y) = (r.left + ox, r.top + oy);
+    let Ok((bmp, bits)) = st2k_base::safety::create_dib_section(w, h) else {
+        return;
+    };
+    let tmp = CreateCompatibleDC(Some(hdc));
+    let old = SelectObject(tmp, HGDIOBJ(bmp.0));
+    let _ = BitBlt(tmp, 0, 0, w, h, Some(hdc), x, y, SRCCOPY);
+    // GDI batches; the copy must have landed before the bits are read.
+    let _ = GdiFlush();
+    // SAFETY: `bits` is the DIB section's own w*h*4-byte top-down 32bpp buffer, alive until
+    // the DeleteObject below, and nothing else touches it in between.
+    let px = std::slice::from_raw_parts_mut(bits.cast::<u8>(), w as usize * h as usize * 4);
+    cache.apply(px, w as usize, h as usize, radius.max(1) as usize);
+    let _ = BitBlt(hdc, x, y, w, h, Some(tmp), 0, 0, SRCCOPY);
+    SelectObject(tmp, old);
+    let _ = DeleteObject(HGDIOBJ(bmp.0));
+    let _ = DeleteDC(tmp);
+}
+
 /// Invert the colours under `r` (one `PatBlt` with `DSTINVERT`).
 unsafe fn draw_invert(hdc: HDC, ox: i32, oy: i32, r: RECT) {
     let _ = PatBlt(
@@ -466,12 +599,17 @@ pub(super) unsafe fn draw_inprogress(
         Tool::Pen => draw_pen(hdc, ox, oy, pen_pts, color, w),
         // Region-effect tools: preview just the area outline; the effect applies on
         // release (a live effect would flicker as the drag reads changing pixels).
-        Tool::Highlight | Tool::Pixelate | Tool::Invert => {
+        Tool::Highlight | Tool::Pixelate | Tool::Blur | Tool::Invert => {
             outline_rect(hdc, ox, oy, norm(a, b), color, 1)
         }
+        // The area to keep, in the selection frame's own colour: it is a selection, not ink.
+        Tool::Crop => outline_rect(hdc, ox, oy, norm(a, b), CROP_FRAME, 1),
         Tool::Text | Tool::Number | Tool::Eyedropper | Tool::Move => {}
     }
 }
+
+/// The colour a crop rect is outlined in: the selection frame's blue.
+pub(super) const CROP_FRAME: COLORREF = COLORREF(0x00FF_AE00);
 
 /// Freehand polyline through the captured points.
 unsafe fn draw_pen(hdc: HDC, ox: i32, oy: i32, pts: &[POINT], color: COLORREF, w: i32) {
@@ -629,8 +767,8 @@ pub(super) fn text_extent(at: POINT, s: &str, font: &LOGFONTW) -> RECT {
     }
 }
 
-/// The five region-effect [`Shape`] variants that carry a single `r` rect — one alternation
-/// so that [`shape_bbox`] and [`translate_shape`] can't grow out of step.
+/// The [`Shape`] variants that carry a single `r` rect — one alternation so that
+/// [`shape_bbox`] and [`translate_shape`] can't grow out of step.
 macro_rules! rect_shapes {
     ($r:ident) => {
         Shape::Rect { r: $r, .. }
@@ -638,6 +776,7 @@ macro_rules! rect_shapes {
             | Shape::Highlight { r: $r, .. }
             | Shape::Pixelate { r: $r }
             | Shape::Invert { r: $r }
+            | Shape::Blur { r: $r, .. }
     };
 }
 
@@ -673,6 +812,8 @@ pub(super) fn shape_bbox(sh: &Shape) -> RECT {
             right: at.x + 13,
             bottom: at.y + 13,
         },
+        // Nothing on the canvas to grab; `hit_shape` skips it.
+        Shape::Crop { .. } => RECT::default(),
     }
 }
 
@@ -701,17 +842,20 @@ pub(super) fn translate_shape(sh: &mut Shape, dx: i32, dy: i32) {
             at.x += dx;
             at.y += dy;
         }
+        Shape::Crop { .. } => {}
     }
 }
 
 /// The topmost shape whose bbox (plus a small grab margin) contains `(x, y)`.
-/// Newest-first so the visually-on-top annotation wins.
+/// Newest-first so the visually-on-top annotation wins. A crop is not on the canvas, so it
+/// can never be grabbed (or deleted out of the middle of the undo stack).
 pub(super) fn hit_shape(shapes: &[Shape], x: i32, y: i32) -> Option<usize> {
     const M: i32 = 6;
     shapes
         .iter()
         .enumerate()
         .rev()
+        .filter(|(_, sh)| !matches!(sh, Shape::Crop { .. }))
         .find(|(_, sh)| {
             let r = shape_bbox(sh);
             x >= r.left - M && x <= r.right + M && y >= r.top - M && y <= r.bottom + M

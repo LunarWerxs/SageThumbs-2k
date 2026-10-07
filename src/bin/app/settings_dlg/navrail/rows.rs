@@ -230,6 +230,7 @@ pub(in super::super) fn cat_rows(ci: usize) -> &'static [Row] {
             Pair(ID_LBL_SHOT_QUICK_HK, ID_SHOT_QUICK_HOTKEY, 156, 200),
             Pair(ID_LBL_SHOT_TOOL, ID_SHOT_TOOL, 156, 200),
             Pair(ID_LBL_SHOT_DELAY, ID_SHOT_DELAY, 156, 200),
+            Pair(ID_LBL_SHOT_BLUR, ID_SHOT_BLUR, 84, 18),
             // Service state + Restart, moved back here from Advanced 2026-08-06. A hotkey only
             // fires while the helper is resident, so "is it running / put it back" is part of
             // this feature, not a system setting. Being on Advanced made it unfindable by the
@@ -240,6 +241,10 @@ pub(in super::super) fn cat_rows(ci: usize) -> &'static [Row] {
             BtnStatus(ID_SHOT_RESTART, 184, ID_SHOT_STATUS),
             Status(ID_SHOT_DIR),
             Btn(ID_SHOT_SET_DIR, 150),
+            // How the capture lands in that folder: its name template and its format.
+            Pair(ID_LBL_SHOT_NAME, ID_SHOT_NAME, 220, 18),
+            Pair(ID_LBL_SHOT_FORMAT, ID_SHOT_FORMAT, 156, 200),
+            Pair(ID_LBL_SHOT_QUALITY, ID_SHOT_QUALITY, 84, 18),
             Btn(ID_EDIT_UPLOAD_HOSTS, 184),
             Btn(ID_UPLOAD_HISTORY, 184),
         ],

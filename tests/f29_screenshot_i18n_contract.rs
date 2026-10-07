@@ -327,6 +327,8 @@ const ALLOWED_LITERALS: &[(&str, &str, &str)] = &[
     ("tools.rs", "Invert", "Tool::label automation identifier"),
     ("tools.rs", "Pick", "Tool::label automation identifier"),
     ("tools.rs", "Move", "Tool::label automation identifier"),
+    ("tools.rs", "Blur", "Tool::label automation identifier"),
+    ("tools.rs", "Crop", "Tool::label automation identifier"),
     (
         "tools.rs",
         "Tool::DEFAULTABLE and settings::SHOT_TOOL_COUNT disagree",

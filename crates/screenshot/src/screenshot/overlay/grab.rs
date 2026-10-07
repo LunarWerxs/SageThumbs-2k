@@ -189,6 +189,8 @@ pub(super) unsafe fn build_shot_state(
         win_hint_scan_ms: 0,
         tb_cache_key: None,
         tb_cache: Vec::new(),
+        app: String::new(),
+        crop_pending: None,
     })
 }
 
@@ -273,15 +275,18 @@ pub(super) unsafe fn run_capture_inner(hinst: HINSTANCE, automation: bool, ocr_m
         return;
     };
 
+    // `{app}` in the file name: read before the overlay exists, so it names the user's window.
+    let app = output::foreground_app();
     let screen = GetDC(None);
     let Some((mem, bmp)) = freeze_screen_to_dc(screen, vx, vy, vw, vh, automation) else {
         return;
     };
     let (dim, dim_bmp) = build_dimmed_copy(screen, mem, vw, vh);
     let seed_dpi = seed_dpi_for_capture(automation);
-    let state = build_shot_state(
+    let mut state = build_shot_state(
         mem, bmp, dim, dim_bmp, vx, vy, vw, vh, automation, ocr_mode, seed_dpi,
     );
+    state.app = app;
 
     run_overlay_message_loop(hinst, automation, vx, vy, vw, vh, state);
 }
@@ -305,6 +310,8 @@ pub unsafe fn capture_instant() {
     let Some((vx, vy, vw, vh)) = virtual_screen_metrics() else {
         return;
     };
+    // `{app}` in the file name: whatever is in front at the moment of the capture.
+    let app = output::foreground_app();
     let screen = GetDC(None);
     // Same null-check as run_capture_inner's screen-freeze (A139): a GDI failure must not
     // fall through to SelectObject/BitBlt on a null handle.
@@ -349,7 +356,7 @@ pub unsafe fn capture_instant() {
     // The editor-less instant capture can't prompt, so it always auto-saves to the
     // effective save folder (the configured one, or the Desktop by default).
     let dir = super::super::effective_save_dir();
-    let saved = output::save_png_to_dir(std::path::Path::new(&dir), &buf, vw, vh);
+    let saved = output::save_capture_to_dir(std::path::Path::new(&dir), &buf, vw, vh, &app);
 
     // Feedback — this hotkey used to be TOTALLY silent, so "worked" and "did nothing"
     // were indistinguishable. Success gets a Win+Shift+S-style split-second flash;

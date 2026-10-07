@@ -182,19 +182,8 @@ pub(super) unsafe fn build_general(lc: &mut LeftCol, sty: &Styles) {
 
     let shot_tool = lc.combo(t("lbl_shot_tool"), ID_LBL_SHOT_TOOL, 160, ID_SHOT_TOOL);
     // Option order comes from Tool::DEFAULTABLE, so the dropdown and the stored index can
-    // never drift apart: the array IS the wire format.
-    for key in [
-        "tool_arrow",
-        "tool_rect",
-        "tool_ellipse",
-        "tool_line",
-        "tool_pen",
-        "tool_text",
-        "tool_number",
-        "tool_highlight",
-        "tool_pixelate",
-        "tool_invert",
-    ] {
+    // never drift apart: the array IS the wire format. The live relabel uses the same list.
+    for key in SHOT_TOOL_KEYS {
         let w = wide(t(key));
         SendMessageW(
             shot_tool,
@@ -437,6 +426,49 @@ pub(super) unsafe fn build_screenshots(hwnd: HWND, lc: &mut LeftCol, sty: &Style
     // persists the pick immediately.
     lc.status(ID_SHOT_DIR);
     lc.button(t("btn_set_save_dir"), 150, ID_SHOT_SET_DIR);
+    // How a saved capture is named and encoded. The template seeds in load_values; the
+    // format combo lists `ShotFormat::ALL`, whose order is the stored value.
+    lc.edit(
+        t("lbl_shot_file_name"),
+        ID_LBL_SHOT_NAME,
+        sty.text_style,
+        ID_SHOT_NAME,
+    );
+    let format = lc.combo(
+        t("lbl_shot_format"),
+        ID_LBL_SHOT_FORMAT,
+        120,
+        ID_SHOT_FORMAT,
+    );
+    for f in settings::ShotFormat::ALL {
+        let w = wide(f.name());
+        SendMessageW(
+            format,
+            CB_ADDSTRING,
+            None,
+            Some(LPARAM(w.as_ptr() as isize)),
+        );
+    }
+    SendMessageW(
+        format,
+        CB_SETCURSEL,
+        Some(WPARAM(settings::shot_save_format().as_dword() as usize)),
+        None,
+    );
+    dark_theme_combo(format);
+    restyle::dark_combo_subclass(format, ID_SHOT_FORMAT);
+    lc.edit(
+        t("lbl_shot_quality"),
+        ID_LBL_SHOT_QUALITY,
+        sty.edit_style,
+        ID_SHOT_QUALITY,
+    );
+    lc.edit(
+        t("lbl_shot_blur"),
+        ID_LBL_SHOT_BLUR,
+        sty.edit_style,
+        ID_SHOT_BLUR,
+    );
     // Opens the user-editable upload-hosts config (the "Upload (copy link)" verb +
     // the capture overlay's Upload button POST through this chain of keyless hosts).
     lc.button(t("btn_edit_upload_hosts"), 184, ID_EDIT_UPLOAD_HOSTS);

@@ -64,6 +64,8 @@ unsafe fn test_shot() -> Box<Shot> {
         win_hint_scan_ms: 0,
         tb_cache_key: None,
         tb_cache: Vec::new(),
+        app: String::new(),
+        crop_pending: None,
     })
 }
 
@@ -515,5 +517,97 @@ fn a_new_shape_after_a_delete_is_what_undo_takes_back() {
             s.shapes.is_empty(),
             "the new shape is undone, the deleted one stays deleted"
         );
+    }
+}
+
+fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
+    RECT {
+        left,
+        top,
+        right,
+        bottom,
+    }
+}
+
+/// A `test_window()` holding a 180x130 selection with the Crop tool up and a crop dragged
+/// from (130, 100) back to (30, 20), the way a finished mouse drag hands it over.
+unsafe fn window_with_pending_crop() -> HWND {
+    let hwnd = test_window();
+    let s = &mut *shot_ptr(hwnd);
+    s.sel = Some(rect(10, 10, 190, 140));
+    s.tool = Tool::Crop;
+    assert!(
+        finish_shape(s, POINT { x: 130, y: 100 }, POINT { x: 30, y: 20 }),
+        "the drag must leave a crop waiting for Enter"
+    );
+    hwnd
+}
+
+/// Enter applies a pending crop and keeps the editor open, and what Copy, Save, OCR and
+/// Upload then get (all four take `compose`'s picture) is exactly the cropped area.
+#[test]
+fn enter_crops_and_the_output_is_exactly_the_crop() {
+    unsafe {
+        let hwnd = window_with_pending_crop();
+        assert!(handle_key(hwnd, VK_RETURN.0), "Enter must apply the crop");
+        assert!(
+            IsWindow(Some(hwnd)).as_bool(),
+            "applying a crop must not close the editor"
+        );
+        {
+            let s = &*shot_ptr(hwnd);
+            assert_eq!(s.sel, Some(rect(30, 20, 130, 100)));
+            let (buf, w, h) = compose(s).expect("compose the cropped capture");
+            assert_eq!((w, h), (100, 80), "the output must be the crop's size");
+            assert_eq!(buf.len(), 100 * 80 * 4);
+        }
+        let _ = DestroyWindow(hwnd);
+    }
+}
+
+/// A crop is one step on the undo stack: Undo puts the whole original selection back (and
+/// the output with it), Redo crops again.
+#[test]
+fn undo_restores_the_uncropped_capture_and_redo_crops_again() {
+    unsafe {
+        let hwnd = window_with_pending_crop();
+        assert!(handle_key(hwnd, VK_RETURN.0));
+        {
+            let s = &mut *shot_ptr(hwnd);
+            undo_last(s);
+            assert_eq!(s.sel, Some(rect(10, 10, 190, 140)));
+            let (_, w, h) = compose(s).expect("compose the restored capture");
+            assert_eq!(
+                (w, h),
+                (180, 130),
+                "undo must give back the original output"
+            );
+            redo_last(s);
+            assert_eq!(s.sel, Some(rect(30, 20, 130, 100)), "redo must crop again");
+        }
+        let _ = DestroyWindow(hwnd);
+    }
+}
+
+/// Esc drops a pending crop and nothing else: the selection stays and the editor stays open.
+#[test]
+fn esc_cancels_a_pending_crop_without_closing_the_capture() {
+    unsafe {
+        let hwnd = window_with_pending_crop();
+        assert!(handle_key(hwnd, VK_ESCAPE.0));
+        assert!(
+            IsWindow(Some(hwnd)).as_bool(),
+            "Esc must cancel the crop, not the capture"
+        );
+        {
+            let s = &*shot_ptr(hwnd);
+            assert!(s.crop_pending.is_none());
+            assert_eq!(s.sel, Some(rect(10, 10, 190, 140)));
+            assert!(
+                s.shapes.is_empty(),
+                "a cancelled crop leaves nothing to undo"
+            );
+        }
+        let _ = DestroyWindow(hwnd);
     }
 }

@@ -23,6 +23,23 @@ pub(super) unsafe fn fill(hdc: HDC, rc: &RECT, color: COLORREF) {
     FillRect(hdc, rc, HBRUSH(GetStockObject(DC_BRUSH).0));
 }
 
+/// Replace control `id`'s text with `text` (no-op when the control does not exist).
+pub(super) unsafe fn set_control_text(hwnd: HWND, id: i32, text: &str) {
+    if let Ok(h) = GetDlgItem(Some(hwnd), id) {
+        let w = wide(text);
+        let _ = SetWindowTextW(h, PCWSTR(w.as_ptr()));
+    }
+}
+
+/// Control `id`'s text as a `String` (empty when the control does not exist).
+pub(super) unsafe fn control_string(hwnd: HWND, id: i32) -> String {
+    let Ok(h) = GetDlgItem(Some(hwnd), id) else {
+        return String::new();
+    };
+    let buf = control_text(h);
+    String::from_utf16_lossy(&buf[..buf.len().saturating_sub(1)])
+}
+
 /// A control's window text as a NUL-terminated wide buffer.
 pub(super) unsafe fn control_text(h: HWND) -> Vec<u16> {
     let n = GetWindowTextLengthW(h).max(0) as usize;

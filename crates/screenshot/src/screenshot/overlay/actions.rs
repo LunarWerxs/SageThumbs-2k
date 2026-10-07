@@ -14,7 +14,7 @@ use super::*;
 /// (`right < left` and/or `bottom < top`) when `r` doesn't overlap `sel` at all; callers
 /// already treat too-small a rect as a no-op (e.g. `tools::draw_pixelate`'s `w < 4 || h < 4`
 /// guard), so that case draws nothing rather than needing a special case here.
-fn clamp_rect(r: RECT, sel: RECT) -> RECT {
+pub(super) fn clamp_rect(r: RECT, sel: RECT) -> RECT {
     RECT {
         left: r.left.max(sel.left),
         top: r.top.max(sel.top),
@@ -75,6 +75,19 @@ pub(super) unsafe fn compose(s: &Shot) -> Option<(Vec<u8>, i32, i32)> {
                 -sel.top,
                 &tools::Shape::Invert {
                     r: clamp_rect(*r, sel),
+                },
+            ),
+            // Blur reads the pixels under it the way Pixelate does, so it is clamped for the
+            // same reason. A fresh cache: this bake runs once, against pixels the live
+            // overlay's cache never saw.
+            tools::Shape::Blur { r, radius, .. } => tools::draw_shape(
+                comp,
+                -sel.left,
+                -sel.top,
+                &tools::Shape::Blur {
+                    r: clamp_rect(*r, sel),
+                    radius: *radius,
+                    cache: tools::BlurCache::default(),
                 },
             ),
             _ => tools::draw_shape(comp, -sel.left, -sel.top, sh),
@@ -192,7 +205,7 @@ pub(super) unsafe fn finish_save(hwnd: HWND, s: &Shot) -> bool {
     };
     if st2k_base::settings::screenshot_use_save_dir() {
         let dir = crate::screenshot::effective_save_dir();
-        let ok = output::save_png_to_dir(std::path::Path::new(&dir), &buf, w, h);
+        let ok = output::save_capture_to_dir(std::path::Path::new(&dir), &buf, w, h, &s.app);
         if !ok {
             // A `false` here is a DISK failure (full/unwritable/missing folder), NOT a cancel
             // (the Save-As path can't run in this branch). Tell the user — otherwise the caller
@@ -201,28 +214,23 @@ pub(super) unsafe fn finish_save(hwnd: HWND, s: &Shot) -> bool {
         }
         ok
     } else {
-        save_via_dialog(hwnd, &buf, w, h)
+        save_via_dialog(hwnd, &buf, w, h, &s.app)
     }
 }
 
 /// Prompt for a path via the Save-As dialog and write the composited capture there, warning
 /// (and returning false) when a chosen path fails to save.
-unsafe fn save_via_dialog(hwnd: HWND, buf: &[u8], w: i32, h: i32) -> bool {
+unsafe fn save_via_dialog(hwnd: HWND, buf: &[u8], w: i32, h: i32, app: &str) -> bool {
     let mut saved = false;
+    let format = st2k_base::settings::shot_save_format();
+    let (dir, name) = output::dialog_seed(&crate::screenshot::effective_save_dir(), app, format);
     // Drop the overlay's always-on-top so the picker isn't trapped behind the
     // fullscreen capture window (it pumps its own modal loop while shown).
     with_modal(hwnd, || {
-        if let Some(path) = st2k_appkit::win::pick_save_png(
-            hwnd,
-            &crate::screenshot::effective_save_dir(),
-            &output::timestamped_name(),
-        ) {
-            saved = st2k_appkit::win::window_shot::save_png_to_path(
-                std::path::Path::new(&path),
-                buf,
-                w,
-                h,
-            );
+        if let Some(path) =
+            st2k_appkit::win::pick_save_image(hwnd, &dir, &name, format.name(), format.ext())
+        {
+            saved = output::save_capture_to_path(std::path::Path::new(&path), buf, w, h, format);
             if !saved {
                 // A write failure here looks IDENTICAL to a user Cancel (both leave `saved`
                 // false) unless we say something — the fixed-folder branch above already
@@ -251,6 +259,7 @@ pub(super) unsafe fn handle_button(hwnd: HWND, s: &mut Shot, btn: Button) -> boo
         Button::Tool(t) => {
             commit_text(s);
             s.tool = t;
+            s.crop_pending = None; // a crop is only pending while the Crop tool is up
             s.selected = None;
             s.move_from = None;
             s.typing_drag = false;
@@ -323,6 +332,7 @@ fn toggle_text_tool(s: &mut Shot) -> bool {
     } else {
         commit_text(s);
         s.tool = Tool::Text;
+        s.crop_pending = None;
         s.selected = None;
         s.move_from = None;
         s.text_flyout = true; // open settings when the Text tool is picked

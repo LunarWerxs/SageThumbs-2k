@@ -45,7 +45,7 @@ pub use layoutaudit::{
     LayoutFinding,
 };
 pub use pickers::{
-    desktop_dir, pick_folder, pick_open_file, pick_open_settings, pick_save_png,
+    desktop_dir, pick_folder, pick_open_file, pick_open_settings, pick_save_image, pick_save_png,
     pick_save_settings, set_clipboard_text,
 };
 pub use resultwin::{

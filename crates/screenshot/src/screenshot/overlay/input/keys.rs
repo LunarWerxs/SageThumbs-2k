@@ -28,6 +28,9 @@ pub(super) unsafe fn on_key_escape(hwnd: HWND, s: &mut Shot) -> bool {
         s.pen_pts.clear(); // cancel the active annotation, keep the capture
         return true;
     }
+    if s.crop_pending.take().is_some() {
+        return true; // drop the crop, keep the capture as it was
+    }
     if s.selected.take().is_some() {
         s.move_from = None; // deselect first; a second Esc closes
         return true;
@@ -46,6 +49,11 @@ pub(super) unsafe fn on_key_enter(hwnd: HWND, s: &mut Shot) -> bool {
         // structurally impossible. Don't consume it here: falling through lets the
         // WM_CHAR(0x0D) that follows land the literal newline (see WM_CHAR above).
         return false;
+    }
+    // A pending crop: Enter applies it and the editor stays open (the crop is an edit, not
+    // the end of the capture). The next Enter copies and closes as usual.
+    if s.tool == Tool::Crop && apply_crop(s) {
+        return true;
     }
     if block_automation_output(s, "blocked-copy") {
         return true;
@@ -187,8 +195,10 @@ pub(super) const TOOL_SHORTCUTS: &[(u16, Tool)] = &[
     (b'T' as u16, Tool::Text),
     (b'N' as u16, Tool::Number),
     (b'H' as u16, Tool::Highlight),
-    (b'B' as u16, Tool::Pixelate), // B = blur/blockify
+    (b'B' as u16, Tool::Pixelate), // B = blockify
     (b'I' as u16, Tool::Invert),
+    (b'G' as u16, Tool::Blur), // G = Gaussian
+    (b'X' as u16, Tool::Crop), // X = crop (C is already Ellipse)
     (b'E' as u16, Tool::Eyedropper),
     (b'M' as u16, Tool::Move),
 ];
@@ -317,6 +327,7 @@ pub(super) fn apply_tool_or_adjust_key(s: &mut Shot, ctrl: bool, alt: bool, vk: 
     if let Some(t) = new_tool {
         commit_text(s);
         s.tool = t;
+        s.crop_pending = None; // a crop is only pending while the Crop tool is up
         s.selected = None; // dropping the move selection when switching tools
         s.move_from = None;
         s.typing_drag = false;

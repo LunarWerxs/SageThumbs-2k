@@ -91,6 +91,8 @@ fn button_tip_reads_the_locale_table_and_fills_the_key_placeholder() {
         (Button::Tool(Tool::Highlight), "shot_tip_highlight", "H"),
         (Button::Tool(Tool::Pixelate), "shot_tip_pixelate", "B"),
         (Button::Tool(Tool::Invert), "shot_tip_invert", "I"),
+        (Button::Tool(Tool::Blur), "shot_tip_blur", "G"),
+        (Button::Tool(Tool::Crop), "shot_tip_crop", "X"),
         (Button::Tool(Tool::Eyedropper), "shot_tip_eyedropper", "E"),
         (Button::Tool(Tool::Move), "shot_tip_move", "M"),
         (Button::Color, "shot_tip_color", "K"),

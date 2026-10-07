@@ -308,8 +308,12 @@ that group: resvg is pure-Rust and in-process, so it renders here too, bounded b
 the same short menu-preview budget.) Transparent images sit
 on a **subtle checkerboard** (on by default,
 toggleable) so see-through areas don't vanish into the menu; it follows the
-light/dark menu theme automatically. The preview is a native bitmap menu item, so
-it does not disable Windows' dark-menu theming. *Note: it appears in the classic
+light/dark menu theme automatically. At 100% display scale with no menu skin the
+preview is a native bitmap menu item, so the menu keeps Windows' dark theme. At any other
+scale, or with a menu skin (StartAllBack, ExplorerPatcher, …), SageThumbs draws the tile
+itself, sized for the display: Windows would otherwise draw a bitmap item twice over itself
+there (the overlapping "3 KB KB" captions of #61) or squash it to a sliver, and the price is
+that Windows then draws that menu in its light classic style. *Note: it appears in the classic
 menu ("Show more options" on stock Windows 11); the modern Win11 menu does not
 allow custom bitmap items.*
 
@@ -625,7 +629,7 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   switch it off for a single first-image thumbnail, classic CBXShell-style.
 - **Screenshots:** enable the capture hotkey (default Ctrl+PrtScn; a plain PrtScn
   preset is offered) for the region editor, **plus an optional second "quick-save"
-  hotkey** that grabs the whole screen straight to the clipboard + a timestamped PNG
+  hotkey** that grabs the whole screen straight to the clipboard + a saved file
   with no editor (Off by default); a **split-second screen flash confirms the capture**
   (like Win+Shift+S), and if the copy or the save failed, a small notification says
   exactly what went wrong instead of silence. As you drag out the region, a live **`width × height`
@@ -633,16 +637,30 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   hold **Shift** while drawing a line or arrow to snap it to the nearest **45° angle**;
   Esc first cancels the active editor action before closing the capture, and
   **Ctrl+C copies to the clipboard, Ctrl+S saves, and Ctrl+U uploads it and copies the
-  link** (Enter copies too). A **Copy text
+  link** (Enter copies too). Next to **Pixelate** (`B`, the safe way to hide text) sits
+  **Blur** (`G`), a soft Gaussian blur whose strength is a setting (**Blur strength**,
+  2 to 40 px, 12 by default); its tooltip says Pixelate is safer for text, since a light blur
+  can leave words readable. **Crop** (`X`) keeps the part you drag: the rest is shaded until
+  Enter crops (the editor stays open) or Esc cancels, and Ctrl+Z / Ctrl+Y undo and redo a crop
+  like any other edit. Copy, Save, Upload and Copy text all take the cropped picture. A **Copy text
   (OCR)** button on the editor toolbar (or **Ctrl+T**) reads the *words* out of the region
   instead of the pixels: the text lands on the clipboard and opens in a small **editable**
   window, so a misread character can be fixed before you paste it. Works on anything on
   screen: a dialog you can't select text in, a video frame, a screenshared document.
-  Recognition uses Windows' built-in engine, so it adds nothing to the download.
-  **Save to a set
-  folder on Ctrl+S** (a toggle): when on, Ctrl+S auto-saves a timestamped PNG to a folder
+  Recognition uses Windows' built-in engine, so it adds nothing to the download. A slashed
+  zero that engine reads as `ø`/`Ø` comes out as `0` inside any word that has a digit in it.
+  **Save screenshots as** PNG (the default), JPEG (with its own **quality** setting; a
+  transparent capture is laid on white) or WebP (lossless). The **Screenshot file name** is a
+  template: `{yyyy}` `{MM}` `{dd}` `{HH}` `{mm}` `{ss}` `{ms}` insert the capture's date and
+  time, `{app}` the program that was in front (`Desktop` when nothing was), and `/` or `\`
+  start a subfolder, created when needed. The default, `Screenshot {yyyy}-{MM}-{dd}
+  {HH}.{mm}.{ss}`, gives the names captures always had; the extension follows the format, a
+  character Windows forbids in a file name is dropped, and a reserved device name (`CON`,
+  `NUL`, `COM1`, …) gets a `_` in front. Saving never overwrites: a name already taken gets a
+  number. The clipboard always gets a plain bitmap, whatever the format. **Save to a set
+  folder on Ctrl+S** (a toggle): when on, Ctrl+S auto-saves the capture to a folder
   you pick with **Set save folder…** (defaults to your Desktop); when off, Ctrl+S asks where
-  to save each time. **Custom action hotkey:** assign ONE global
+  to save each time, offering the chosen format and the templated name. **Custom action hotkey:** assign ONE global
   hotkey to any of a curated set of actions: **pick a color** (the screen color picker),
   take a screenshot, Convert…, rotate right, move files into a new folder, strip metadata,
   **upload (copy link)**, **copy text (OCR)** straight to the clipboard,

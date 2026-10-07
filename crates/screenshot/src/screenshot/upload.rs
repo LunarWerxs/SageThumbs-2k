@@ -180,7 +180,7 @@ pub unsafe fn run_upload(path: &str) {
 /// with `create_new` at pick time, so even two recoveries in the same tick cannot share it.
 fn write_recovery_copy(dir: &std::path::Path, bytes: &[u8]) -> Option<std::path::PathBuf> {
     let _ = std::fs::create_dir_all(dir);
-    let name = unsafe { super::output::timestamped_name() };
+    let name = super::output::timestamped_name();
     super::output::write_reserved(dir, &name, bytes)
 }
 

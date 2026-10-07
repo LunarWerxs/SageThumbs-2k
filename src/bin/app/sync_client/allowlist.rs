@@ -98,6 +98,10 @@ pub(super) const ALLOW: &[(&str, Kind)] = &[
     // Screenshot tool defaults (its SAVE FOLDER stays behind — see NEVER_SYNCED).
     ("ShotDefaultTool", Kind::Dword),
     ("ShotDelaySec", Kind::Dword),
+    ("ShotFileName", Kind::Str),
+    ("ShotSaveFormat", Kind::Dword),
+    ("ShotSaveQuality", Kind::Dword),
+    ("ShotBlurStrength", Kind::Dword),
     ("EyeFormat", Kind::Dword),
 ];
 

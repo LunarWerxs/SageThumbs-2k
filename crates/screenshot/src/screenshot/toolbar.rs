@@ -51,8 +51,8 @@ const MARGIN: i32 = 8; // gap between selection and bar
 const SEPW: i32 = 11; // separator gap width
 
 /// The ordered toolbar items, grouped by `Sep` dividers: draw tools · text/number ·
-/// region effects · colour · move + actions. Every button is a square icon.
-fn items() -> [(Button, i32); 24] {
+/// region effects · colour · move/crop + actions. Every button is a square icon.
+fn items() -> [(Button, i32); 26] {
     [
         (Button::Tool(Tool::Rect), CELL),
         (Button::Tool(Tool::Ellipse), CELL),
@@ -65,12 +65,14 @@ fn items() -> [(Button, i32); 24] {
         (Button::Sep, SEPW),
         (Button::Tool(Tool::Highlight), CELL),
         (Button::Tool(Tool::Pixelate), CELL),
+        (Button::Tool(Tool::Blur), CELL),
         (Button::Tool(Tool::Invert), CELL),
         (Button::Sep, SEPW),
         (Button::Color, CELL),
         (Button::Tool(Tool::Eyedropper), CELL),
         (Button::Sep, SEPW),
         (Button::Tool(Tool::Move), CELL),
+        (Button::Tool(Tool::Crop), CELL),
         (Button::Undo, CELL),
         (Button::Redo, CELL),
         (Button::Copy, CELL),
@@ -108,7 +110,7 @@ pub(super) fn layout(sel: RECT, vw: i32, vh: i32, dpi: i32) -> Vec<(Button, RECT
         y = (sel.top - margin - bar_h).max(0); // not enough room below → above
     }
 
-    let mut out = Vec::with_capacity(24);
+    let mut out = Vec::with_capacity(items().len());
     let mut bx = x + pad;
     let by = y + pad;
     for (btn, w) in items() {
@@ -324,18 +326,10 @@ pub(super) unsafe fn draw_panel_bg(hdc: HDC, r: &RECT) {
 pub(super) fn button_tip(btn: Button) -> String {
     let key = |tpl: &str, letter: &str| t(tpl).replace("{key}", letter);
     match btn {
-        Button::Tool(Tool::Rect) => key("shot_tip_rect", "R"),
-        Button::Tool(Tool::Ellipse) => key("shot_tip_ellipse", "O"),
-        Button::Tool(Tool::Arrow) => key("shot_tip_arrow", "A"),
-        Button::Tool(Tool::Line) => key("shot_tip_line", "L"),
-        Button::Tool(Tool::Pen) => key("shot_tip_pen", "P"),
-        Button::Tool(Tool::Text) => key("shot_tip_text", "T"),
-        Button::Tool(Tool::Number) => key("shot_tip_number", "N"),
-        Button::Tool(Tool::Highlight) => key("shot_tip_highlight", "H"),
-        Button::Tool(Tool::Pixelate) => key("shot_tip_pixelate", "B"),
-        Button::Tool(Tool::Invert) => key("shot_tip_invert", "I"),
-        Button::Tool(Tool::Eyedropper) => key("shot_tip_eyedropper", "E"),
-        Button::Tool(Tool::Move) => key("shot_tip_move", "M"),
+        Button::Tool(tool) => {
+            let (tpl, letter) = tool_tip(tool);
+            key(tpl, letter)
+        }
         Button::Color => key("shot_tip_color", "K"),
         Button::Undo => t("shot_tip_undo").to_string(),
         Button::Redo => t("shot_tip_redo").to_string(),
@@ -345,6 +339,26 @@ pub(super) fn button_tip(btn: Button) -> String {
         Button::Upload => t("shot_tip_upload").to_string(),
         Button::Close => t("shot_tip_close").to_string(),
         Button::Sep => String::new(),
+    }
+}
+
+/// A tool button's tooltip template and the shortcut letter its `{key}` slot shows.
+fn tool_tip(tool: Tool) -> (&'static str, &'static str) {
+    match tool {
+        Tool::Rect => ("shot_tip_rect", "R"),
+        Tool::Ellipse => ("shot_tip_ellipse", "O"),
+        Tool::Arrow => ("shot_tip_arrow", "A"),
+        Tool::Line => ("shot_tip_line", "L"),
+        Tool::Pen => ("shot_tip_pen", "P"),
+        Tool::Text => ("shot_tip_text", "T"),
+        Tool::Number => ("shot_tip_number", "N"),
+        Tool::Highlight => ("shot_tip_highlight", "H"),
+        Tool::Pixelate => ("shot_tip_pixelate", "B"),
+        Tool::Invert => ("shot_tip_invert", "I"),
+        Tool::Blur => ("shot_tip_blur", "G"),
+        Tool::Crop => ("shot_tip_crop", "X"),
+        Tool::Eyedropper => ("shot_tip_eyedropper", "E"),
+        Tool::Move => ("shot_tip_move", "M"),
     }
 }
 
@@ -586,6 +600,7 @@ fn button_glyph(btn: Button) -> Option<u16> {
         Button::Tool(Tool::Highlight) => 0xE7E6,  // Highlight (marker)
         Button::Tool(Tool::Eyedropper) => 0xEF3C, // Eyedropper (colour picker)
         Button::Tool(Tool::Move) => 0xE7C2,       // Move (four-way arrows)
+        Button::Tool(Tool::Crop) => 0xE7A8,       // Crop (in both Fluent and MDL2 Assets)
         Button::Undo => 0xE7A7,
         Button::Redo => 0xE7A6,
         Button::Copy => 0xE8C8,
@@ -652,23 +667,8 @@ unsafe fn draw_vector_glyph(hdc: HDC, r: RECT, tool: Tool) {
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE,
             );
         }
-        Tool::Pixelate => gdip::with_aa(hdc, |g| {
-            // A small checkerboard mosaic — reads clearly as "pixelate / blockify".
-            let cell = 3;
-            let n = 4; // 4×4 grid
-            let x0 = cx - (n * cell) / 2;
-            let y0 = cy - (n * cell) / 2;
-            let light = gdip::brush(rgb(232, 232, 232));
-            let dark = gdip::brush(rgb(105, 105, 105));
-            for row in 0..n {
-                for col in 0..n {
-                    let b = if (row + col) % 2 == 0 { light } else { dark };
-                    gdip::fill_rect(g, b, x0 + col * cell, y0 + row * cell, cell, cell);
-                }
-            }
-            gdip::drop_brush(light);
-            gdip::drop_brush(dark);
-        }),
+        Tool::Pixelate => draw_pixelate_glyph(hdc, cx, cy),
+        Tool::Blur => draw_blur_glyph(hdc, cx, cy),
         Tool::Invert => gdip::with_aa(hdc, |g| {
             let bl = gdip::brush(rgb(235, 235, 235));
             gdip::fill_rect(g, bl, cx - 7, cy - 6, 7, 12); // light half…
@@ -682,6 +682,36 @@ unsafe fn draw_vector_glyph(hdc: HDC, r: RECT, tool: Tool) {
         }),
         _ => {}
     }
+}
+
+/// The Pixelate button: a small checkerboard mosaic, which reads as "pixelate / blockify".
+unsafe fn draw_pixelate_glyph(hdc: HDC, cx: i32, cy: i32) {
+    gdip::with_aa(hdc, |g| {
+        let cell = 3;
+        let n = 4; // 4×4 grid
+        let x0 = cx - (n * cell) / 2;
+        let y0 = cy - (n * cell) / 2;
+        let light = gdip::brush(rgb(232, 232, 232));
+        let dark = gdip::brush(rgb(105, 105, 105));
+        for i in 0..n * n {
+            let (row, col) = (i / n, i % n);
+            let b = if (row + col) % 2 == 0 { light } else { dark };
+            gdip::fill_rect(g, b, x0 + col * cell, y0 + row * cell, cell, cell);
+        }
+        gdip::drop_brush(light);
+        gdip::drop_brush(dark);
+    });
+}
+
+/// The Blur button: three nested discs fading outward, a soft-edged spot.
+unsafe fn draw_blur_glyph(hdc: HDC, cx: i32, cy: i32) {
+    gdip::with_aa(hdc, |g| {
+        for (radius, shade) in [(8, 90), (6, 150), (4, 232)] {
+            let b = gdip::brush(rgb(shade, shade, shade));
+            gdip::fill_ellipse(g, b, cx - radius, cy - radius, 2 * radius, 2 * radius);
+            gdip::drop_brush(b);
+        }
+    });
 }
 
 #[cfg(test)]

@@ -14,6 +14,8 @@ use licence::*;
 struct Styles {
     cb: WINDOW_STYLE,
     edit_style: WINDOW_STYLE,
+    /// A free-text field (the capture file-name template): left-aligned, any character.
+    text_style: WINDOW_STYLE,
     hdr: WINDOW_STYLE,
 }
 
@@ -28,9 +30,11 @@ impl Styles {
         // mnemonic because draw_section_header passes DT_NOPREFIX. The width is
         // widened so the divider runs to the column edge.
         let hdr = WINDOW_STYLE(SS_OWNERDRAW);
+        let text_style = WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_TABSTOP;
         Styles {
             cb,
             edit_style,
+            text_style,
             hdr,
         }
     }

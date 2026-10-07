@@ -92,6 +92,16 @@ pub(super) const ID_SHOT_TOOL: i32 = 1231;
 /// Seconds to wait before a capture freezes the screen (combo + its label).
 pub(super) const ID_LBL_SHOT_DELAY: i32 = 1237;
 pub(super) const ID_SHOT_DELAY: i32 = 1238;
+/// How a saved capture is named (a template edit), encoded (format combo, JPEG quality
+/// edit), and how strong the Blur tool is (a pixel-radius edit); each with its label.
+pub(super) const ID_LBL_SHOT_NAME: i32 = 1275;
+pub(super) const ID_SHOT_NAME: i32 = 1276;
+pub(super) const ID_LBL_SHOT_FORMAT: i32 = 1277;
+pub(super) const ID_SHOT_FORMAT: i32 = 1278;
+pub(super) const ID_LBL_SHOT_QUALITY: i32 = 1279;
+pub(super) const ID_SHOT_QUALITY: i32 = 1280;
+pub(super) const ID_LBL_SHOT_BLUR: i32 = 1281;
+pub(super) const ID_SHOT_BLUR: i32 = 1282;
 // "General" section header (right-click-menu settings + UI language).
 pub(super) const ID_LBL_GENERAL: i32 = 1138;
 // "Menu items" checklist header (per-item context-menu visibility).

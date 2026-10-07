@@ -175,6 +175,12 @@ struct Shot {
     // layout instead of rebuilding it from scratch a second time.
     tb_cache_key: Option<(i32, i32, i32, i32, i32)>,
     tb_cache: Vec<(Button, RECT)>,
+    // The program that was in front when the capture froze, for the `{app}` file-name token
+    // (see `output::foreground_app`). Empty under automation, which saves nothing.
+    app: String,
+    // The Crop tool's dragged rect, waiting for Enter (apply) or Esc (cancel). Client
+    // coordinates, already clipped to `sel`. Applying it is an undoable `Shape::Crop`.
+    crop_pending: Option<RECT>,
 }
 
 /// Hover-delay timer id (one-shot, re-armed on each new hovered button).

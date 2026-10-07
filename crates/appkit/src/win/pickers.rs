@@ -98,11 +98,29 @@ fn png_save_options(
 /// centres itself on the owner, so it can't get lost. Seeds the dialog with folder `dir`
 /// and default file `name`. Returns the chosen path (a `.png`), or None if cancelled.
 pub unsafe fn pick_save_png(owner: HWND, dir: &str, name: &str) -> Option<String> {
+    pick_save_image(owner, dir, name, "PNG", "png")
+}
+
+/// [`pick_save_png`] for any one image format: `format` is its name (`JPEG`) and `ext` the
+/// extension the chosen path is kept on (`jpg`). The capture editor's Save uses it for the
+/// format Settings picks.
+pub unsafe fn pick_save_image(
+    owner: HWND,
+    dir: &str,
+    name: &str,
+    format: &str,
+    ext: &str,
+) -> Option<String> {
     let (_com, dlg) = save_dialog()?;
-    set_single_filter(&dlg, "PNG image", "*.png", Some("png"));
-    // The dialog itself keeps the chosen name on the PNG filter: without FOS_STRICTFILETYPES a
-    // typed `shot.jpg` came back as-is and the save then had to cope with a name that lied
-    // about the format (2026-09-19 audit F18).
+    set_single_filter(
+        &dlg,
+        &format!("{format} image"),
+        &format!("*.{ext}"),
+        Some(ext),
+    );
+    // The dialog itself keeps the chosen name on the format's filter: without
+    // FOS_STRICTFILETYPES a typed `shot.jpg` came back as-is and the save then had to cope
+    // with a name that lied about the format (2026-09-19 audit F18).
     if let Ok(opts) = dlg.GetOptions() {
         let _ = dlg.SetOptions(png_save_options(opts));
     }

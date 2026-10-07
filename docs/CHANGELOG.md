@@ -9,6 +9,31 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+- **The screenshot editor can blur and crop.**
+  - **Blur** (`G`, beside Pixelate) softens a region. Its strength is a setting (Settings >
+    Screenshots > *Blur strength*, 2 to 40 px, 12 by default). To hide text, Pixelate is still
+    the safe choice, and the tooltip says so: a light blur can leave words readable.
+  - **Crop** (`X`) keeps the part you drag: the rest is shaded, Enter crops, Esc cancels, and
+    Ctrl+Z brings the rest back. Copy, Save, Upload and Copy text (OCR) all use the cropped
+    picture.
+- **Screenshots save as PNG, JPEG or WebP, under a name you choose.** Settings > Screenshots >
+  *Save screenshots as* picks the format: PNG stays the default, JPEG has its own quality
+  setting and lays a transparent picture on white, and WebP keeps every pixel. *Screenshot file
+  name* takes a template: `{yyyy}` `{MM}` `{dd}` `{HH}` `{mm}` `{ss}` `{ms}` for the capture's
+  date and time, `{app}` for the program that was in front (or `Desktop`), and `/` or `\` for
+  subfolders, which are created when needed. The default gives the same names as before.
+  Characters Windows does not allow in a file name are left out, and a name Windows reserves
+  (`CON`, `NUL`, …) gets a `_` in front. The editor's Save, Ctrl+S and the quick-save hotkey all
+  follow both settings; Copy still puts a plain picture on the clipboard.
+- **The right-click preview is drawn once on a scaled display** (fixes #61). At a display scale
+  above 100%, Windows drew the preview tile a second time over the first, so its captions
+  overlapped or were cut off and the size read "3 KB KB". SageThumbs now draws the tile itself,
+  sized for the display's scale. As on PCs with a menu skin, the menu that holds the preview
+  then uses the light classic style; Settings > Right-click menu > *Menu preview* can turn the
+  preview off.
+- **Copy text (OCR) reads a slashed zero as 0.** Windows' text recognizer reads the slashed zero
+  some fonts draw as `ø` or `Ø`. Inside a word that also has a digit in it (`1ø24`, `ID-4Ø7`),
+  it now comes out as `0`; a word with no digit (`Søren`) keeps its letter.
 - **Updating from inside the app installs, even while other programs are using SageThumbs
   files** (fixes #60). If any program SageThumbs could not close (an antivirus, a service, a
   program in another Windows session) had one of its files open, the update gave up without a

@@ -52,6 +52,7 @@ mod variants;
 pub(crate) use magickpath::ext_needs_magick;
 pub use magickpath::{convert_image_to_pdf_in, convert_to_magick, convert_to_magick_in_named};
 pub use transform::transform_file;
+pub use variants::encode_image_file;
 use variants::*;
 
 pub use compress::compress_to_size;

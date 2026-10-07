@@ -115,7 +115,69 @@ unsafe fn paint_annotations(mem: HDC, s: &Shot) {
     if let Some((at, buf)) = &s.typing {
         tools::draw_text(mem, 0, 0, *at, buf, s.color(), &s.text_font, true);
     }
+    paint_pending_crop(mem, s);
     let _ = RestoreDC(mem, dc_state);
+}
+
+/// The pending crop (Crop tool, before Enter): the part of the selection Enter will cut away
+/// is shaded and the part it keeps is framed, so the crop is visible before it happens.
+unsafe fn paint_pending_crop(mem: HDC, s: &Shot) {
+    let (Some(sel), Some(keep)) = (s.sel, s.crop_pending) else {
+        return;
+    };
+    if s.tool != Tool::Crop {
+        return;
+    }
+    let cut = [
+        RECT {
+            bottom: keep.top,
+            ..sel
+        },
+        RECT {
+            top: keep.bottom,
+            ..sel
+        },
+        RECT {
+            top: keep.top,
+            right: keep.left,
+            bottom: keep.bottom,
+            ..sel
+        },
+        RECT {
+            left: keep.right,
+            top: keep.top,
+            bottom: keep.bottom,
+            ..sel
+        },
+    ];
+    let tmp = CreateCompatibleDC(Some(mem));
+    let bmp = CreateCompatibleBitmap(mem, 1, 1);
+    let old = SelectObject(tmp, HGDIOBJ(bmp.0));
+    let black = CreateSolidBrush(rgb(0, 0, 0));
+    let one = RECT {
+        left: 0,
+        top: 0,
+        right: 1,
+        bottom: 1,
+    };
+    FillRect(tmp, &one, black);
+    let _ = DeleteObject(black.into());
+    let bf = BLENDFUNCTION {
+        BlendOp: AC_SRC_OVER as u8,
+        BlendFlags: 0,
+        SourceConstantAlpha: 140,
+        AlphaFormat: 0,
+    };
+    for r in cut {
+        let (w, h) = (r.right - r.left, r.bottom - r.top);
+        if w > 0 && h > 0 {
+            let _ = AlphaBlend(mem, r.left, r.top, w, h, tmp, 0, 0, 1, 1, bf);
+        }
+    }
+    SelectObject(tmp, old);
+    let _ = DeleteObject(HGDIOBJ(bmp.0));
+    let _ = DeleteDC(tmp);
+    tools::frame(mem, keep, tools::CROP_FRAME, 2);
 }
 
 /// Selection outline + the live "W × H" size badge while dragging + the floating
@@ -528,7 +590,12 @@ pub(super) unsafe fn draw_hint(hdc: HDC, s: &Shot) {
         // of a live Shift key; `None` means the normal interactive Shift-key hint.
         let forced = s.automation.as_ref().map(|state| state.forced_shift);
         let snap = snap_suffix(s.tool, forced);
-        format_active_hint(s.tool.hint_label(), &sz, &color_hex, snap)
+        if s.tool == Tool::Crop && s.crop_pending.is_some() {
+            // What Enter and Esc do now that a crop is waiting on them.
+            st2k_appkit::win::t("shot_hint_crop").to_string()
+        } else {
+            format_active_hint(s.tool.hint_label(), &sz, &color_hex, snap)
+        }
     };
     // Size the strip for the monitor it sits on: the selection's monitor once
     // committed, else the monitor under the in-progress drag (or the cursor before a

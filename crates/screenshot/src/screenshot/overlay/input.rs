@@ -85,6 +85,10 @@ pub(super) fn redo_last(s: &mut Shot) {
     let Some(sh) = s.redo.pop() else {
         return;
     };
+    if let Shape::Crop { r, .. } = &sh {
+        s.sel = Some(*r); // crop again
+        s.crop_pending = None;
+    }
     s.shapes.push(sh);
     s.selected = None;
     s.move_from = None;
@@ -363,6 +367,10 @@ fn undo_step(s: &mut Shot, pending_move: Option<(usize, i32, i32)>) {
         }
         _ => {
             if let Some(sh) = s.shapes.pop() {
+                if let Shape::Crop { prev, .. } = &sh {
+                    s.sel = Some(*prev); // the selection from before the crop
+                    s.crop_pending = None;
+                }
                 s.redo.push(sh);
             }
         }
@@ -404,12 +412,18 @@ pub(super) fn finish_shape(s: &mut Shot, a: POINT, b: POINT) -> bool {
         Tool::Invert => Shape::Invert {
             r: tools::norm(a, b),
         },
+        Tool::Blur => Shape::Blur {
+            r: tools::norm(a, b),
+            radius: st2k_base::settings::shot_blur_strength() as i32,
+            cache: tools::BlurCache::default(),
+        },
+        Tool::Crop => return set_pending_crop(s, tools::norm(a, b)),
         Tool::Text | Tool::Number | Tool::Eyedropper | Tool::Move => return false,
     };
     // Skip a tiny accidental drag for any rect-based shape.
     if matches!(&shape,
         Shape::Rect { r, .. } | Shape::Ellipse { r, .. } | Shape::Highlight { r, .. }
-            | Shape::Pixelate { r } | Shape::Invert { r }
+            | Shape::Pixelate { r } | Shape::Invert { r } | Shape::Blur { r, .. }
         if (r.right - r.left).abs() < 3 && (r.bottom - r.top).abs() < 3)
     {
         return false;
@@ -417,6 +431,38 @@ pub(super) fn finish_shape(s: &mut Shot, a: POINT, b: POINT) -> bool {
     s.shapes.push(shape);
     s.redo.clear();
     forget_pending_undo(); // a new shape is the new "last action"
+    true
+}
+
+/// The Crop tool's finished drag: the part of the selection to keep, clipped to it and held
+/// until Enter applies it ([`apply_crop`]) or Esc drops it. A drag that leaves less than a
+/// few pixels inside the selection is a mis-click, not a crop.
+fn set_pending_crop(s: &mut Shot, r: RECT) -> bool {
+    let Some(sel) = s.sel else {
+        return false;
+    };
+    let keep = clamp_rect(r, sel);
+    if keep.right - keep.left < 3 || keep.bottom - keep.top < 3 {
+        return false;
+    }
+    s.crop_pending = Some(keep);
+    true
+}
+
+/// Apply the pending crop: the selection shrinks to it, so Copy, Save, OCR and Upload all
+/// get the cropped picture, and a [`Shape::Crop`] goes on the stack so Undo restores the old
+/// selection and Redo crops again. `false` when no crop is pending.
+pub(super) fn apply_crop(s: &mut Shot) -> bool {
+    let (Some(prev), Some(r)) = (s.sel, s.crop_pending) else {
+        return false;
+    };
+    s.crop_pending = None;
+    s.sel = Some(r);
+    s.shapes.push(Shape::Crop { prev, r });
+    s.redo.clear();
+    s.selected = None;
+    s.move_from = None;
+    forget_pending_undo(); // the crop is the new "last action"
     true
 }
 

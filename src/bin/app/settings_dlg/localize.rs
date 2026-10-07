@@ -62,7 +62,7 @@ pub(super) const TRAY_DBLCLICK_KEYS: [&str; 3] =
 /// build.rs's creation loop that first populates it (the stored setting is a plain index
 /// into this order), so the two lists must stay in lockstep or a live language switch would
 /// silently relabel the combo out from under the index the user already picked.
-const SHOT_TOOL_KEYS: [&str; 10] = [
+pub(super) const SHOT_TOOL_KEYS: [&str; settings::SHOT_TOOL_COUNT as usize] = [
     "tool_arrow",
     "tool_rect",
     "tool_ellipse",
@@ -73,6 +73,7 @@ const SHOT_TOOL_KEYS: [&str; 10] = [
     "tool_highlight",
     "tool_pixelate",
     "tool_invert",
+    "tool_blur",
 ];
 
 /// Rebuild one combo box's items from `labels`, preserving the current selection index.
@@ -124,6 +125,10 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_LBL_PREVIEW, "lbl_menu_preview"),
         (ID_LBL_SHOT_TOOL, "lbl_shot_tool"),
         (ID_LBL_SHOT_DELAY, "lbl_shot_delay"),
+        (ID_LBL_SHOT_NAME, "lbl_shot_file_name"),
+        (ID_LBL_SHOT_FORMAT, "lbl_shot_format"),
+        (ID_LBL_SHOT_QUALITY, "lbl_shot_quality"),
+        (ID_LBL_SHOT_BLUR, "lbl_shot_blur"),
         (ID_LBL_TRAY_DBLCLICK, "lbl_tray_dblclick"),
         (ID_MENU_QUICK, "chk_menu_quick"),
         (ID_MENU_CHECKER, "chk_menu_checker"),

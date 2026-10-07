@@ -22,6 +22,44 @@ pub(super) fn encode_to(
     )
 }
 
+/// The screenshot editor's Save: write `img` to `path` as `format` through the same encoder
+/// arms the Convert verbs use, at an explicit JPEG `quality` (ignored by every other format).
+/// A format with no alpha channel (JPEG) is flattened onto white first, since the JPEG encoder
+/// refuses RGBA outright. WebP stays lossless here whether or not the build has `webp-lossy`:
+/// a lossy screenshot of text smears the very edges the capture was taken to show.
+/// PNG keeps the fast level captures were always saved at, not the Convert verbs' PNG
+/// setting: that one defaults to Best, which took 2.1 s on a 1760x1168 photo-like capture
+/// (measured 2026-10-07), on the editor's own thread.
+pub fn encode_image_file(
+    img: &DynamicImage,
+    format: ImageFormat,
+    quality: u8,
+    path: &Path,
+) -> Result<()> {
+    let flat;
+    let img = if matches!(format, ImageFormat::Jpeg) && img.color().has_alpha() {
+        flat = super::flatten_onto_white(img);
+        &flat
+    } else {
+        img
+    };
+    let ext = format.extensions_str().first().copied().unwrap_or_default();
+    encode_to_opts(
+        img,
+        format,
+        quality.clamp(1, 100),
+        SCREENSHOT_PNG_LEVEL,
+        None,
+        ext,
+        path,
+    )
+}
+
+/// A level in [`encode_png_variant`]'s fast band: `CompressionType::Fast` with adaptive
+/// filtering, exactly what `image`'s plain `write_to(.., Png)` (`PngEncoder::new`, whose
+/// defaults those are) used for captures before.
+const SCREENSHOT_PNG_LEVEL: u32 = 1;
+
 /// Encode with EXPLICIT JPEG quality / PNG level (the Convert… dialog passes its
 /// slider values; the verbs pass the saved settings). `webp_quality = Some(q)`
 /// selects lossy WebP (libwebp) at quality `q`; `None` keeps WebP lossless (the

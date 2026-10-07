@@ -65,7 +65,7 @@ pub const DEFAULT_SHOT_TOOL: u32 = 0; // Arrow
 /// is what a hand-edited registry value used to produce. `tools.rs` holds a compile-time
 /// assertion that the two agree, so adding a tool without updating this fails the build
 /// rather than silently truncating the list.
-pub const SHOT_TOOL_COUNT: u32 = 10;
+pub const SHOT_TOOL_COUNT: u32 = 11;
 
 /// The starting tool for the capture editor (index into `Tool::DEFAULTABLE`).
 ///
@@ -355,6 +355,106 @@ pub fn set_screenshot_save_dir(dir: &str) -> windows_registry::Result<()> {
     CURRENT_USER
         .create(hkcu_root())?
         .set_string("ShotSaveDir", dir)
+}
+
+/// The capture file-name template's default: exactly the name every capture got before the
+/// template existed (`Screenshot 2026-06-18 09.41.07`). The extension is not part of the
+/// template; it follows [`shot_save_format`].
+pub const DEFAULT_SHOT_FILE_NAME: &str = "Screenshot {yyyy}-{MM}-{dd} {HH}.{mm}.{ss}";
+
+/// The capture file-name template: `{yyyy} {MM} {dd} {HH} {mm} {ss} {ms}` expand to the
+/// capture time, `{app}` to the program that was in front, and `/` or `\` start a subfolder.
+/// Expanded and cleaned by the screenshot crate's `output::expand_file_name`; an empty value
+/// means the default.
+pub fn shot_file_name() -> String {
+    get_string_opt("ShotFileName").unwrap_or_else(|| DEFAULT_SHOT_FILE_NAME.to_string())
+}
+
+/// Persist the capture file-name template. See [`shot_file_name`].
+pub fn set_shot_file_name(template: &str) -> windows_registry::Result<()> {
+    set_string("ShotFileName", template.trim())
+}
+
+/// The format a saved capture is written in. The stored DWORD is the index into
+/// [`ShotFormat::ALL`], which is also the Settings dropdown's order: append only.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ShotFormat {
+    #[default]
+    Png,
+    Jpeg,
+    WebP,
+}
+
+impl ShotFormat {
+    /// Every format, in stored-index (and dropdown) order.
+    pub const ALL: [ShotFormat; 3] = [ShotFormat::Png, ShotFormat::Jpeg, ShotFormat::WebP];
+
+    /// The format for a stored index, PNG for anything out of range.
+    pub fn from_dword(v: u32) -> Self {
+        *Self::ALL.get(v as usize).unwrap_or(&ShotFormat::Png)
+    }
+
+    /// The stored index. See [`ShotFormat::ALL`].
+    pub fn as_dword(self) -> u32 {
+        self as u32
+    }
+
+    /// The file extension a capture in this format is saved with.
+    pub fn ext(self) -> &'static str {
+        match self {
+            ShotFormat::Png => "png",
+            ShotFormat::Jpeg => "jpg",
+            ShotFormat::WebP => "webp",
+        }
+    }
+
+    /// The format's own name, as the Save dialog's filter and the Settings dropdown show it.
+    pub fn name(self) -> &'static str {
+        match self {
+            ShotFormat::Png => "PNG",
+            ShotFormat::Jpeg => "JPEG",
+            ShotFormat::WebP => "WebP",
+        }
+    }
+}
+
+/// What Save writes a capture as (PNG by default). The clipboard always gets a DIB.
+pub fn shot_save_format() -> ShotFormat {
+    ShotFormat::from_dword(get_dword("ShotSaveFormat", 0))
+}
+
+/// Persist the capture save format.
+pub fn set_shot_save_format(f: ShotFormat) -> windows_registry::Result<()> {
+    set_dword("ShotSaveFormat", f.as_dword())
+}
+
+/// The JPEG quality a capture saved as JPEG gets (1..=100). PNG and WebP are lossless.
+pub const DEFAULT_SHOT_SAVE_QUALITY: u32 = 90;
+
+/// See [`DEFAULT_SHOT_SAVE_QUALITY`].
+pub fn shot_save_quality() -> u32 {
+    get_dword("ShotSaveQuality", DEFAULT_SHOT_SAVE_QUALITY).clamp(1, 100)
+}
+
+/// Persist the capture JPEG quality (clamped 1..=100).
+pub fn set_shot_save_quality(q: u32) -> windows_registry::Result<()> {
+    set_dword("ShotSaveQuality", q.clamp(1, 100))
+}
+
+/// The Blur tool's radius in pixels, and its bounds. The default is strong on purpose: a
+/// light blur leaves large text readable, and hiding it is what people reach for blur to do.
+pub const DEFAULT_SHOT_BLUR: u32 = 12;
+pub const SHOT_BLUR_MIN: u32 = 2;
+pub const SHOT_BLUR_MAX: u32 = 40;
+
+/// See [`DEFAULT_SHOT_BLUR`].
+pub fn shot_blur_strength() -> u32 {
+    get_dword("ShotBlurStrength", DEFAULT_SHOT_BLUR).clamp(SHOT_BLUR_MIN, SHOT_BLUR_MAX)
+}
+
+/// Persist the Blur tool's radius (clamped to its bounds).
+pub fn set_shot_blur_strength(r: u32) -> windows_registry::Result<()> {
+    set_dword("ShotBlurStrength", r.clamp(SHOT_BLUR_MIN, SHOT_BLUR_MAX))
 }
 
 // ---- Diagnostics --------------------------------------------------------

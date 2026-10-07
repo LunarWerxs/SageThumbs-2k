@@ -225,7 +225,8 @@ pub(super) unsafe fn apply_menu_preview_and_theme(hwnd: HWND) {
     }
 }
 
-/// Screenshot default tool + capture delay combos.
+/// Screenshot default tool + capture delay combos, the Blur strength, and how a saved
+/// capture is named and encoded.
 pub(super) unsafe fn apply_screenshot_tool_prefs(hwnd: HWND) {
     if let Ok(tool) = GetDlgItem(Some(hwnd), ID_SHOT_TOOL) {
         // CB_ERR is -1 (no selection); clamp to a real index rather than storing it.
@@ -240,6 +241,30 @@ pub(super) unsafe fn apply_screenshot_tool_prefs(hwnd: HWND) {
             .unwrap_or_default();
         let _ = note(settings::set_screenshot_delay_sec(secs));
     }
+    if let Ok(format) = GetDlgItem(Some(hwnd), ID_SHOT_FORMAT) {
+        let sel = SendMessageW(format, CB_GETCURSEL, None, None).0.max(0) as u32;
+        let _ = note(settings::set_shot_save_format(
+            settings::ShotFormat::from_dword(sel),
+        ));
+    }
+    // An emptied template stores empty, which reads back as the default name.
+    let _ = note(settings::set_shot_file_name(&control_string(
+        hwnd,
+        ID_SHOT_NAME,
+    )));
+    let mut ok = Default::default();
+    let quality = GetDlgItemInt(hwnd, ID_SHOT_QUALITY, Some(&mut ok), false);
+    let _ = note(settings::set_shot_save_quality(if ok.as_bool() {
+        quality
+    } else {
+        settings::DEFAULT_SHOT_SAVE_QUALITY
+    }));
+    let blur = GetDlgItemInt(hwnd, ID_SHOT_BLUR, Some(&mut ok), false);
+    let _ = note(settings::set_shot_blur_strength(if ok.as_bool() {
+        blur
+    } else {
+        settings::DEFAULT_SHOT_BLUR
+    }));
 }
 
 /// The four container-format checkboxes (sort, prefer cover, skip scanlation, archive

@@ -49,8 +49,8 @@ pub(crate) use encode::flatten_onto_white;
 pub use encode::{
     compress_to_size, convert_file, convert_file_opts, convert_file_opts_named,
     convert_image_to_pdf_in, convert_to, convert_to_magick_in_named, convert_to_reporting,
-    convert_to_stripped, resize_file, shrink_for_email, transform_file, ConvertOpts, Corner,
-    Resize, Target, Watermark,
+    convert_to_stripped, encode_image_file, resize_file, shrink_for_email, transform_file,
+    ConvertOpts, Corner, Resize, Target, Watermark,
 };
 
 // Folder/sort verbs + the CBZ archiver.

@@ -28,6 +28,9 @@ pub(in super::super) unsafe fn load_values(hwnd: HWND) {
     let _ = SetDlgItemInt(hwnd, ID_JPEG, settings::jpeg_quality() as u32, false);
     let _ = SetDlgItemInt(hwnd, ID_PNG, settings::png_level(), false);
     let _ = SetDlgItemInt(hwnd, ID_VIDEO_OFFSET, settings::video_offset_pct(), false);
+    set_control_text(hwnd, ID_SHOT_NAME, &settings::shot_file_name());
+    let _ = SetDlgItemInt(hwnd, ID_SHOT_QUALITY, settings::shot_save_quality(), false);
+    let _ = SetDlgItemInt(hwnd, ID_SHOT_BLUR, settings::shot_blur_strength(), false);
     check(hwnd, ID_C_SORT, settings::container_sort());
     check(hwnd, ID_C_PREFER_COVER, settings::container_prefer_cover());
     check(hwnd, ID_C_SKIP_SCAN, settings::container_skip_scanlation());
@@ -145,6 +148,14 @@ pub(in super::super) unsafe fn load_defaults(hwnd: HWND) {
     let _ = SetDlgItemInt(hwnd, ID_SIZE, settings::DEFAULT_THUMB_SIZE, false);
     let _ = SetDlgItemInt(hwnd, ID_JPEG, settings::DEFAULT_JPEG, false);
     let _ = SetDlgItemInt(hwnd, ID_PNG, settings::DEFAULT_PNG, false);
+    set_control_text(hwnd, ID_SHOT_NAME, settings::DEFAULT_SHOT_FILE_NAME);
+    let _ = SetDlgItemInt(
+        hwnd,
+        ID_SHOT_QUALITY,
+        settings::DEFAULT_SHOT_SAVE_QUALITY,
+        false,
+    );
+    let _ = SetDlgItemInt(hwnd, ID_SHOT_BLUR, settings::DEFAULT_SHOT_BLUR, false);
     let _ = SetDlgItemInt(
         hwnd,
         ID_VIDEO_OFFSET,
@@ -212,6 +223,10 @@ pub(in super::super) unsafe fn load_defaults(hwnd: HWND) {
     if let Ok(delay) = GetDlgItem(Some(hwnd), ID_SHOT_DELAY) {
         // Index 0 is "Off" — SHOT_DELAY_STEPS[0] is the getter's default, pinned by test.
         SendMessageW(delay, CB_SETCURSEL, Some(WPARAM(0)), None);
+    }
+    if let Ok(format) = GetDlgItem(Some(hwnd), ID_SHOT_FORMAT) {
+        let png = settings::ShotFormat::default().as_dword() as usize;
+        SendMessageW(format, CB_SETCURSEL, Some(WPARAM(png)), None);
     }
     if let Ok(mlist) = GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST) {
         // Factory order + every item shown (rebuilds the rows, dividers included).
@@ -415,83 +430,46 @@ unsafe fn chord_combo_index(
 /// setting `load_values` doesn't touch" shape) and its dependent greying are re-derived here
 /// too, for the same reason.
 pub(in super::super) unsafe fn seed_combo_selections(hwnd: HWND) {
-    if let Ok(c) = GetDlgItem(Some(hwnd), ID_MENU_PREVIEW) {
-        SendMessageW(
-            c,
-            CB_SETCURSEL,
-            Some(WPARAM(settings::menu_preview() as usize)),
-            None,
-        );
-    }
-    if let Ok(c) = GetDlgItem(Some(hwnd), ID_SHOT_TOOL) {
-        let sel = shot_tool_combo_index(settings::screenshot_default_tool());
-        SendMessageW(c, CB_SETCURSEL, Some(WPARAM(sel as usize)), None);
-    }
-    if let Ok(c) = GetDlgItem(Some(hwnd), ID_TRAY_DBLCLICK) {
-        let sel = settings::tray_double_click() as usize;
-        SendMessageW(c, CB_SETCURSEL, Some(WPARAM(sel)), None);
-    }
-    if let Ok(c) = GetDlgItem(Some(hwnd), ID_SHOT_HOTKEY) {
+    select_combo(hwnd, ID_MENU_PREVIEW, |_| settings::menu_preview() as usize);
+    select_combo(hwnd, ID_SHOT_TOOL, |_| {
+        shot_tool_combo_index(settings::screenshot_default_tool()) as usize
+    });
+    select_combo(hwnd, ID_TRAY_DBLCLICK, |_| {
+        settings::tray_double_click() as usize
+    });
+    select_combo(hwnd, ID_SHOT_HOTKEY, |c| {
         let (m, v) = settings::screenshot_hotkey();
-        SendMessageW(
-            c,
-            CB_SETCURSEL,
-            Some(WPARAM(chord_combo_index(
-                c,
-                (m << 8) | v,
-                v,
-                preset_combo_index,
-            ))),
-            None,
-        );
-    }
-    if let Ok(c) = GetDlgItem(Some(hwnd), ID_SHOT_QUICK_HOTKEY) {
+        chord_combo_index(c, (m << 8) | v, v, preset_combo_index)
+    });
+    select_combo(hwnd, ID_SHOT_QUICK_HOTKEY, |c| {
         let (m, v) = settings::screenshot_quick_hotkey();
-        SendMessageW(
-            c,
-            CB_SETCURSEL,
-            Some(WPARAM(chord_combo_index(
-                c,
-                (m << 8) | v,
-                v,
-                quick_hotkey_combo_index,
-            ))),
-            None,
-        );
-    }
-    if let Ok(c) = GetDlgItem(Some(hwnd), ID_SHOT_ACTION) {
+        chord_combo_index(c, (m << 8) | v, v, quick_hotkey_combo_index)
+    });
+    select_combo(hwnd, ID_SHOT_ACTION, |_| {
         let cur = settings::custom_action();
-        let sel = st2k_screenshot::hotkey::ACTIONS
+        st2k_screenshot::hotkey::ACTIONS
             .iter()
             .position(|&(id, _)| id == cur)
-            .unwrap_or(0);
-        SendMessageW(c, CB_SETCURSEL, Some(WPARAM(sel)), None);
-    }
-    if let Ok(c) = GetDlgItem(Some(hwnd), ID_SHOT_ACTION_HK) {
+            .unwrap_or(0)
+    });
+    select_combo(hwnd, ID_SHOT_ACTION_HK, |c| {
         let (m, v) = settings::custom_action_hotkey();
-        SendMessageW(
-            c,
-            CB_SETCURSEL,
-            Some(WPARAM(chord_combo_index(c, (m << 8) | v, v, |p| {
-                custom_action_hk_combo_index(p, v)
-            }))),
-            None,
-        );
-    }
-    if let Ok(c) = GetDlgItem(Some(hwnd), ID_SHOT_DELAY) {
-        let sel = shot_delay_combo_index(settings::screenshot_delay_sec());
-        SendMessageW(c, CB_SETCURSEL, Some(WPARAM(sel as usize)), None);
-    }
-    if let Ok(c) = GetDlgItem(Some(hwnd), ID_LANG) {
+        chord_combo_index(c, (m << 8) | v, v, |p| custom_action_hk_combo_index(p, v))
+    });
+    select_combo(hwnd, ID_SHOT_DELAY, |_| {
+        shot_delay_combo_index(settings::screenshot_delay_sec()) as usize
+    });
+    select_combo(hwnd, ID_SHOT_FORMAT, |_| {
+        settings::shot_save_format().as_dword() as usize
+    });
+    select_combo(hwnd, ID_LANG, |_| {
+        // Index 0 is "follow Windows"; the languages follow in `lang_codes()` order.
         let current = settings::lang_override();
-        let mut sel = 0i32;
-        for (i, code) in lang_codes().iter().enumerate() {
-            if current.as_deref() == Some(*code) {
-                sel = (i + 1) as i32;
-            }
-        }
-        SendMessageW(c, CB_SETCURSEL, Some(WPARAM(sel as usize)), None);
-    }
+        lang_codes()
+            .iter()
+            .position(|code| current.as_deref() == Some(*code))
+            .map_or(0, |i| i + 1)
+    });
     // Not a combo, but the same "derived from a setting `load_values` doesn't restore"
     // shape: re-derive the custom-action Enable checkbox from whether a hotkey is bound,
     // then re-grey its two dependent combos to match.
@@ -501,4 +479,11 @@ pub(in super::super) unsafe fn seed_combo_selections(hwnd: HWND) {
         settings::custom_action_hotkey().1 != 0,
     );
     update_custom_action_enabled(hwnd);
+}
+
+/// Select item `index(combo)` in the dialog's combo `id`; a missing control is skipped.
+unsafe fn select_combo(hwnd: HWND, id: i32, index: impl FnOnce(HWND) -> usize) {
+    if let Ok(c) = GetDlgItem(Some(hwnd), id) {
+        SendMessageW(c, CB_SETCURSEL, Some(WPARAM(index(c))), None);
+    }
 }
