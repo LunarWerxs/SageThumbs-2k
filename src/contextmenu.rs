@@ -443,6 +443,38 @@ unsafe fn insert_preview_bitmap(hmenu: HMENU, pos: u32, cmd: u32, bmp: HBITMAP) 
     .is_ok()
 }
 
+/// Where one popup stands on dividers. A separator is held back until the next real
+/// (non-hidden, successfully inserted) item is appended: per-item visibility can hide
+/// everything between two separators, and appending on sight drew two adjacent divider rows.
+/// One only arms once something real is in the popup, so a leading separator drops too, and
+/// one still pending when the popup ends (trailing, or a budget cutoff) is never drawn.
+///
+/// ONE of these per popup, across all its items. The top level used to be built one item per
+/// `build_menu_into` call, each with a fresh state, so every top-level divider was "leading"
+/// and dropped: from 2.0.0 (2026-08-16, when deferring arrived) to 2026-10-07 the SageThumbs
+/// submenu had no divider at all and read as one undivided list.
+#[derive(Default)]
+struct Dividers {
+    pending: bool,
+    emitted: bool,
+}
+
+impl Dividers {
+    fn separator(&mut self) {
+        if self.emitted {
+            self.pending = true;
+        }
+    }
+
+    /// Append the held-back divider, if any, now that a real item is about to follow it.
+    unsafe fn flush(&mut self, parent: HMENU) {
+        if self.pending {
+            let _ = AppendMenuW(parent, MF_SEPARATOR, 0, PCWSTR::null());
+            self.pending = false;
+        }
+    }
+}
+
 /// Recursively append the verb tree into `parent`, assigning command ids in
 /// depth-first leaf order from `idcmdfirst`, stopping after `budget` leaves.
 unsafe fn build_menu_into(
@@ -453,81 +485,109 @@ unsafe fn build_menu_into(
     budget: u32,
     vis: &settings::MenuVisibility,
 ) {
-    // Deferred, not appended immediately: a separator is held here until the next
-    // real (non-hidden, successfully-inserted) item actually gets appended. Per-item
-    // visibility can hide every item between two separators in the tree (or a
-    // leading/trailing one with nothing on one side at all); appending on sight, as
-    // this used to, rendered two adjacent divider rows in that case despite the
-    // comment on the Separator arm below claiming otherwise. A pending separator
-    // that never finds a following item (budget cutoff, or it was trailing) is
-    // simply dropped when the loop ends. `has_emitted` is what makes a LEADING
-    // separator drop too: the Separator arm only arms `sep_pending` once something
-    // real has already been appended, so there is nothing to flush it against yet.
-    let mut sep_pending = false;
-    let mut has_emitted = false;
+    let mut dividers = Dividers::default();
     for it in items {
-        // Per-item visibility: a hidden top-level item is skipped from the drawn
-        // menu but still advances the leaf counter, so command ids stay aligned
-        // with the full tree. (Child keys are never in the toggle set, so they
-        // always pass — only top-level toggles can hide; separators have an empty
-        // title which is never hidden.) `vis` is a single snapshot of the subkey,
-        // so this is one read per item, not a key-open.
-        if !vis.shown(it.title()) {
-            *next_leaf += verbs::count_leaves(it);
-            continue;
-        }
-        match it {
-            verbs::MenuItem::Group(title, children) => {
-                let Ok(sub) = CreatePopupMenu() else {
-                    // Same advance as the hidden-item branch above: without it,
-                    // every later sibling leaf's command id shifts down (a GDI
-                    // handle exhaustion / OOM here would misdispatch InvokeCommand
-                    // for the rest of the menu, not just drop this group).
-                    *next_leaf += verbs::count_leaves(it);
-                    continue;
-                };
-                build_menu_into(sub, children, idcmdfirst, next_leaf, budget, vis);
-                flush_pending_separator(parent, &mut sep_pending);
-                has_emitted |= attach_popup(parent, sub, title);
-            }
-            verbs::MenuItem::Verb(title, _) => {
-                if *next_leaf >= budget {
-                    return;
-                }
-                flush_pending_separator(parent, &mut sep_pending);
-                // The leaf's command id is its global leaf index, mapped through
-                // the central id_for() so the offset convention lives in one place.
-                let cmd =
-                    verbs::id_for(verbs::CmdSlot::Leaf(verbs::LeafId(*next_leaf)), idcmdfirst);
-                let _ = AppendMenuW(
-                    parent,
-                    MF_STRING,
-                    cmd as usize,
-                    &HSTRING::from(st2k_base::i18n::t(title)),
-                );
-                *next_leaf += 1;
-                has_emitted = true;
-            }
-            verbs::MenuItem::Separator => {
-                // A divider: consumes no command id. Deferred rather than appended
-                // here (see `sep_pending` above), and only armed once something real
-                // has already been appended, so a leading separator has nothing to
-                // flush against and is dropped along with duplicates and trailers.
-                if has_emitted {
-                    sep_pending = true;
-                }
-            }
+        if !append_node(
+            parent,
+            it,
+            idcmdfirst,
+            next_leaf,
+            budget,
+            vis,
+            &mut dividers,
+        ) {
+            return;
         }
     }
 }
 
-/// Append the divider `build_menu_into` has been holding back, if any, now that a real item
-/// is about to follow it.
-unsafe fn flush_pending_separator(parent: HMENU, sep_pending: &mut bool) {
-    if *sep_pending {
-        let _ = AppendMenuW(parent, MF_SEPARATOR, 0, PCWSTR::null());
-        *sep_pending = false;
+/// The SageThumbs submenu's top level: `top` in display order, each item built from its OWN
+/// original leaf start (the saved order is not leaf order, so there is no running counter to
+/// share), all of them sharing one [`Dividers`]. A leaf past the budget is skipped, not the
+/// rest of the list: a later item can hold an earlier leaf.
+unsafe fn build_top_level_into(
+    parent: HMENU,
+    top: &[(&'static verbs::MenuItem, u32)],
+    idcmdfirst: u32,
+    budget: u32,
+    vis: &settings::MenuVisibility,
+) {
+    let mut dividers = Dividers::default();
+    for &(item, start_leaf) in top {
+        let mut leaf = start_leaf;
+        append_node(
+            parent,
+            item,
+            idcmdfirst,
+            &mut leaf,
+            budget,
+            vis,
+            &mut dividers,
+        );
     }
+}
+
+/// Append one node of the verb tree to `parent`. False when a leaf found the budget spent
+/// (`build_menu_into` stops there: its leaves only climb).
+unsafe fn append_node(
+    parent: HMENU,
+    it: &verbs::MenuItem,
+    idcmdfirst: u32,
+    next_leaf: &mut u32,
+    budget: u32,
+    vis: &settings::MenuVisibility,
+    dividers: &mut Dividers,
+) -> bool {
+    // Per-item visibility: a hidden top-level item is skipped from the drawn menu but still
+    // advances the leaf counter, so command ids stay aligned with the full tree. (Child keys
+    // are never in the toggle set, so they always pass; separators have an empty title,
+    // which is never hidden.) `vis` is a single snapshot of the subkey, so this is one read
+    // per item, not a key-open.
+    if !vis.shown(it.title()) {
+        *next_leaf += verbs::count_leaves(it);
+        return true;
+    }
+    match it {
+        // A group whose first leaf is already past the budget would attach as an empty
+        // popup; skip it like a hidden item (reachable mid-list on the top level, where a
+        // saved order puts high leaves before low ones).
+        verbs::MenuItem::Group(..) if *next_leaf >= budget => {
+            *next_leaf += verbs::count_leaves(it);
+        }
+        verbs::MenuItem::Group(title, children) => {
+            let Ok(sub) = CreatePopupMenu() else {
+                // Same advance as the hidden-item branch above: without it, every later
+                // sibling leaf's command id shifts down (a GDI handle exhaustion / OOM here
+                // would misdispatch InvokeCommand for the rest of the menu, not just drop
+                // this group).
+                *next_leaf += verbs::count_leaves(it);
+                return true;
+            };
+            build_menu_into(sub, children, idcmdfirst, next_leaf, budget, vis);
+            dividers.flush(parent);
+            dividers.emitted |= attach_popup(parent, sub, title);
+        }
+        verbs::MenuItem::Verb(title, _) => {
+            if *next_leaf >= budget {
+                return false;
+            }
+            dividers.flush(parent);
+            // The leaf's command id is its global leaf index, mapped through the central
+            // id_for() so the offset convention lives in one place.
+            let cmd = verbs::id_for(verbs::CmdSlot::Leaf(verbs::LeafId(*next_leaf)), idcmdfirst);
+            let _ = AppendMenuW(
+                parent,
+                MF_STRING,
+                cmd as usize,
+                &HSTRING::from(st2k_base::i18n::t(title)),
+            );
+            *next_leaf += 1;
+            dividers.emitted = true;
+        }
+        // A divider consumes no command id; see `Dividers`.
+        verbs::MenuItem::Separator => dividers.separator(),
+    }
+    true
 }
 
 /// Attach the built submenu `sub` to `parent` under `title`. `sub` only becomes `parent`'s

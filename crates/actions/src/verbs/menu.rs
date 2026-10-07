@@ -184,8 +184,13 @@ const fn convert(key: &'static str, format: ImageFormat, ext: &'static str) -> M
 /// 80 matches the dialog's default WebP quality.
 const WEBP_LOSSY_QUALITY: u8 = 80;
 
-/// The "SageThumbs 2K ▸" menu tree, in display order.
+/// The "SageThumbs 2K ▸" menu tree, in display order: seven groups, most-used first, each
+/// fenced by a divider (2026-10-07; the owner found the old order "one huge giant dump").
+/// Command ids follow this order, but nothing persists them: `MenuOrder` stores keys, and
+/// a saved order the user never arranged follows this one (`effective_menu_tokens`).
 pub const MENU: &[MenuItem] = &[
+    // Change the picture: the four most-used verbs, the same four the quick-verb option
+    // lifts onto the main menu (`QUICK_KEYS`).
     MenuItem::Group(
         "menu_convert_into",
         &[
@@ -216,17 +221,6 @@ pub const MENU: &[MenuItem] = &[
         ],
     ),
     MenuItem::Verb("menu_convert_dialog", VerbAction::ConvertDialog),
-    MenuItem::Verb("menu_combine_pdf", VerbAction::CombineToPdf),
-    MenuItem::Verb(
-        "menu_combine_pdf_searchable",
-        VerbAction::CombineToSearchablePdf,
-    ),
-    MenuItem::Verb("menu_combine_cbz", VerbAction::CombineToCbz),
-    // Video-only verb: the sole leaf video_top_level() surfaces besides the
-    // file-agnostic ones. Lives at top level (not nested) like Combine ▸ PDF/CBZ, so
-    // it's a single click on a video-only selection.
-    MenuItem::Verb("menu_save_video_frame", VerbAction::SaveVideoFrame),
-    MenuItem::Separator,
     MenuItem::Group(
         "menu_resize",
         &[
@@ -247,6 +241,24 @@ pub const MENU: &[MenuItem] = &[
         ],
     ),
     MenuItem::Group(
+        "menu_rotate",
+        &[
+            MenuItem::Verb(
+                "menu_rotate_right",
+                VerbAction::Transform(Transform::Right90),
+            ),
+            MenuItem::Verb("menu_rotate_left", VerbAction::Transform(Transform::Left90)),
+            MenuItem::Verb(
+                "menu_rotate_180",
+                VerbAction::Transform(Transform::Rotate180),
+            ),
+            MenuItem::Verb("menu_flip_h", VerbAction::Transform(Transform::FlipH)),
+            MenuItem::Verb("menu_flip_v", VerbAction::Transform(Transform::FlipV)),
+        ],
+    ),
+    MenuItem::Separator,
+    // Get it ready to send: smaller, then stripped of what it says about you.
+    MenuItem::Group(
         "menu_email",
         &[
             MenuItem::Verb(
@@ -264,22 +276,42 @@ pub const MENU: &[MenuItem] = &[
         ],
     ),
     MenuItem::Group(
-        "menu_rotate",
+        "menu_compress",
         &[
             MenuItem::Verb(
-                "menu_rotate_right",
-                VerbAction::Transform(Transform::Right90),
+                "menu_compress_1mb",
+                VerbAction::CompressToSize(CompressSize::Mb1),
             ),
-            MenuItem::Verb("menu_rotate_left", VerbAction::Transform(Transform::Left90)),
             MenuItem::Verb(
-                "menu_rotate_180",
-                VerbAction::Transform(Transform::Rotate180),
+                "menu_compress_5mb",
+                VerbAction::CompressToSize(CompressSize::Mb5),
             ),
-            MenuItem::Verb("menu_flip_h", VerbAction::Transform(Transform::FlipH)),
-            MenuItem::Verb("menu_flip_v", VerbAction::Transform(Transform::FlipV)),
+            MenuItem::Verb(
+                "menu_compress_10mb",
+                VerbAction::CompressToSize(CompressSize::Mb10),
+            ),
         ],
     ),
+    MenuItem::Verb("menu_strip_meta", VerbAction::StripMetadata),
     MenuItem::Separator,
+    // Copy or share it.
+    MenuItem::Verb("menu_copy", VerbAction::Clipboard),
+    MenuItem::Verb("menu_copy_text", VerbAction::Ocr),
+    MenuItem::Verb("menu_copy_data_uri", VerbAction::CopyDataUri),
+    MenuItem::Verb("menu_upload", VerbAction::Upload),
+    MenuItem::Separator,
+    // Make one file out of several (and a video's frame into a picture).
+    MenuItem::Verb("menu_combine_pdf", VerbAction::CombineToPdf),
+    MenuItem::Verb(
+        "menu_combine_pdf_searchable",
+        VerbAction::CombineToSearchablePdf,
+    ),
+    MenuItem::Verb("menu_combine_cbz", VerbAction::CombineToCbz),
+    // Video only: `com.rs` and `command.rs` hide it unless the selection holds a video
+    // (`top_level_needs_video`).
+    MenuItem::Verb("menu_save_video_frame", VerbAction::SaveVideoFrame),
+    MenuItem::Separator,
+    // Organize the files themselves.
     MenuItem::Group(
         "menu_rename",
         &[
@@ -312,19 +344,11 @@ pub const MENU: &[MenuItem] = &[
         ],
     ),
     MenuItem::Separator,
-    // The old "Tools" submenu, flattened to TOP-LEVEL verbs so each can be individually
-    // shown/hidden + reordered via the "Menu items" customization (no extra submenu to
-    // wrangle). Leaf order is unchanged (OCR · info · color · strip), so command ids stay
-    // stable; each is gated like any other top-level item.
-    MenuItem::Verb("menu_copy_text", VerbAction::Ocr),
+    // Look at it.
     MenuItem::Verb("menu_image_info", VerbAction::ImageInfo),
     MenuItem::Verb("menu_pick_color", VerbAction::Eyedropper),
-    MenuItem::Verb("menu_strip_meta", VerbAction::StripMetadata),
-    MenuItem::Verb("menu_copy", VerbAction::Clipboard),
-    MenuItem::Verb("menu_copy_data_uri", VerbAction::CopyDataUri),
-    MenuItem::Verb("menu_upload", VerbAction::Upload),
     MenuItem::Separator,
-    MenuItem::Verb("menu_set_folder_icon", VerbAction::SetFolderIcon),
+    // Set it as something.
     MenuItem::Group(
         "menu_wallpaper",
         &[
@@ -355,23 +379,7 @@ pub const MENU: &[MenuItem] = &[
         ],
     ),
     MenuItem::Verb("menu_lock_screen", VerbAction::LockScreen),
-    MenuItem::Group(
-        "menu_compress",
-        &[
-            MenuItem::Verb(
-                "menu_compress_1mb",
-                VerbAction::CompressToSize(CompressSize::Mb1),
-            ),
-            MenuItem::Verb(
-                "menu_compress_5mb",
-                VerbAction::CompressToSize(CompressSize::Mb5),
-            ),
-            MenuItem::Verb(
-                "menu_compress_10mb",
-                VerbAction::CompressToSize(CompressSize::Mb10),
-            ),
-        ],
-    ),
+    MenuItem::Verb("menu_set_folder_icon", VerbAction::SetFolderIcon),
     MenuItem::Separator,
     MenuItem::Verb("menu_settings", VerbAction::OpenSettings),
 ];
@@ -503,14 +511,6 @@ pub fn quick_items() -> Vec<QuickItem> {
     out
 }
 
-/// The top-level MENU items to DISPLAY, in the user's saved order
-/// ([`st2k_base::settings::menu_order`]), each paired with its ORIGINAL leaf-start index.
-/// The original index keeps command ids STABLE regardless of display order — dispatch
-/// reads the original [`leaves`]/[`slot_for`], so only the INSERTION order changes,
-/// never the id→action mapping. With no saved order this is just the default MENU
-/// items (separators included) in tree order. Reorderable = the top-level toggle items;
-/// `menu_settings` stays last (after a divider), and any item missing from a stale
-/// saved order is appended in default order.
 /// The token persisted in `MenuOrder` for a user-placed separator (divider) row. Item
 /// keys are all `menu_*`, so this can never collide with one.
 pub const MENU_SEP_TOKEN: &str = "--";
@@ -532,26 +532,193 @@ pub fn default_menu_tokens() -> Vec<&'static str> {
     normalize_sep(out, |t| *t == MENU_SEP_TOKEN)
 }
 
+/// The top-level MENU items to DISPLAY, in [`effective_menu_tokens`]'s order for the saved
+/// `MenuOrder` ([`st2k_base::settings::menu_order`]), each paired with its ORIGINAL
+/// leaf-start index. The original index keeps command ids STABLE regardless of display
+/// order — dispatch reads the original [`leaves`]/[`slot_for`], so only the INSERTION order
+/// changes, never the id→action mapping. `menu_settings` stays last, after a divider.
 pub fn ordered_top_level() -> Vec<(&'static MenuItem, u32)> {
     order_top_level_with(&st2k_base::settings::menu_order())
 }
 
-/// Pure core of [`ordered_top_level`]: apply `saved` (top-level item keys +
-/// [`MENU_SEP_TOKEN`] divider markers, e.g. from `settings::menu_order`) to the default
-/// `MENU`. Each item keeps its ORIGINAL leaf-start index so command ids stay stable —
-/// only the INSERTION order changes. Dividers render exactly where the user placed them
-/// (a leading/consecutive/trailing divider is normalized away), then one divider + the
-/// always-last `menu_settings`. Empty `saved` → the default tree verbatim. Split from
-/// the registry read so it's unit-testable.
+/// The first token of a `MenuOrder` the user arranged in Settings (3.6.1 on). Settings saves
+/// nothing for the factory order and this plus the rows for any other, so a marked value is
+/// always a real choice. An unmarked value came from an older Settings, which saved the
+/// whole list on every OK whether or not anyone moved a row; see [`effective_menu_tokens`].
+/// Not `menu_*` and not [`MENU_SEP_TOKEN`], so an older build reading it skips it as unknown.
+pub const MENU_ORDER_CUSTOM: &str = "custom";
+
+/// The relative item order every default through 3.6.0 shipped (read from each release tag's
+/// `MENU`, 2026-10-07): each release only ADDED items and the dividers never moved, so this one
+/// list is every old factory order with the items it lacked removed.
+const LEGACY_ORDER: &[&str] = &[
+    "menu_convert_into",
+    "menu_convert_dialog",
+    "menu_combine_pdf",
+    "menu_combine_pdf_searchable",
+    "menu_combine_cbz",
+    "menu_resize",
+    "menu_email",
+    "menu_rotate",
+    "menu_rename",
+    "menu_files_to_folder",
+    "menu_sort",
+    "menu_copy_text",
+    "menu_image_info",
+    "menu_pick_color",
+    "menu_strip_meta",
+    "menu_copy",
+    "menu_copy_data_uri",
+    "menu_upload",
+    "menu_set_folder_icon",
+    "menu_wallpaper",
+    "menu_lock_screen",
+];
+
+/// The Settings rows a release added after `MenuOrder` already existed, each with the batch
+/// (release) that added it: 1 = 0.4.4 (the old Tools submenu split into four), 2 = 0.7.1,
+/// 3 = 3.0.0, 4 = 3.4.0. An older Settings appended the rows a saved order lacked to the END
+/// of its list, a whole batch at a time, oldest batch first, each batch in factory order.
+const LEGACY_LATE: &[(&str, u8)] = &[
+    ("menu_copy_text", 1),
+    ("menu_image_info", 1),
+    ("menu_pick_color", 1),
+    ("menu_strip_meta", 1),
+    ("menu_upload", 2),
+    ("menu_copy_data_uri", 3),
+    ("menu_lock_screen", 3),
+    ("menu_combine_pdf_searchable", 4),
+];
+
+/// Whether an unmarked saved order's items (dividers dropped) are exactly what an older
+/// Settings wrote without anyone moving a row: an old factory order (a run in
+/// [`LEGACY_ORDER`]'s order), then only the [`LEGACY_LATE`] batches it lacked, appended the
+/// way an older Settings appended them. A late row trailing any other way was dragged there:
+/// Copy text at the bottom of an order that already holds 3.0's rows cannot be an append.
+fn is_untouched_legacy(items: &[&str]) -> bool {
+    let pos = |t: &str| LEGACY_ORDER.iter().position(|l| *l == t);
+    let batch = |t: &str| LEGACY_LATE.iter().find(|(k, _)| *k == t).map(|&(_, b)| b);
+    let mut last = None;
+    let factory_run = items
+        .iter()
+        .take_while(|t| {
+            let p = pos(t);
+            let next = p.is_some() && p > last;
+            last = p;
+            next
+        })
+        .count();
+    let (factory, appended) = items.split_at(factory_run);
+    // Appended batches are newer than every batch the old factory order already held, and
+    // run in (batch, factory position) order.
+    let newest_held = factory.iter().filter_map(|t| batch(t)).max().unwrap_or(0);
+    let mut floor = (newest_held + 1, 0);
+    appended.iter().all(|t| match (batch(t), pos(t)) {
+        (Some(b), Some(p)) if (b, p) >= floor => {
+            floor = (b, p);
+            true
+        }
+        _ => false,
+    })
+}
+
+/// The saved tokens `effective_menu_tokens` can place: item keys the factory order knows
+/// (each once) and dividers, as `'static` tokens. Anything else is dropped.
+fn known_tokens<S: AsRef<str>>(body: &[S], defaults: &[&'static str]) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::with_capacity(defaults.len());
+    for tok in body.iter().map(AsRef::as_ref) {
+        match defaults.iter().copied().find(|d| *d == tok) {
+            Some(MENU_SEP_TOKEN) => out.push(MENU_SEP_TOKEN),
+            Some(key) if !out.contains(&key) => out.push(key),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Put every factory item `out` lacks straight after the nearest item before it in the
+/// factory order that `out` holds (first, if none), so it joins its own group.
+fn place_missing(out: &mut Vec<&'static str>, defaults: &[&'static str]) {
+    for (i, &key) in defaults.iter().enumerate() {
+        if key == MENU_SEP_TOKEN || out.contains(&key) {
+            continue;
+        }
+        let at = defaults[..i]
+            .iter()
+            .rev()
+            .filter(|prev| **prev != MENU_SEP_TOKEN)
+            .find_map(|prev| out.iter().position(|o| o == prev))
+            .map_or(0, |p| p + 1);
+        out.insert(at, key);
+    }
+}
+
+/// The top-level order to show, as tokens (item keys + [`MENU_SEP_TOKEN`]), for a saved
+/// `MenuOrder` (`settings::menu_order`). Feeds both the menu ([`order_top_level_with`]) and
+/// Settings' list, so the two never disagree.
+///
+/// - Nothing saved, a marker with no items, or an unmarked old value that is only an old
+///   factory order ([`is_untouched_legacy`]): the factory order. Before 3.6.1 every Settings
+///   OK froze the order of the day, so these users never saw a later default and got each
+///   new item at the very bottom (2026-10-07).
+/// - Anything else is the user's own order, kept as placed. An item it lacks (new in a later
+///   release, or an old value) goes straight after the nearest item that precedes it in the
+///   factory order, so it joins its group instead of the bottom. Unknown keys are dropped.
+///
+/// Two costs, both of an old value meeting this rule: one whose only change was a divider,
+/// or whose only change was a late row dragged to the very end where an older Settings
+/// would have appended it, reads as untouched and takes the factory order once. And the
+/// marker lives in the value an older Settings rewrites without it, so an arranged order
+/// that is exactly an old factory order and then passes through an older build's Settings
+/// OK (a downgrade, or settings sync from a machine still on it) reads as untouched again.
+pub fn effective_menu_tokens<S: AsRef<str>>(saved: &[S]) -> Vec<&'static str> {
+    let defaults = default_menu_tokens();
+    let marked = saved
+        .first()
+        .is_some_and(|t| t.as_ref() == MENU_ORDER_CUSTOM);
+    let mut out = known_tokens(if marked { &saved[1..] } else { saved }, &defaults);
+    let items: Vec<&str> = out
+        .iter()
+        .copied()
+        .filter(|t| *t != MENU_SEP_TOKEN)
+        .collect();
+    if items.is_empty() || (!marked && is_untouched_legacy(&items)) {
+        return defaults;
+    }
+    place_missing(&mut out, &defaults);
+    normalize_sep(out, |t| *t == MENU_SEP_TOKEN)
+}
+
+/// What Settings should persist for the rows the user left (item keys + [`MENU_SEP_TOKEN`]):
+/// nothing for the factory order, so a later default still reaches them, and the rows behind
+/// [`MENU_ORDER_CUSTOM`] for anything else.
+pub fn menu_order_to_save(rows: &[&'static str]) -> Vec<&'static str> {
+    if normalize_sep(rows.to_vec(), |t| *t == MENU_SEP_TOKEN) == default_menu_tokens() {
+        return Vec::new();
+    }
+    std::iter::once(MENU_ORDER_CUSTOM)
+        .chain(rows.iter().copied())
+        .collect()
+}
+
+/// Top-level items that only mean something when the selection holds a video. Both surfaces
+/// drop them otherwise: "Save frame as image" sat on every JPG's menu until 2026-10-07.
+pub fn top_level_needs_video(title: &str) -> bool {
+    title == "menu_save_video_frame"
+}
+
+/// Pure core of [`ordered_top_level`]: lay `MENU` out in [`effective_menu_tokens`]'s order
+/// for `saved` (e.g. from `settings::menu_order`). Each item keeps its ORIGINAL leaf-start
+/// index so command ids stay stable — only the INSERTION order changes. Dividers render
+/// where the order places them (leading/consecutive/trailing normalized away), then one
+/// divider + the always-last `menu_settings`. Split from the registry read so it's
+/// unit-testable.
 fn order_top_level_with(saved: &[String]) -> Vec<(&'static MenuItem, u32)> {
     let mut pairs: Vec<(&'static MenuItem, u32)> = Vec::with_capacity(MENU.len());
     let mut idx = 0u32;
     for it in MENU {
         pairs.push((it, idx));
         idx += count_leaves(it);
-    }
-    if saved.is_empty() {
-        return pairs;
     }
     let item = |key: &str| {
         pairs
@@ -563,44 +730,19 @@ fn order_top_level_with(saved: &[String]) -> Vec<(&'static MenuItem, u32)> {
         .iter()
         .copied()
         .find(|(it, _)| matches!(it, MenuItem::Separator));
-    let reorderable = |t: &str| !t.is_empty() && t != "menu_settings";
-
-    // Body in saved order (items de-duped, dividers as placed), then any item missing
-    // from a stale saved order appended in default order.
-    let mut body: Vec<(&'static MenuItem, u32)> = Vec::new();
-    let mut seen: Vec<&'static str> = Vec::new();
-    for tok in saved {
+    let mut body: Vec<(&'static MenuItem, u32)> = Vec::with_capacity(pairs.len());
+    for tok in effective_menu_tokens(saved) {
         if tok == MENU_SEP_TOKEN {
             body.extend(sep);
-        } else if reorderable(tok) && !seen.contains(&tok.as_str()) {
-            if let Some(p) = item(tok) {
-                body.push(p);
-                seen.push(p.0.title());
-            }
+        } else {
+            body.extend(item(tok));
         }
     }
-    append_missing_defaults(&mut body, &mut seen, &pairs);
-
     let mut out = normalize_dividers(body);
     // Tail: one divider, then the always-last Settings entry.
     out.extend(sep);
     out.extend(item("menu_settings"));
     out
-}
-
-/// Appends default menu items that were not present in the saved order.
-fn append_missing_defaults(
-    body: &mut Vec<(&'static MenuItem, u32)>,
-    seen: &mut Vec<&'static str>,
-    pairs: &[(&'static MenuItem, u32)],
-) {
-    for &(it, s) in pairs {
-        let t = it.title();
-        if !t.is_empty() && t != "menu_settings" && !seen.contains(&t) {
-            body.push((it, s));
-            seen.push(t);
-        }
-    }
 }
 
 /// Drop a leading divider, collapse consecutive ones, drop a trailing one (the always-on

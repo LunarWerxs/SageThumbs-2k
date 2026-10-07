@@ -34,10 +34,11 @@ mod outcome;
 // Menu-tree model + flattening helpers.
 #[allow(unused_imports)]
 pub use menu::{
-    audio_top_level, condensed_top_level, count_leaves, default_menu_tokens, id_for, leaves,
-    ordered_top_level, quick_items, slot_for, top_level_audio_ok, top_level_video_ok,
-    video_top_level, CmdSlot, EmailSize, LeafId, MenuItem, QuickItem, RenamePattern, Transform,
-    VerbAction, WallpaperMode, MENU, MENU_SEP_TOKEN, QUICK_KEYS,
+    audio_top_level, condensed_top_level, count_leaves, default_menu_tokens, effective_menu_tokens,
+    id_for, leaves, menu_order_to_save, ordered_top_level, quick_items, slot_for,
+    top_level_audio_ok, top_level_needs_video, top_level_video_ok, video_top_level, CmdSlot,
+    EmailSize, LeafId, MenuItem, QuickItem, RenamePattern, Transform, VerbAction, WallpaperMode,
+    MENU, MENU_ORDER_CUSTOM, MENU_SEP_TOKEN, QUICK_KEYS,
 };
 // The leaf COUNT alone, for the QueryContextMenu id budget: cheaper than `leaves().len()`,
 // which allocated the whole ~46-entry Vec on every right-click just to read its length.

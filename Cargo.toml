@@ -516,6 +516,10 @@ name = "context_menu_latency"
 path = "tests/context_menu_latency.rs"
 
 [[test]]
+name = "context_menu_layout"
+path = "tests/context_menu_layout.rs"
+
+[[test]]
 name = "convert_shot"
 path = "tests/convert_shot.rs"
 

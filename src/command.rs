@@ -138,6 +138,19 @@ unsafe fn array_to_paths(arr: &IShellItemArray) -> Vec<String> {
 /// reference (windows-rs `Ref` is neither `Copy` nor `Clone`) so the same handle
 /// can also feed `selection_is_audio_only` in `MenuCommand::state`.
 unsafe fn selection_has_image(items: &Ref<'_, IShellItemArray>) -> bool {
+    any_item_matches(items, verbs::is_image)
+}
+
+/// True if the selection holds at least one video: the gate for the video-only verbs
+/// (`verbs::top_level_needs_video`), the modern twin of the classic `Kinds::any_video`.
+unsafe fn selection_has_video(items: &Ref<'_, IShellItemArray>) -> bool {
+    any_item_matches(items, verbs::is_video)
+}
+
+/// The walk behind `selection_has_image` and `selection_has_video`: true at the FIRST item
+/// `pred` holds for. An unreadable item is skipped, since "some item is X" can only be made
+/// true by an item we could read.
+unsafe fn any_item_matches(items: &Ref<'_, IShellItemArray>, pred: fn(&str) -> bool) -> bool {
     let Ok(arr) = items.ok() else {
         return false;
     };
@@ -147,7 +160,7 @@ unsafe fn selection_has_image(items: &Ref<'_, IShellItemArray>) -> bool {
     for i in 0..count {
         if let Ok(item) = arr.GetItemAt(i) {
             if let Ok(pw) = item.GetDisplayName(SIGDN_FILESYSPATH) {
-                let hit = pw.to_string().map(|s| verbs::is_image(&s)).unwrap_or(false);
+                let hit = pw.to_string().map(|s| pred(&s)).unwrap_or(false);
                 CoTaskMemFree(Some(pw.0 as *const c_void));
                 if hit {
                     return true;
@@ -472,6 +485,9 @@ pub struct MenuCommand {
     /// the verbs a video actually supports. Cached per command for the same reason — the shell
     /// calls `GetState` once per top-level item and the walk is O(selection).
     video_only: Cell<Option<bool>>,
+    /// Cached "selection holds a video" verdict, for the video-only verbs
+    /// (`verbs::top_level_needs_video`). Same caching as the two above.
+    has_video: Cell<Option<bool>>,
 }
 
 impl MenuCommand {
@@ -493,6 +509,7 @@ impl MenuCommand {
             has_image: Cell::new(None),
             audio_only: Cell::new(None),
             video_only: Cell::new(None),
+            has_video: Cell::new(None),
         }
     }
 
@@ -512,6 +529,7 @@ impl MenuCommand {
             has_image: Cell::new(None),
             audio_only: Cell::new(None),
             video_only: Cell::new(None),
+            has_video: Cell::new(None),
         }
     }
 
@@ -528,21 +546,33 @@ impl MenuCommand {
         if base != ECS_ENABLED.0 as u32 {
             return Ok(base); // menu off or unsupported selection — already hidden
         }
-        if self.top_level && !verbs::top_level_audio_ok(self.item.title()) {
-            let audio_only =
-                cached_verdict(&self.audio_only, slow_ok, items, selection_is_audio_only)?;
-            if audio_only {
-                return Ok(ECS_HIDDEN.0 as u32);
-            }
-        }
-        if self.top_level && !verbs::top_level_video_ok(self.item.title()) {
-            let video_only =
-                cached_verdict(&self.video_only, slow_ok, items, selection_is_video_only)?;
-            if video_only {
-                return Ok(ECS_HIDDEN.0 as u32);
-            }
+        if self.top_level && self.wrong_kind_of_selection(items, slow_ok)? {
+            return Ok(ECS_HIDDEN.0 as u32);
         }
         Ok(base)
+    }
+
+    /// Whether this top-level item has nothing to do for the selection's kind: an image verb
+    /// on an all-audio or all-video selection, or a video verb on one without a video. Each
+    /// verdict is walked only when this item's title needs it (`&&` short-circuits).
+    unsafe fn wrong_kind_of_selection(
+        &self,
+        items: &Ref<'_, IShellItemArray>,
+        slow_ok: bool,
+    ) -> Result<bool> {
+        let title = self.item.title();
+        if !verbs::top_level_audio_ok(title)
+            && cached_verdict(&self.audio_only, slow_ok, items, selection_is_audio_only)?
+        {
+            return Ok(true);
+        }
+        if verbs::top_level_needs_video(title)
+            && !cached_verdict(&self.has_video, slow_ok, items, selection_has_video)?
+        {
+            return Ok(true);
+        }
+        Ok(!verbs::top_level_video_ok(title)
+            && cached_verdict(&self.video_only, slow_ok, items, selection_is_video_only)?)
     }
 }
 

@@ -41,7 +41,9 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use st2k_actions::{verbs::default_menu_tokens, verbs::MENU_SEP_TOKEN};
+use st2k_actions::verbs::{
+    default_menu_tokens, effective_menu_tokens, menu_order_to_save, MENU_SEP_TOKEN,
+};
 use st2k_base::{formats, i18n, settings};
 
 use crate::about::show_about;

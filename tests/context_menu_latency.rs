@@ -8,21 +8,11 @@
 
 mod common;
 
-use std::ffi::c_void;
-use std::os::windows::ffi::OsStrExt;
 use std::time::{Duration, Instant};
 
-use windows::core::{s, Error, Interface, Result, GUID, HRESULT, PCWSTR};
-use windows::Win32::Foundation::{E_FAIL, HMODULE, LPARAM, WPARAM};
-use windows::Win32::System::Com::{
-    CoInitializeEx, IClassFactory, IDataObject, COINIT_APARTMENTTHREADED,
-};
-use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
-use windows::Win32::System::Registry::HKEY;
-use windows::Win32::UI::Shell::{
-    BHID_DataObject, IContextMenu, IContextMenu3, IShellExtInit, IShellItem,
-    SHCreateItemFromParsingName,
-};
+use windows::core::Interface;
+use windows::Win32::Foundation::{LPARAM, WPARAM};
+use windows::Win32::UI::Shell::IContextMenu3;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreatePopupMenu, DestroyMenu, GetMenuItemCount, GetMenuItemInfoW, GetSubMenu, HMENU,
     MENUITEMINFOW, MFT_BITMAP, MFT_OWNERDRAW, MFT_SEPARATOR, MIIM_FTYPE, WM_INITMENUPOPUP,
@@ -43,41 +33,9 @@ fn menu_skin_loaded() -> bool {
     .any(|n| unsafe { GetModuleHandleW(*n) }.is_ok())
 }
 
-const CLSID_CONTEXT_MENU: GUID = GUID::from_u128(0x9F3A2B1C_5E8D_4A7F_9C2E_1B6D4F8A0E53);
 const TEST_SETTINGS_ROOT: &str = r"Software\SageThumbs2K\__test_context_menu_latency_absent";
 const RIGHT_CLICK_BUDGET: Duration = Duration::from_millis(750);
 const POPUP_INIT_BUDGET: Duration = Duration::from_millis(500);
-
-type DllGetClassObjectFn =
-    unsafe extern "system" fn(*const GUID, *const GUID, *mut *mut c_void) -> HRESULT;
-
-unsafe fn context_menu_for(file: &std::path::Path) -> Result<IContextMenu> {
-    // Keep this independent of a developer's real Explorer preferences.  The absent key
-    // selects the product defaults, including the standard submenu preview placement.
-    common::set_test_env("ST2K_SETTINGS_ROOT", TEST_SETTINGS_ROOT);
-    let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-
-    let path = common::dll_path();
-    assert!(
-        path.exists(),
-        "cdylib not built at {path:?} — run cargo build first"
-    );
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let module: HMODULE = LoadLibraryW(PCWSTR(wide.as_ptr()))?;
-    let proc =
-        GetProcAddress(module, s!("DllGetClassObject")).ok_or_else(|| Error::from(E_FAIL))?;
-    let get_class: DllGetClassObjectFn = std::mem::transmute(proc);
-    let mut factory_ptr = std::ptr::null_mut();
-    get_class(&CLSID_CONTEXT_MENU, &IClassFactory::IID, &mut factory_ptr).ok()?;
-    let factory = IClassFactory::from_raw(factory_ptr);
-
-    let init: IShellExtInit = factory.CreateInstance(None)?;
-    let file_wide: Vec<u16> = file.as_os_str().encode_wide().chain(Some(0)).collect();
-    let item: IShellItem = SHCreateItemFromParsingName(PCWSTR(file_wide.as_ptr()), None)?;
-    let object: IDataObject = item.BindToHandler(None, &BHID_DataObject)?;
-    init.Initialize(None, Some(&object), Some(HKEY::default()))?;
-    init.cast()
-}
 
 #[test]
 fn first_query_context_menu_is_fast_with_default_preview_enabled() {
@@ -93,7 +51,8 @@ fn first_query_context_menu_is_fast_with_default_preview_enabled() {
 
     unsafe {
         let started = Instant::now();
-        let menu = context_menu_for(&png).expect("create and initialize classic context menu");
+        let menu = common::classic_context_menu_for(&png, TEST_SETTINGS_ROOT)
+            .expect("create and initialize classic context menu");
         let popup: HMENU = CreatePopupMenu().expect("CreatePopupMenu");
         let result = menu.QueryContextMenu(popup, 0, 1, 0x7fff, 0);
         let elapsed = started.elapsed();

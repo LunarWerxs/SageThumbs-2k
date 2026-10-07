@@ -39,18 +39,14 @@ pub(super) fn menu_rows_from_tokens(
     list::normalize_rows(&rows)
 }
 
-/// Menu-list rows for the CURRENT saved order (or the factory order if none saved), each
+/// Menu-list rows in the order the menu itself shows for the saved `MenuOrder`
+/// (`verbs::effective_menu_tokens`: the factory order unless the user arranged one), each
 /// item's checkbox seeded from its saved visibility.
 pub(super) fn saved_menu_rows() -> Vec<(isize, bool)> {
-    let saved = settings::menu_order();
-    let tokens: Vec<String> = if saved.is_empty() {
-        default_menu_tokens()
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
-    } else {
-        saved
-    };
+    let tokens: Vec<String> = effective_menu_tokens(&settings::menu_order())
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     menu_rows_from_tokens(&tokens, |i| {
         settings::menu_item_shown(MENU_ITEM_TOGGLES[i].1)
     })

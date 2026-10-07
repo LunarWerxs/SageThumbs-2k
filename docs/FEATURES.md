@@ -158,6 +158,14 @@ A nested submenu on both the classic and Windows-11 context menus. Appears only
 when the selection contains a supported image; archive thumbnails (zip/rar/7z, see §1)
 are deliberately left out of this menu (thumbnail and preview only).
 
+**Seven groups, most-used first**, each fenced by a divider on the classic menu: Convert into ·
+Convert... · Resize · Rotate / flip | Shrink for email · Compress to size · Strip metadata |
+Copy to clipboard · Copy text (OCR) · Copy as data URI · Upload | Combine into PDF ·
+searchable PDF · CBZ · Save frame as image | Rename · Files to folder · Sort into folders |
+Image info · Pick color | Set as wallpaper · lock screen · folder icon | Settings. Save frame
+as image shows only when the selection holds a video. The Windows 11 flyout keeps the order
+but has no dividers.
+
 **Multi-file jobs run in parallel.** When the selection has several files, Convert /
 Resize / Rotate / Strip and Combine-to-PDF fan out across every CPU core via a tiny
 dependency-free scoped thread pool (`crates/base/src/parallel.rs`), 6–15× faster than the old
@@ -623,6 +631,9 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   menu mirrors your arrangement exactly (group dividers included; an accent line shows the
   drop point as you drag, and adjacent/edge dividers tidy themselves). A **Reset order**
   button restores the default. Applies to both the classic and the modern Win11 menus.
+  Only an order you actually arranged is kept: if you leave the default, the menu follows
+  the default in later versions too. In an arranged order, an entry a later version adds
+  joins its own group instead of the bottom.
 - **Ebook & comic covers:** sort archive pages naturally, prefer a "cover" image,
   skip scanlation filler (credits/logos; on by default). **Contact-sheet thumbnails for ZIP/RAR/7z**:
   on by default, showing a collage of up to four images pulled from a plain archive;

@@ -9,6 +9,23 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+- **The right-click menu is in groups again, most-used first.** Since 2.0.0 the SageThumbs
+  submenu had lost every divider and read as one long list. Its groups show again, in a new
+  order:
+  - Convert, Resize and Rotate.
+  - Making a picture smaller to send.
+  - Copying and sharing.
+  - Combining files.
+  - Organizing them.
+  - Looking at a picture.
+  - Setting it as a wallpaper, lock screen or folder icon.
+  - **If you never rearranged the menu, you get the new order**, even if you pressed OK in
+    Settings before. Older versions saved the order on every OK, so it never changed again and
+    each new entry landed at the bottom. If you did rearrange it, your order stays, and new
+    entries join their own group.
+  - **Compress to size** and **Save frame as image** can now be hidden and moved in Settings >
+    Right-click menu > Edit menu items, like every other entry.
+  - **Save frame as image** shows only when the selection holds a video.
 - **The screenshot editor can blur and crop.**
   - **Blur** (`G`, beside Pixelate) softens a region. Its strength is a setting (Settings >
     Screenshots > *Blur strength*, 2 to 40 px, 12 by default). To hide text, Pixelate is still

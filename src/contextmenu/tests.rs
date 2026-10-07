@@ -205,6 +205,66 @@ fn separators_never_lead_trail_or_double_up() {
     }
 }
 
+/// The top level in a saved order, which is not leaf order, against a command-id budget that
+/// runs out mid-list. Each item keeps its own leaf id; an item past the budget (a group as
+/// much as a verb) is left out without ending the list, so a later item holding an earlier
+/// leaf still shows; and the dividers are shared across items, so the two around the left-out
+/// group draw as one. Before 2026-10-07 the group came out as an empty submenu row.
+#[test]
+fn top_level_skips_what_the_id_budget_cannot_reach_and_keeps_the_rest() {
+    use windows::Win32::UI::WindowsAndMessaging::{GetMenuItemCount, MFT_SEPARATOR};
+
+    const ITEMS: &[verbs::MenuItem] = &[
+        verbs::MenuItem::Verb("BudgetTestB", verbs::VerbAction::Clipboard),
+        verbs::MenuItem::Separator,
+        verbs::MenuItem::Group(
+            "BudgetTestGroup",
+            &[
+                verbs::MenuItem::Verb("BudgetTestG1", verbs::VerbAction::Clipboard),
+                verbs::MenuItem::Verb("BudgetTestG2", verbs::VerbAction::Clipboard),
+            ],
+        ),
+        verbs::MenuItem::Verb("BudgetTestD", verbs::VerbAction::Clipboard),
+        verbs::MenuItem::Verb("BudgetTestC", verbs::VerbAction::Clipboard),
+    ];
+    // Display order with each item's own leaf start; a budget of 3 reaches leaves 0..=2.
+    let top = [
+        (&ITEMS[0], 0),
+        (&ITEMS[1], 0),
+        (&ITEMS[2], 4),
+        (&ITEMS[3], 3),
+        (&ITEMS[1], 0),
+        (&ITEMS[4], 1),
+    ];
+
+    unsafe {
+        let menu = CreatePopupMenu().expect("CreatePopupMenu");
+        let vis = settings::menu_visibility();
+        build_top_level_into(menu, &top, 1, 3, &vis);
+
+        assert_eq!(
+            GetMenuItemCount(Some(menu)),
+            3,
+            "want [B, divider, C]: no empty group row, no doubled divider"
+        );
+        let leaf_id = |leaf| verbs::id_for(verbs::CmdSlot::Leaf(verbs::LeafId(leaf)), 1);
+        let (t0, id0) = item_type_and_id(menu, 0);
+        assert!(
+            !t0.contains(MFT_SEPARATOR) && id0 == leaf_id(0),
+            "row 0 is B, leaf 0"
+        );
+        let (t1, _) = item_type_and_id(menu, 1);
+        assert!(t1.contains(MFT_SEPARATOR), "row 1 is the one divider");
+        let (t2, id2) = item_type_and_id(menu, 2);
+        assert!(
+            !t2.contains(MFT_SEPARATOR) && id2 == leaf_id(1),
+            "row 2 is C, leaf 1"
+        );
+
+        let _ = DestroyMenu(menu);
+    }
+}
+
 /// #61: above 100% display scaling Windows draws a bitmap menu item twice (1:1 and
 /// stretched sideways by the scale), so a scaled display must get the owner-drawn item,
 /// which only we measure and paint. At 100% an unskinned host keeps the bitmap branch:

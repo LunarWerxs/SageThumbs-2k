@@ -317,29 +317,33 @@ pub(super) const ID_SEARCH_RESULTS: i32 = 1225;
 /// Each (control id, MENU title key); the checkbox LABEL reuses the menu item's
 /// own translated name via `t(key)`. `menu_settings` is intentionally absent — the
 /// Settings entry is always shown so the dialog stays reachable.
+/// In the factory menu order, and EVERY top-level item but Settings: Compress to size and
+/// Save frame as image shipped without a row, so they could not be hidden or moved and sat
+/// at the bottom of any saved order (2026-10-07; `every_top_level_item_has_a_settings_row`).
 pub(super) const MENU_ITEM_TOGGLES: &[(i32, &str)] = &[
     (1150, "menu_convert_into"),
     (1151, "menu_convert_dialog"),
+    (1154, "menu_resize"),
+    (1156, "menu_rotate"),
+    (1155, "menu_email"),
+    (1285, "menu_compress"), // 1284/1285: the next free ids past 1283 (2026-10-07)
+    (1149, "menu_strip_meta"),
+    (1161, "menu_copy"),
+    (1160, "menu_copy_text"),
+    (1257, "menu_copy_data_uri"),
+    (1234, "menu_upload"), // moved off 1183 - collided with ID_RUN_DOCTOR, see the comment there
     (1152, "menu_combine_pdf"),
     (1270, "menu_combine_pdf_searchable"), // 1270: the next free id past 1269
     (1153, "menu_combine_cbz"),
-    (1154, "menu_resize"),
-    (1155, "menu_email"),
-    (1156, "menu_rotate"),
+    (1284, "menu_save_video_frame"),
     (1157, "menu_rename"),
     (1158, "menu_files_to_folder"),
     (1159, "menu_sort"),
-    // "Tools" is now four individually-toggleable top-level entries (was one submenu).
-    (1160, "menu_copy_text"),
     (1147, "menu_image_info"),
     (1148, "menu_pick_color"),
-    (1149, "menu_strip_meta"),
-    (1161, "menu_copy"),
-    (1257, "menu_copy_data_uri"),
-    (1234, "menu_upload"), // moved off 1183 - collided with ID_RUN_DOCTOR, see the comment there
-    (1162, "menu_set_folder_icon"),
     (1163, "menu_wallpaper"),
     (1258, "menu_lock_screen"),
+    (1162, "menu_set_folder_icon"),
 ];
 
 pub(crate) use st2k_screenshot::screenshot::SHOT_PRESETS;

@@ -142,3 +142,54 @@ pub fn assert_bundle_is_scrubbed(entries: &[(String, Vec<u8>)], secrets: &[&str]
         "the credential container itself must not be listed:\n{settings}"
     );
 }
+
+/// The classic context menu (`IContextMenu`) for `file`, set up exactly as Explorer does it:
+/// shell item -> `IDataObject` -> `IShellExtInit::Initialize`. Settings come from
+/// `settings_root` (`ST2K_SETTINGS_ROOT`, resolved once per process), never the developer's
+/// own: pass an absent key for the product defaults.
+///
+/// # Safety
+/// Loads the built DLL and calls its COM entry points; initialises COM (STA) on this thread.
+pub unsafe fn classic_context_menu_for(
+    file: &std::path::Path,
+    settings_root: &str,
+) -> windows::core::Result<windows::Win32::UI::Shell::IContextMenu> {
+    use windows::core::{s, Error, Interface, GUID, HRESULT, PCWSTR};
+    use windows::Win32::Foundation::E_FAIL;
+    use windows::Win32::System::Com::{
+        CoInitializeEx, IClassFactory, IDataObject, COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+    use windows::Win32::System::Registry::HKEY;
+    use windows::Win32::UI::Shell::{
+        BHID_DataObject, IShellExtInit, IShellItem, SHCreateItemFromParsingName,
+    };
+    const CLSID_CONTEXT_MENU: GUID = GUID::from_u128(0x9F3A2B1C_5E8D_4A7F_9C2E_1B6D4F8A0E53);
+    type DllGetClassObjectFn =
+        unsafe extern "system" fn(*const GUID, *const GUID, *mut *mut std::ffi::c_void) -> HRESULT;
+
+    unsafe { set_test_env("ST2K_SETTINGS_ROOT", settings_root) };
+    let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    let path = dll_path();
+    assert!(
+        path.exists(),
+        "cdylib not built at {path:?} — run `cargo build` first"
+    );
+    let wide = to_wide(path.as_os_str());
+    let module = unsafe { LoadLibraryW(PCWSTR(wide.as_ptr())) }?;
+    let proc = unsafe { GetProcAddress(module, s!("DllGetClassObject")) }
+        .ok_or_else(|| Error::from(E_FAIL))?;
+    // SAFETY: `DllGetClassObject` has exactly this signature in every COM server.
+    let get_class: DllGetClassObjectFn = unsafe { std::mem::transmute(proc) };
+    let mut factory_ptr = std::ptr::null_mut();
+    unsafe { get_class(&CLSID_CONTEXT_MENU, &IClassFactory::IID, &mut factory_ptr) }.ok()?;
+    // SAFETY: a successful DllGetClassObject hands back an owned IClassFactory pointer.
+    let factory = unsafe { IClassFactory::from_raw(factory_ptr) };
+    let init: IShellExtInit = unsafe { factory.CreateInstance(None) }?;
+    let file_wide = to_wide(file.as_os_str());
+    let item: IShellItem =
+        unsafe { SHCreateItemFromParsingName(PCWSTR(file_wide.as_ptr()), None) }?;
+    let object: IDataObject = unsafe { item.BindToHandler(None, &BHID_DataObject) }?;
+    unsafe { init.Initialize(None, Some(&object), Some(HKEY::default())) }?;
+    init.cast()
+}

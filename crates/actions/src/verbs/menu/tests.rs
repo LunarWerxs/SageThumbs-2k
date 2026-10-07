@@ -179,8 +179,8 @@ fn ordered_top_level_id_stability_and_separators() {
     }
     assert_eq!(
         out.first().unwrap().0.title(),
-        "menu_compress",
-        "reversed → the last default-order reorderable item (compress) comes first"
+        keys.last().unwrap().as_str(),
+        "reversed → the last default-order reorderable item comes first"
     );
     assert_eq!(
         out.last().unwrap().0.title(),
@@ -205,11 +205,8 @@ fn ordered_top_level_id_stability_and_separators() {
     }
 
     // A user-placed divider renders exactly between the two items it sits between.
-    let custom: Vec<String> = vec![
-        "menu_resize".into(),
-        MENU_SEP_TOKEN.into(),
-        "menu_convert_into".into(),
-    ];
+    let mut custom: Vec<String> = vec!["menu_resize".into(), MENU_SEP_TOKEN.into()];
+    custom.extend(keys.iter().filter(|k| *k != "menu_resize").cloned());
     let titles: Vec<&str> = order_top_level_with(&custom)
         .iter()
         .map(|(it, _)| it.title())
@@ -377,4 +374,107 @@ fn video_top_level_is_video_set_with_stable_ids() {
             );
         }
     }
+}
+
+/// The `MenuOrder` an older Settings wrote on this owner's PC (2026-10-07): the 3.0 factory
+/// order, saved by an OK nobody moved a row in. Searchable PDF, Save frame and Compress were
+/// missing from it, and so sat at the bottom of the menu.
+const OWNERS_OLD_VALUE: &str = "menu_convert_into,menu_convert_dialog,menu_combine_pdf,\
+menu_combine_cbz,--,menu_resize,menu_email,menu_rotate,--,menu_rename,menu_files_to_folder,\
+menu_sort,--,menu_copy_text,menu_image_info,menu_pick_color,menu_strip_meta,menu_copy,\
+menu_copy_data_uri,menu_upload,--,menu_set_folder_icon,menu_wallpaper,menu_lock_screen";
+
+fn split(value: &str) -> Vec<String> {
+    value.split(',').map(String::from).collect()
+}
+
+/// An old factory order an older Settings froze is not a choice anyone made: it shows the
+/// current factory order, including when rows that Settings appended later trail it.
+#[test]
+fn an_untouched_old_order_follows_the_factory_order() {
+    let factory = default_menu_tokens();
+    assert_eq!(effective_menu_tokens(&split(OWNERS_OLD_VALUE)), factory);
+
+    // 0.7 saved upload in place; a 3.0 OK appended data URI + lock screen, a 3.4 OK the
+    // searchable PDF, each after everything else.
+    let appended = "menu_convert_into,menu_convert_dialog,menu_combine_pdf,menu_combine_cbz,--,\
+menu_resize,menu_email,menu_rotate,--,menu_rename,menu_files_to_folder,menu_sort,--,\
+menu_copy_text,menu_image_info,menu_pick_color,menu_strip_meta,menu_copy,menu_upload,--,\
+menu_set_folder_icon,menu_wallpaper,menu_copy_data_uri,menu_lock_screen,\
+menu_combine_pdf_searchable";
+    assert_eq!(effective_menu_tokens(&split(appended)), factory);
+
+    // Nothing left to arrange (a marked order whose every key has since been renamed) is the
+    // factory order too, its dividers included.
+    let stale = [
+        MENU_ORDER_CUSTOM.to_string(),
+        "menu_renamed_away".to_string(),
+    ];
+    assert_eq!(effective_menu_tokens(&stale), factory);
+}
+
+/// An order the user arranged is theirs, kept as placed; what it lacks joins its factory
+/// group (straight after its factory predecessor) instead of the bottom of the menu.
+#[test]
+fn a_users_own_order_is_kept_and_new_items_join_their_group() {
+    // The old value with Rotate moved to the top: a real choice, though unmarked.
+    let moved = OWNERS_OLD_VALUE.replace(",menu_rotate", "");
+    let got = effective_menu_tokens(&split(&format!("menu_rotate,{moved}")));
+    assert_eq!(
+        got[0], "menu_rotate",
+        "the user's own first item stays first"
+    );
+    let after = |key: &str| got[got.iter().position(|t| *t == key).unwrap() + 1];
+    assert_eq!(after("menu_email"), "menu_compress");
+    assert_eq!(after("menu_combine_pdf"), "menu_combine_pdf_searchable");
+    assert_eq!(after("menu_combine_cbz"), "menu_save_video_frame");
+    for key in default_menu_tokens()
+        .iter()
+        .filter(|t| **t != MENU_SEP_TOKEN)
+    {
+        let n = got.iter().filter(|t| *t == key).count();
+        assert_eq!(n, 1, "{key} must appear exactly once");
+    }
+
+    // Copy text dragged to the bottom. This value was saved by 3.0 or later (it holds 3.0's
+    // rows in place), and no such Settings ever appended Copy text: the user put it there.
+    let dragged = format!(
+        "{},menu_copy_text",
+        OWNERS_OLD_VALUE.replace("menu_copy_text,", "")
+    );
+    let got = effective_menu_tokens(&split(&dragged));
+    assert_eq!(
+        got.last(),
+        Some(&"menu_copy_text"),
+        "a drag to the end is kept"
+    );
+
+    // A marked order is a choice even when it IS the old layout (someone who preferred it).
+    let mut marked = vec![MENU_ORDER_CUSTOM.to_string()];
+    marked.extend(split(OWNERS_OLD_VALUE));
+    let got = effective_menu_tokens(&marked);
+    assert_eq!(
+        got[..4],
+        [
+            "menu_convert_into",
+            "menu_convert_dialog",
+            "menu_combine_pdf",
+            "menu_combine_pdf_searchable"
+        ]
+    );
+    assert_ne!(got, default_menu_tokens());
+}
+
+/// Settings saves nothing for the factory order (so the next default reaches the user) and
+/// a marked copy for anything else, which reads back exactly as arranged.
+#[test]
+fn settings_saves_only_an_order_the_user_arranged() {
+    let factory = default_menu_tokens();
+    assert!(menu_order_to_save(&factory).is_empty());
+
+    let mut arranged = factory.clone();
+    arranged.swap(0, 2);
+    let saved = menu_order_to_save(&arranged);
+    assert_eq!(saved[0], MENU_ORDER_CUSTOM);
+    assert_eq!(effective_menu_tokens(&saved), arranged);
 }

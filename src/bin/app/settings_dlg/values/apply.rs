@@ -202,7 +202,10 @@ pub(super) unsafe fn apply_menu_item_list_order(hwnd: HWND) {
             order.push(key);
         }
     }
-    let _ = note(settings::set_menu_order(&order));
+    // Nothing for the factory order, so a later default still reaches this user; a marked
+    // copy for anything else (`verbs::menu_order_to_save`). Saving every OK verbatim froze
+    // the order of the day for good, new items piling up at the bottom (2026-10-07).
+    let _ = note(settings::set_menu_order(&menu_order_to_save(&order)));
 }
 
 /// The preview-mode combo (Explorer icon/classic/menu-preview toggle) and the app theme

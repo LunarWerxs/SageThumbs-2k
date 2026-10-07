@@ -73,3 +73,20 @@ fn idok_arm_blocks_on_hotkey_conflict_before_apply_settings() {
         "apply_settings must run before spawn_sync_push in the IDOK arm"
     );
 }
+
+/// Every top-level menu item but Settings has a row in Settings' menu list, so it can be
+/// hidden and moved like the rest. Compress to size and Save frame as image shipped without
+/// one: nobody could hide them, and any saved order dumped them at the bottom (2026-10-07).
+#[test]
+fn every_top_level_item_has_a_settings_row() {
+    for item in st2k_actions::verbs::MENU {
+        let key = item.title();
+        if key.is_empty() || key == "menu_settings" {
+            continue;
+        }
+        assert!(
+            MENU_ITEM_TOGGLES.iter().any(|(_, k)| *k == key),
+            "{key} is on the menu but has no row in Settings' menu list (MENU_ITEM_TOGGLES)"
+        );
+    }
+}

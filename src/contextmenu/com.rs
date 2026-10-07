@@ -210,6 +210,9 @@ struct Kinds {
     condensed: bool,
     audio_only: bool,
     video_only: bool,
+    /// At least one video in the selection: the video-only verbs (`top_level_needs_video`)
+    /// show only then, mixed selections included.
+    any_video: bool,
 }
 
 impl ContextMenu_Impl {
@@ -339,7 +342,7 @@ impl ContextMenu_Impl {
         // selection; the audio-only set for a music selection; the video-only set for
         // a video selection; the condensed file-agnostic set for an unsupported one
         // (show-on-all-file-types).
-        let top = if kinds.condensed {
+        let mut top = if kinds.condensed {
             verbs::condensed_top_level()
         } else if kinds.audio_only {
             verbs::audio_top_level()
@@ -348,17 +351,12 @@ impl ContextMenu_Impl {
         } else {
             verbs::ordered_top_level()
         };
-        for (item, start_leaf) in top {
-            let mut leaf = start_leaf;
-            build_menu_into(
-                hsub,
-                std::slice::from_ref(item),
-                idcmdfirst,
-                &mut leaf,
-                budget,
-                vis,
-            );
+        if !kinds.any_video {
+            top.retain(|(item, _)| !verbs::top_level_needs_video(item.title()));
         }
+        // All at once, not one item per call: the dividers between groups need one shared
+        // state (`Dividers`), or every one of them reads as leading and is dropped.
+        build_top_level_into(hsub, &top, idcmdfirst, budget, vis);
         if InsertMenuW(
             hmenu,
             pos,
@@ -447,6 +445,7 @@ impl IContextMenu_Impl for ContextMenu_Impl {
                         condensed,
                         audio_only,
                         video_only,
+                        any_video: paths.iter().any(|p| verbs::is_video(p)),
                     },
                 );
 
