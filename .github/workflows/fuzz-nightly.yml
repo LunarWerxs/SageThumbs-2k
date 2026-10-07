@@ -66,13 +66,24 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test --release --locked -p sagethumbs2k-codecs --lib fuzz::full_depth_sweep_over_the_synthetic_seeds -- --ignored --nocapture
 
+      # The two deep sessions overlap: each is one thread looping to its ST2K_FUZZ_SECS deadline
+      # and neither reads the other's output. The sweep above stays alone: it uses every core
+      # under a 600 ms per-pair cap, so sharing the CPU would quietly cut its mutations. Serial
+      # baselines (run 37567729810): 'deep fuzz: 239599456 inputs', 'deep pipeline fuzz: 227444
+      # cases'; a large drop means a shallower fuzz, so revert.
       - name: Deep session over the newer parsers
         if: ${{ !cancelled() }}
+        background: true
         run: cargo test --release --locked -p sagethumbs2k-codecs --lib fuzz::surfaces::deep_session_over_the_new_parsers -- --ignored --nocapture
 
       - name: Deep session over the thumbnail pipeline (always-valid images)
         if: ${{ !cancelled() }}
+        background: true
         run: cargo test --release --locked -p sagethumbs2k-codecs --lib fuzz::pipeline::deep_session_over_the_thumbnail_pipeline -- --ignored --nocapture
+
+      # A red session fails the job here, before the upload step checks failure().
+      - name: Both deep sessions finished
+        wait-all:
 
       - name: Upload the panicking inputs
         if: ${{ failure() }}
