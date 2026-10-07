@@ -120,16 +120,28 @@ fn eocd_offsets(tail: &[u8]) -> impl Iterator<Item = usize> + '_ {
         .filter(|&i| tail[i..i + 4] == EOCD_SIG)
 }
 
-/// Whether the EOCD at `eocd` carries a ZIP64 sentinel in its count or CD-offset field.
+/// Whether the EOCD at `eocd` carries a ZIP64 sentinel in any of the three fields the
+/// crate's own `Zip32CentralDirectoryEnd::may_be_zip64` checks: entry count (offset
+/// 10), central-directory size (12), or central-directory offset (16). The crate only
+/// looks for the ZIP64 locator when one of these is set, so mirroring all three
+/// exactly means this pre-check resolves the EOCD64 whenever — and only when — the
+/// crate would. Missing the size field let an archive with just that sentinel route
+/// the crate to the EOCD64 (and its reservation) while slipping past this guard.
 fn eocd_claims_zip64(tail: &[u8], eocd: usize) -> bool {
     let nents = u16::from_le_bytes([tail[eocd + 10], tail[eocd + 11]]);
-    let cdoff = u32::from_le_bytes([
+    let cd_size = u32::from_le_bytes([
+        tail[eocd + 12],
+        tail[eocd + 13],
+        tail[eocd + 14],
+        tail[eocd + 15],
+    ]);
+    let cd_off = u32::from_le_bytes([
         tail[eocd + 16],
         tail[eocd + 17],
         tail[eocd + 18],
         tail[eocd + 19],
     ]);
-    nents == 0xffff || cdoff == 0xffff_ffff
+    nents == 0xffff || cd_size == 0xffff_ffff || cd_off == 0xffff_ffff
 }
 
 /// The EOCD64 record offset named by the ZIP64 locator in the 20 bytes before the EOCD.
@@ -188,6 +200,19 @@ mod tests {
     /// reach `Vec::with_capacity`: the directory starts at offset `declared` (so
     /// `number_of_files <= directory_start`) and the EOCD64 sits at the very end.
     fn zip64_declaring(total_len: usize, declared: u64) -> Vec<u8> {
+        // All three ZIP64 sentinels set, as a real ZIP64 writer does.
+        zip64_eocd(total_len, declared, 0xffff, 0xffff_ffff, 0xffff_ffff)
+    }
+
+    /// Like [`zip64_declaring`] but choosing which classic-EOCD fields carry the ZIP64
+    /// sentinel, to exercise each arm of [`eocd_claims_zip64`].
+    fn zip64_eocd(
+        total_len: usize,
+        declared: u64,
+        eocd_nents: u16,
+        eocd_cd_size: u32,
+        eocd_cd_off: u32,
+    ) -> Vec<u8> {
         let cdh = one_cdh();
         let cd_offset = declared; // directory_start == declared
         let tail = 56 + 20 + 22;
@@ -219,15 +244,15 @@ mod tests {
         le(&mut l, 1, 4);
         buf.extend_from_slice(&l);
 
-        // EOCD. The 0xffff / 0xffffffff sentinels are what route the crate (and our
-        // pre-check) to the ZIP64 records above.
+        // EOCD. A ZIP64 sentinel in any of nents / cd-size / cd-offset is what routes
+        // the crate (and our pre-check) to the ZIP64 records above.
         let mut z = vec![0x50, 0x4b, 0x05, 0x06];
         le(&mut z, 0, 2);
         le(&mut z, 0, 2);
-        le(&mut z, 0xffff, 2);
-        le(&mut z, 0xffff, 2);
-        le(&mut z, 0xffff_ffff, 4);
-        le(&mut z, 0xffff_ffff, 4);
+        le(&mut z, eocd_nents as u64, 2);
+        le(&mut z, eocd_nents as u64, 2);
+        le(&mut z, eocd_cd_size as u64, 4);
+        le(&mut z, eocd_cd_off as u64, 4);
         le(&mut z, 0, 2);
         buf.extend_from_slice(&z);
 
@@ -272,6 +297,26 @@ mod tests {
         // fails on the crafted body). The point is only that the guard did not fire.
         if let Err(ZipError::UnsupportedArchive(msg)) = open(Cursor::new(bytes)) {
             assert!(!msg.contains("declared central directory entry count"));
+        }
+    }
+
+    /// The ZIP64 trigger is not only the entry-count sentinel: the crate reads the
+    /// EOCD64 when the classic cd-size OR cd-offset field is `0xffff_ffff` too. An
+    /// archive setting ONLY the cd-size sentinel must still be checked — red on the
+    /// earlier code that looked at nents and cd-offset but not cd-size.
+    #[test]
+    fn rejects_overdeclared_via_cd_size_sentinel_only() {
+        let declared = MAX_ZIP_DECLARED_ENTRIES + 1;
+        let total_len = (declared as usize) * 47 + 4096;
+        // nents and cd-offset ordinary; only the central-directory-size sentinel set.
+        let bytes = zip64_eocd(total_len, declared, 0, 0xffff_ffff, 0);
+
+        match open(Cursor::new(bytes)) {
+            Err(ZipError::UnsupportedArchive(msg)) => assert!(
+                msg.contains("declared central directory entry count"),
+                "wrong rejection: {msg}"
+            ),
+            other => panic!("expected the guard's rejection, got {other:?}"),
         }
     }
 
