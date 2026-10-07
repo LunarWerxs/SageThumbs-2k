@@ -31,12 +31,42 @@ fn box_reduce_u8_does_not_overflow_on_a_huge_block() {
     // (4.295e9) for a SINGLE channel's accumulator, before summing anything else.
     let (w, h, k) = (4200usize, 4200usize, 4200usize);
     let src = vec![255u8; w * h];
-    let out = box_reduce_u8(&src, w, h, 1, k);
+    let out = box_reduce_u8(src, w, h, 1, k);
     assert_eq!(
         out,
         vec![255u8],
         "a flat 255 fill must reduce to 255, not a wrapped value"
     );
+}
+
+/// The reduction runs in place over the decoded buffer, so an output written too early would
+/// corrupt a block read later. Every output must be the rounded mean of its own block, taken
+/// from an untouched copy: odd sizes (clipped right and bottom blocks), steps of 2 and 3, one
+/// to four channels, and content where every sample differs.
+#[test]
+fn box_reduce_in_place_matches_each_blocks_own_mean() {
+    for (w, h, k, ch) in [(7, 5, 2, 3), (9, 7, 3, 4), (5, 9, 2, 1), (11, 4, 3, 2)] {
+        let src: Vec<u8> = (0..w * h * ch).map(|i| (i * 37 % 251) as u8).collect();
+        let out = box_reduce_u8(src.clone(), w, h, ch, k);
+        let (nw, nh) = (w.div_ceil(k), h.div_ceil(k));
+        let s = &src;
+        assert_eq!(out.len(), nw * nh * ch, "{w}x{h} k={k} ch={ch}: length");
+        for (oy, ox, c) in
+            (0..nh).flat_map(|oy| (0..nw).flat_map(move |ox| (0..ch).map(move |c| (oy, ox, c))))
+        {
+            let ys = oy * k..(oy * k + k).min(h);
+            let xs = ox * k..(ox * k + k).min(w);
+            let n = (ys.len() * xs.len()) as u64;
+            let sum: u64 = ys
+                .flat_map(|y| xs.clone().map(move |x| u64::from(s[(y * w + x) * ch + c])))
+                .sum();
+            assert_eq!(
+                u64::from(out[(oy * nw + ox) * ch + c]),
+                (sum + n / 2) / n,
+                "{w}x{h} k={k} ch={ch}: output ({ox}, {oy}) channel {c}"
+            );
+        }
+    }
 }
 
 /// The pre-reduction is a SPEED change, and a speed change that quietly altered every

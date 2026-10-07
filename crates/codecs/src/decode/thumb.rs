@@ -408,61 +408,47 @@ pub(super) fn pre_reduce(img: DynamicImage, cx: u32) -> DynamicImage {
     let nh = h.div_ceil(k) as u32;
     match img {
         DynamicImage::ImageLuma8(b) => {
-            let out = box_reduce_u8(b.as_raw(), w, h, 1, k);
-            DynamicImage::ImageLuma8(rebuilt(b, nw, nh, out))
+            DynamicImage::ImageLuma8(rebuilt(nw, nh, box_reduce_u8(b.into_raw(), w, h, 1, k)))
         }
         DynamicImage::ImageLumaA8(b) => {
-            let out = box_reduce_u8(b.as_raw(), w, h, 2, k);
-            DynamicImage::ImageLumaA8(rebuilt(b, nw, nh, out))
+            DynamicImage::ImageLumaA8(rebuilt(nw, nh, box_reduce_u8(b.into_raw(), w, h, 2, k)))
         }
         DynamicImage::ImageRgb8(b) => {
-            let out = box_reduce_u8(b.as_raw(), w, h, 3, k);
-            DynamicImage::ImageRgb8(rebuilt(b, nw, nh, out))
+            DynamicImage::ImageRgb8(rebuilt(nw, nh, box_reduce_u8(b.into_raw(), w, h, 3, k)))
         }
         DynamicImage::ImageRgba8(b) => {
-            let out = box_reduce_u8(b.as_raw(), w, h, 4, k);
-            DynamicImage::ImageRgba8(rebuilt(b, nw, nh, out))
+            DynamicImage::ImageRgba8(rebuilt(nw, nh, box_reduce_u8(b.into_raw(), w, h, 4, k)))
         }
         DynamicImage::ImageLuma16(b) => {
-            let out = box_reduce_u16(b.as_raw(), w, h, 1, k);
-            DynamicImage::ImageLuma16(rebuilt(b, nw, nh, out))
+            DynamicImage::ImageLuma16(rebuilt(nw, nh, box_reduce_u16(b.into_raw(), w, h, 1, k)))
         }
         DynamicImage::ImageLumaA16(b) => {
-            let out = box_reduce_u16(b.as_raw(), w, h, 2, k);
-            DynamicImage::ImageLumaA16(rebuilt(b, nw, nh, out))
+            DynamicImage::ImageLumaA16(rebuilt(nw, nh, box_reduce_u16(b.into_raw(), w, h, 2, k)))
         }
         DynamicImage::ImageRgb16(b) => {
-            let out = box_reduce_u16(b.as_raw(), w, h, 3, k);
-            DynamicImage::ImageRgb16(rebuilt(b, nw, nh, out))
+            DynamicImage::ImageRgb16(rebuilt(nw, nh, box_reduce_u16(b.into_raw(), w, h, 3, k)))
         }
         DynamicImage::ImageRgba16(b) => {
-            let out = box_reduce_u16(b.as_raw(), w, h, 4, k);
-            DynamicImage::ImageRgba16(rebuilt(b, nw, nh, out))
+            DynamicImage::ImageRgba16(rebuilt(nw, nh, box_reduce_u16(b.into_raw(), w, h, 4, k)))
         }
         DynamicImage::ImageRgb32F(b) => {
-            let out = box_reduce_f32(b.as_raw(), w, h, 3, k);
-            DynamicImage::ImageRgb32F(rebuilt(b, nw, nh, out))
+            DynamicImage::ImageRgb32F(rebuilt(nw, nh, box_reduce_f32(b.into_raw(), w, h, 3, k)))
         }
         DynamicImage::ImageRgba32F(b) => {
-            let out = box_reduce_f32(b.as_raw(), w, h, 4, k);
-            DynamicImage::ImageRgba32F(rebuilt(b, nw, nh, out))
+            DynamicImage::ImageRgba32F(rebuilt(nw, nh, box_reduce_f32(b.into_raw(), w, h, 4, k)))
         }
         other => other,
     }
 }
 
-/// Wrap a reduced sample buffer back into an image, keeping the original if the dimensions
-/// somehow do not account for it (they always do; this is the arithmetic's own safety net).
-fn rebuilt<P>(
-    original: image::ImageBuffer<P, Vec<P::Subpixel>>,
-    w: u32,
-    h: u32,
-    out: Vec<P::Subpixel>,
-) -> image::ImageBuffer<P, Vec<P::Subpixel>>
+/// Wrap a reduced sample buffer back into an image. `from_raw` refuses only a buffer shorter
+/// than `w` x `h` pixels, and the reducers return exactly that many, so the blank image is the
+/// arithmetic's safety net, never a result: the original's samples are already overwritten.
+fn rebuilt<P>(w: u32, h: u32, out: Vec<P::Subpixel>) -> image::ImageBuffer<P, Vec<P::Subpixel>>
 where
     P: image::Pixel,
 {
-    image::ImageBuffer::from_raw(w, h, out).unwrap_or(original)
+    image::ImageBuffer::from_raw(w, h, out).unwrap_or_else(|| image::ImageBuffer::new(w, h))
 }
 
 /// Visit every output pixel of a box reduction in row-major order, handing `visit` the output
@@ -507,6 +493,12 @@ where
 /// not a multiple of `k` keeps its last partial block instead of being cropped. Rounded, not
 /// truncated, so a flat area round-trips to its own colour.
 ///
+/// In place, over the decoded buffer, which is then shrunk: no second buffer, so the peak is
+/// the decode's own (measured 2026-10-07 on the PDF/Illustrator tile: 3,942,542 B, of which
+/// the reduced copy was 786,432). Safe because output pixel `i` lands on source pixel `i`, and
+/// block `i` reads only source pixels from `oy*k*w + ox*k >= oy*nw + ox = i` on: every block
+/// reads before it writes, and no later block reads a pixel an earlier one wrote.
+///
 /// One body per sample type rather than a generic, so each instantiation keeps its own
 /// concrete `$t`/`$acc` pair. Both the 8-bit and 16-bit accumulators are 64-bit: `k` is
 /// bounded only by the image dimension (a small requested edge against a large source
@@ -514,23 +506,22 @@ where
 /// block at that size — see the size note beside the instantiations below.
 macro_rules! box_reduce {
     ($name:ident, $t:ty, $acc:ty) => {
-        fn $name(src: &[$t], w: usize, h: usize, ch: usize, k: usize) -> Vec<$t> {
-            let nw = w.div_ceil(k);
-            let nh = h.div_ceil(k);
-            let mut out = vec![0 as $t; nw * nh * ch];
+        fn $name(mut px: Vec<$t>, w: usize, h: usize, ch: usize, k: usize) -> Vec<$t> {
             for_each_block(w, h, k, |i, x0, x1, y0, y1| {
                 let mut acc = [0 as $acc; 4];
                 for y in y0..y1 {
-                    let row = &src[(y * w + x0) * ch..(y * w + x1) * ch];
+                    let row = &px[(y * w + x0) * ch..(y * w + x1) * ch];
                     accumulate_row(&mut acc, row, ch);
                 }
                 let n = ((x1 - x0) * (y1 - y0)) as $acc;
                 let d = i * ch;
-                for (o, a) in out[d..d + ch].iter_mut().zip(acc) {
+                for (o, a) in px[d..d + ch].iter_mut().zip(acc) {
                     *o = ((a + n / 2) / n) as $t;
                 }
             });
-            out
+            px.truncate(w.div_ceil(k) * h.div_ceil(k) * ch);
+            px.shrink_to_fit();
+            px
         }
     };
 }
@@ -543,21 +534,21 @@ macro_rules! box_reduce {
 box_reduce!(box_reduce_u8, u8, u64);
 box_reduce!(box_reduce_u16, u16, u64);
 
-/// The float twin of [`box_reduce`]. Written out rather than folded into the macro because the
-/// mean is a plain division here: there is no rounding term, and clamping a linear-light HDR
-/// value to an integer range is exactly what must NOT happen before the tone map runs.
-fn box_reduce_f32(src: &[f32], w: usize, h: usize, ch: usize, k: usize) -> Vec<f32> {
-    let nw = w.div_ceil(k);
-    let nh = h.div_ceil(k);
-    let mut out = vec![0f32; nw * nh * ch];
+/// The float twin of [`box_reduce`], in place the same way. Written out rather than folded
+/// into the macro because the mean is a plain division here: there is no rounding term, and
+/// clamping a linear-light HDR value to an integer range is exactly what must NOT happen
+/// before the tone map runs.
+fn box_reduce_f32(mut px: Vec<f32>, w: usize, h: usize, ch: usize, k: usize) -> Vec<f32> {
     for_each_block(w, h, k, |i, x0, x1, y0, y1| {
-        let acc = box_block_mean_f32(src, w, ch, x0, x1, y0, y1);
+        let acc = box_block_mean_f32(&px, w, ch, x0, x1, y0, y1);
         let d = i * ch;
-        for (o, a) in out[d..d + ch].iter_mut().zip(acc) {
+        for (o, a) in px[d..d + ch].iter_mut().zip(acc) {
             *o = a;
         }
     });
-    out
+    px.truncate(w.div_ceil(k) * h.div_ceil(k) * ch);
+    px.shrink_to_fit();
+    px
 }
 
 /// Per-channel mean over the source block `x0..x1` x `y0..y1` (inclusive of `x0`/`y0`, exclusive
