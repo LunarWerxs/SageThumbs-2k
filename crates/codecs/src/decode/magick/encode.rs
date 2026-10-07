@@ -67,10 +67,9 @@ pub(super) enum EncodeWait {
     CpuExceeded,
 }
 
-/// Pure decision core of the encode watchdog loop: has the child exceeded its CPU
-/// budget, or only the wall-clock deadline? Split out of the loop so the CPU branch —
-/// the budget the decode path already enforces via `await_magick_output`, which the
-/// encode path used to lack entirely — is directly testable without spawning and
+/// Pure decision core of the encode watchdog loop, and of the decode one in
+/// `await_magick_output`: has the child exceeded its CPU budget, or only the wall-clock
+/// deadline? Split out of the loops so both are directly testable without spawning and
 /// starving a real magick process.
 pub(super) fn encode_wait_decision(
     cpu: Option<Duration>,

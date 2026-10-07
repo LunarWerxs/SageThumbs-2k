@@ -102,7 +102,10 @@ pub fn log(msg: &str) {
         .append(true)
         .open(&path)
     {
-        let _ = writeln!(f, "[pid {} +{}ms] {msg}", std::process::id(), elapsed_ms());
+        // One write per line: `writeln!` on a File writes each piece separately, and another
+        // process appending between them would splice its line into the middle of this one.
+        let line = format!("[pid {} +{}ms] {msg}\n", std::process::id(), elapsed_ms());
+        let _ = f.write_all(line.as_bytes());
     }
 }
 

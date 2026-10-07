@@ -18,6 +18,7 @@
 
 use std::cell::RefCell;
 use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::time::Duration;
 
 use image::{DynamicImage, RgbaImage};
 
@@ -88,10 +89,65 @@ fn side(d: i64) -> usize {
         .unwrap_or(0)
 }
 
-/// How long one document's layers may take to flatten. A ZIP channel inflates forward to the
-/// rows it is asked for, so a small, highly compressible channel read deep down could keep the
-/// shell's thread inflating for minutes; past this the document keeps its baked preview.
-const FLATTEN_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+/// How much of its thread's CPU time one document's layers may take to flatten. A ZIP channel
+/// inflates forward to the rows it is asked for, so a small, highly compressible channel read
+/// deep down could keep the shell's thread inflating for minutes; past this the document keeps
+/// its baked preview.
+const FLATTEN_BUDGET: Duration = Duration::from_secs(20);
+
+/// How long a flatten may take on the clock however little CPU time its thread was given.
+const FLATTEN_WALL: Duration = Duration::from_secs(60);
+
+/// When a flatten gives up: [`FLATTEN_BUDGET`] of CPU time, with [`FLATTEN_WALL`] behind it.
+/// CPU time, not the clock, so a machine busy with other work, which starves this thread,
+/// does not cost a big layered document its picture.
+#[derive(Clone, Copy)]
+struct Deadline {
+    start: std::time::Instant,
+    cpu: Option<Duration>,
+}
+
+impl Deadline {
+    fn start() -> Self {
+        Self {
+            start: std::time::Instant::now(),
+            cpu: thread_cpu(),
+        }
+    }
+
+    fn passed(self) -> bool {
+        let wall = self.start.elapsed();
+        // A thread can never have used more CPU time than has passed on the clock, so its CPU
+        // time is asked for only once the clock is past the budget.
+        wall >= FLATTEN_BUDGET
+            && over_budget(
+                wall,
+                self.cpu.zip(thread_cpu()).map(|(a, b)| b.saturating_sub(a)),
+            )
+    }
+}
+
+/// Whether a flatten `wall` into its run that has used `used` of its thread's CPU time is out
+/// of time. With the CPU time unknown, the clock stands in for it.
+pub(super) fn over_budget(wall: Duration, used: Option<Duration>) -> bool {
+    wall >= FLATTEN_WALL || used.unwrap_or(wall) >= FLATTEN_BUDGET
+}
+
+/// The calling thread's CPU time (kernel and user) so far; `None` when Windows will not say.
+fn thread_cpu() -> Option<Duration> {
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::System::Threading::{GetCurrentThread, GetThreadTimes};
+    let mut t = [FILETIME::default(); 4];
+    let [created, exited, kernel, user] = &mut t;
+    unsafe { GetThreadTimes(GetCurrentThread(), created, exited, kernel, user) }.ok()?;
+    let ticks = |f: &FILETIME| (u64::from(f.dwHighDateTime) << 32) | u64::from(f.dwLowDateTime);
+    // FILETIME counts 100-nanosecond intervals.
+    Some(Duration::from_nanos(
+        ticks(kernel)
+            .saturating_add(ticks(user))
+            .saturating_mul(100),
+    ))
+}
 
 struct Channel {
     id: i16,
@@ -405,7 +461,7 @@ enum Rows<'a, R> {
         next: usize,
         predict: bool,
         row: Vec<u8>,
-        deadline: std::time::Instant,
+        deadline: Deadline,
     },
 }
 
@@ -414,7 +470,7 @@ fn channel_rows<'a, R: Read + Seek>(
     src: &'a RefCell<R>,
     ch: &Channel,
     (rows, row_bytes): (usize, usize),
-    (psb, deadline): (bool, std::time::Instant),
+    (psb, deadline): (bool, Deadline),
 ) -> Option<Rows<'a, R>> {
     let body = ch.at.checked_add(2)?;
     let end = ch.at.checked_add(ch.len)?;
@@ -537,14 +593,14 @@ impl<R: Read + Seek> Rows<'_, R> {
 /// Stored row `y` of a ZIP channel: inflate forward to it, then undo the prediction when set.
 fn zip_row<R: Read + Seek>(
     inflate: &mut flate2::read::ZlibDecoder<BufReader<At<'_, R>>>,
-    (next, deadline): (&mut usize, std::time::Instant),
+    (next, deadline): (&mut usize, Deadline),
     predict: bool,
     row: &mut [u8],
     y: usize,
     depth: Depth,
 ) -> Option<Vec<u8>> {
     while *next <= y {
-        if *next % 256 == 0 && std::time::Instant::now() > deadline {
+        if *next % 256 == 0 && deadline.passed() {
             return None;
         }
         inflate.read_exact(row).ok()?;
@@ -577,7 +633,7 @@ fn open_sources<'a, R: Read + Seek>(
     src: &'a RefCell<R>,
     head: &Head,
     layer: &Layer,
-    deadline: std::time::Instant,
+    deadline: Deadline,
 ) -> Option<Sources<'a, R>> {
     let shape = (
         layer.rect.height(),
@@ -610,7 +666,7 @@ fn open_mask<'a, R: Read + Seek>(
     src: &'a RefCell<R>,
     head: &Head,
     layer: &Layer,
-    deadline: std::time::Instant,
+    deadline: Deadline,
 ) -> Option<(Rows<'a, R>, Mask)> {
     match (layer.mask, layer.channel(-2)) {
         (Some(m), Some(ch)) if m.rect.height() > 0 && m.rect.width() > 0 => {
@@ -704,8 +760,8 @@ struct Canvas {
     rgba: Vec<u8>,
     /// The coverage the current clipping base left in each cell; clipped layers draw through it.
     base: Vec<u8>,
-    /// When the flatten gives up ([`FLATTEN_BUDGET`] from its start).
-    deadline: std::time::Instant,
+    /// When the flatten gives up.
+    deadline: Deadline,
 }
 
 impl Canvas {
@@ -722,7 +778,7 @@ impl Canvas {
             width,
             rgba,
             base,
-            deadline: std::time::Instant::now() + FLATTEN_BUDGET,
+            deadline: Deadline::start(),
         })
     }
 
@@ -842,7 +898,7 @@ fn draw_layer_row<R: Read + Seek>(
     canvas: &mut Canvas,
     ty: usize,
 ) -> Option<()> {
-    if std::time::Instant::now() > canvas.deadline {
+    if canvas.deadline.passed() {
         return None;
     }
     let y = canvas.grid.row(ty) as i64;

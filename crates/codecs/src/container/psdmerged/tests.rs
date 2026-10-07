@@ -844,3 +844,34 @@ fn a_layer_that_draws_nothing_leaves_the_composite() {
     let first = img.get_pixel(0, 0);
     assert!(img.pixels().any(|p| p != first), "a flat picture");
 }
+
+/// The flatten's budget is its thread's CPU time: on a machine busy with other work, a big
+/// layered document that has had little of the CPU still gets its picture once the clock
+/// passes the budget (the full codecs suite, run in parallel, starved the reporter's 24-layer
+/// file past 20 s on the clock). The clock still ends one that never gets the CPU, and stands
+/// in for the CPU time when Windows will not give it.
+#[test]
+fn a_starved_flatten_keeps_its_budget_until_the_clock_runs_out() {
+    use std::time::Duration;
+    let s = Duration::from_secs;
+    assert!(
+        !layers::over_budget(s(30), Some(s(8))),
+        "starved, within its CPU budget"
+    );
+    assert!(
+        layers::over_budget(s(30), Some(s(21))),
+        "its CPU budget spent"
+    );
+    assert!(
+        layers::over_budget(s(61), Some(s(1))),
+        "the clock's backstop"
+    );
+    assert!(
+        !layers::over_budget(s(15), None),
+        "no CPU time: the clock decides"
+    );
+    assert!(
+        layers::over_budget(s(21), None),
+        "no CPU time: the clock decides"
+    );
+}

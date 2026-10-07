@@ -207,7 +207,9 @@ unsafe fn receive(ctx: Option<Dav1dContext>, obus: &[u8]) -> Option<Frame> {
     // Every plane the conversion will read must be there and wide enough for its rows.
     let bytes = if frame.bits > 8 { 2 } else { 1 };
     let planes = if layout == Layout::Mono { 1 } else { 3 };
-    let sane = frame.width > 0
+    // AV1 codes 8, 10 or 12 bits; the YUV conversion's midpoints assume one of them.
+    let sane = matches!(frame.bits, 8 | 10 | 12)
+        && frame.width > 0
         && frame.height > 0
         && (0..planes).all(|p| {
             let stride = frame.pic.stride[usize::from(p > 0)];

@@ -77,12 +77,15 @@ pub(crate) fn await_magick_output(
             Err(RecvTimeoutError::Disconnected) => return Ok(Vec::new()),
             Err(RecvTimeoutError::Timeout) => {}
         }
+        // The encode watchdog's rule, so both share its tests; an exited child is never
+        // charged for CPU (see above).
         let still_running = !matches!(child.try_wait(), Ok(Some(_)));
-        if still_running && child_cpu_time(child).is_some_and(|cpu| cpu > cpu_budget) {
-            return Err("decode exceeded its CPU budget");
-        }
-        if start.elapsed() > wall_ceiling {
-            return Err("decode timed out");
+        let cpu = child_cpu_time(child).filter(|_| still_running);
+        let now = std::time::Instant::now();
+        match super::encode::encode_wait_decision(cpu, cpu_budget, now, start + wall_ceiling) {
+            super::encode::EncodeWait::CpuExceeded => return Err("decode exceeded its CPU budget"),
+            super::encode::EncodeWait::TimedOut => return Err("decode timed out"),
+            super::encode::EncodeWait::Continue => {}
         }
     }
 }

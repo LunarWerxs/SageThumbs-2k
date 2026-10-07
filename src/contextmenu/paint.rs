@@ -6,39 +6,50 @@
 
 use super::*;
 use st2k_base::checkerpx::{checker_shades, fill_checker};
-use windows::Win32::Foundation::POINT;
+use windows::Win32::Foundation::{POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
-    GetTextMetricsW, MonitorFromPoint, MONITOR_DEFAULTTONEAREST, TEXTMETRICW,
+    GetTextMetricsW, MonitorFromPoint, MonitorFromWindow, RestoreDC, SaveDC,
+    MONITOR_DEFAULTTONEAREST, TEXTMETRICW,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, SystemParametersInfoForDpi, MDT_EFFECTIVE_DPI};
-use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetForegroundWindow, GetWindowRect};
 
 /// The highest DPI the tile is laid out for (Windows' own ceiling is 500%, 480 DPI). Bounds
 /// the per-DPI font cache and the decoded thumbnail's size against a nonsense answer.
 const MAX_MENU_DPI: u32 = 480;
 
-/// The DPI the menu about to open is drawn at: the effective DPI of the monitor under the
-/// cursor, which is where a right-click menu opens. Answered in the calling thread's own
-/// DPI terms, so a DPI-unaware host (whose menus Windows stretches as a whole) gets 96 and
-/// keeps the 100% tile. 96 whenever the query fails.
+/// The DPI the menu about to open is drawn at: the effective DPI of the monitor it opens on
+/// (see [`opens_at_cursor`]). Answered in the calling thread's own DPI terms, so a
+/// DPI-unaware host (whose menus Windows stretches as a whole) gets 96 and keeps the 100%
+/// tile. 96 whenever the query fails.
 pub(crate) fn menu_dpi() -> u32 {
-    let mut pt = POINT::default();
+    let (mut pt, mut rect) = (POINT::default(), RECT::default());
     let (mut x, mut y) = (0u32, 0u32);
     let ok = unsafe {
-        GetCursorPos(&mut pt).is_ok()
-            && GetDpiForMonitor(
-                MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST),
-                MDT_EFFECTIVE_DPI,
-                &mut x,
-                &mut y,
-            )
-            .is_ok()
+        let front = GetForegroundWindow();
+        let front_rect = GetWindowRect(front, &mut rect).is_ok().then_some(rect);
+        let monitor = if GetCursorPos(&mut pt).is_ok() && opens_at_cursor(pt, front_rect) {
+            MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST)
+        } else {
+            MonitorFromWindow(front, MONITOR_DEFAULTTONEAREST)
+        };
+        GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut x, &mut y).is_ok()
     };
     if ok {
         clamp_dpi(x)
     } else {
         USER_DEFAULT_SCREEN_DPI
     }
+}
+
+/// Whether the menu opens at the cursor. A right-click opens it there, in the window in
+/// front (`front`, its screen rectangle). Shift+F10 or the Menu key opens it at the selection
+/// instead, which can be on another monitor than the mouse, so a cursor outside that window
+/// does not count. With no window to go by, the cursor is all there is.
+fn opens_at_cursor(cursor: POINT, front: Option<RECT>) -> bool {
+    front.is_none_or(|r| {
+        (r.left..r.right).contains(&cursor.x) && (r.top..r.bottom).contains(&cursor.y)
+    })
 }
 
 /// Keep a DPI inside what Windows can actually show (100% to 500%).
@@ -336,7 +347,9 @@ pub(crate) unsafe fn paint_preview(hdc: HDC, rc: RECT, p: &Preview, bg: u32, fg:
     }
 
     // Caption lines, in the menu's own font + text color so they match the
-    // surrounding items (both legible — no dim grey).
+    // surrounding items (both legible — no dim grey). The DC is the menu's own: its mode and
+    // colour go back as they were for the items Windows draws after this one.
+    let saved = SaveDC(hdc);
     SetBkMode(hdc, TRANSPARENT);
     let oldf = select_menu_font(hdc, p.dpi);
     SetTextColor(hdc, COLORREF(fg));
@@ -370,6 +383,9 @@ pub(crate) unsafe fn paint_preview(hdc: HDC, rc: RECT, p: &Preview, bg: u32, fg:
     );
 
     SelectObject(hdc, oldf);
+    if saved != 0 {
+        let _ = RestoreDC(hdc, saved);
+    }
 }
 
 /// The preview item's pixel size at its DPI: wide enough for the thumbnail and the
@@ -416,6 +432,32 @@ fn shell_execute_succeeded(code: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tile is sized for the monitor the menu opens on: the cursor's for a right-click,
+    /// the window's when the keyboard opened the menu while the mouse rests elsewhere.
+    #[test]
+    fn a_keyboard_opened_menu_ignores_a_cursor_outside_the_window() {
+        let window = RECT {
+            left: 1920,
+            top: 0,
+            right: 3840,
+            bottom: 1080,
+        };
+        let at = |x, y| POINT { x, y };
+        assert!(
+            opens_at_cursor(at(2000, 500), Some(window)),
+            "right-click in the window"
+        );
+        assert!(
+            !opens_at_cursor(at(500, 500), Some(window)),
+            "mouse on the other monitor"
+        );
+        assert!(
+            !opens_at_cursor(at(3840, 500), Some(window)),
+            "right edge is outside"
+        );
+        assert!(opens_at_cursor(at(500, 500), None), "no window to go by");
+    }
 
     #[test]
     fn shell_execute_return_code_threshold_is_32() {
