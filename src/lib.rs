@@ -62,10 +62,11 @@ pub fn probe_cover(bytes: &[u8]) -> Option<(u32, u32)> {
 
 /// Diagnostics: render the right-click menu preview for `path` to a PNG exactly
 /// as the owner-draw paints it. `bg` = `None` for the live menu color, or
-/// `Some(0x00RRGGBB)` to preview a chosen menu background.
+/// `Some(0x00RRGGBB)` to preview a chosen menu background. `dpi` = `None` for the
+/// monitor under the cursor, or `Some(192)` to lay the tile out for 200%.
 #[doc(hidden)]
-pub fn render_preview_png(path: &str, out_png: &str, bg: Option<u32>) -> bool {
-    contextmenu::render_preview_png(path, out_png, bg)
+pub fn render_preview_png(path: &str, out_png: &str, bg: Option<u32>, dpi: Option<u32>) -> bool {
+    contextmenu::render_preview_png(path, out_png, bg, dpi)
 }
 
 /// Test/diagnostics hook: OCR an image file to text (the same path the "Copy

@@ -51,8 +51,12 @@ fn initialize_state(cm: &ContextMenu_Impl, pdtobj: Ref<'_, IDataObject>) -> Resu
     let eligible = meta.is_some();
     cm.preview_eligible.set(eligible);
     *cm.preview_meta.borrow_mut() = meta;
+    // Read once, here, where the prefetch starts: the thumbnail is decoded for it and the
+    // later measure/draw calls must agree with the size it was decoded at.
+    let dpi = menu_dpi();
+    cm.dpi.set(dpi);
     *cm.preview_job.borrow_mut() = if eligible {
-        start_menu_thumb(&paths[0])
+        start_menu_thumb(&paths[0], dpi)
     } else {
         None
     };

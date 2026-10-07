@@ -17,6 +17,7 @@
 //! | --- | --- | --- |
 //! | no menu skin (the common case) | full tile, menu stays dark | full tile, **menu turns light** |
 //! | menu skin loaded (StartAllBack, ExplorerPatcher, …) | **~6 px sliver** | full tile, menu turns light |
+//! | display scale above 100% (#61) | **tile drawn twice, overlapping** | full tile, menu turns light |
 //!
 //! Two independent causes, deliberately kept apart:
 //!
@@ -29,8 +30,12 @@
 //!   Reproduced with zero skin DLLs in the process, so uninstalling the skin does not
 //!   avoid it. This is the 1.3.1 / 1.3.7 cost.
 //!
-//! So [`menu_skin_loaded`] probes the host once and the insertion sites branch:
-//! **the bitmap item is the DEFAULT, owner-draw is the positive-match exception.**
+//! - **The doubled tile is WINDOWS' SCALING.** Above 100% a bitmap item is drawn once
+//!   1:1 and once stretched sideways by the scale (see [`preview_owner_drawn`]).
+//!
+//! So [`menu_skin_loaded`] probes the host once, `Initialize` reads the menu's DPI, and
+//! the insertion sites branch: **the bitmap item is the DEFAULT, owner-draw is the
+//! exception for a positive skin match or a scaled display.**
 //! That direction is the whole safety argument — a skin we have never heard of falls
 //! through to the bitmap item and its user sees exactly what they see today, so the
 //! name list can only ever *add* fixes, never remove one. The preview also stays
@@ -66,10 +71,9 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyMenu, GetSystemMetrics, InsertMenuW, SetMenuItemInfoW,
-    SystemParametersInfoW, HMENU, MENUITEMINFOW, MF_BITMAP, MF_BYPOSITION, MF_OWNERDRAW, MF_POPUP,
-    MF_SEPARATOR, MF_STRING, MIIM_BITMAP, NONCLIENTMETRICSW, SM_CXMENUCHECK, SM_CYMENUCHECK,
-    SPI_GETNONCLIENTMETRICS, SW_SHOWNORMAL, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WM_DRAWITEM,
-    WM_MEASUREITEM,
+    HMENU, MENUITEMINFOW, MF_BITMAP, MF_BYPOSITION, MF_OWNERDRAW, MF_POPUP, MF_SEPARATOR,
+    MF_STRING, MIIM_BITMAP, NONCLIENTMETRICSW, SM_CXMENUCHECK, SM_CYMENUCHECK,
+    SPI_GETNONCLIENTMETRICS, SW_SHOWNORMAL, USER_DEFAULT_SCREEN_DPI, WM_DRAWITEM, WM_MEASUREITEM,
 };
 use windows_implement::implement;
 
@@ -112,6 +116,8 @@ pub(crate) struct Preview {
     /// `WM_DRAWITEM` (mousing up and down a portable install's menu used to mean one
     /// ini read + parse per repaint).
     checker: bool,
+    /// The DPI the tile is laid out and decoded for (#61); 96 is the 100% tile.
+    dpi: u32,
 }
 
 impl Drop for Preview {
@@ -151,6 +157,9 @@ pub struct ContextMenu {
     /// object only after the menu is dismissed). Stays invalid on the owner-draw
     /// branch, which composes straight into the DC the shell hands us.
     tile: Cell<HBITMAP>,
+    /// The DPI of the monitor the menu opens on, read once in `Initialize` (#61). It sizes
+    /// the preview and picks the item kind (see [`preview_owner_drawn`]).
+    dpi: Cell<u32>,
 }
 
 impl Default for ContextMenu {
@@ -167,6 +176,7 @@ impl Default for ContextMenu {
             preview_failed: Cell::new(false),
             preview_cmd: Cell::new(None),
             tile: Cell::new(HBITMAP::default()),
+            dpi: Cell::new(USER_DEFAULT_SCREEN_DPI),
         }
     }
 }
@@ -256,11 +266,13 @@ fn preview_metadata(path: &str) -> Option<std::fs::Metadata> {
 /// Called only when a preview is about to be inserted or painted. `meta`, when
 /// given, is the `Initialize`-time [`preview_metadata`] result — reusing it here
 /// avoids a second `metadata_budgeted` stat (each one its own bounded worker
-/// thread) for the same file on the same right-click.
+/// thread) for the same file on the same right-click. `dpi` is the menu's DPI; the
+/// thumbnail is decoded for it and the tile is laid out at it.
 fn build_preview(
     path: &str,
     prefetched: Option<MenuThumbJob>,
     meta: Option<std::fs::Metadata>,
+    dpi: u32,
 ) -> Option<Preview> {
     let meta = match meta {
         Some(m) => m,
@@ -298,7 +310,7 @@ fn build_preview(
     // has no internal TIME bound and this would otherwise run on the menu's own paint thread.
     // The DIB (a GDI object) is created HERE from the worker's plain-RGBA result; only the
     // decode (the slow part) is offloaded. On timeout -> caption-only tile (handled below).
-    let decoded = decode_menu_thumb_budgeted(path, prefetched).and_then(|t| {
+    let decoded = decode_menu_thumb_budgeted(path, prefetched, dpi).and_then(|t| {
         let hbm = unsafe { st2k_base::dib::create_premultiplied_dib(t.w, t.h, &t.rgba).ok()? };
         Some((hbm, t.w, t.h, t.ow, t.oh))
     });
@@ -318,6 +330,7 @@ fn build_preview(
         name,
         info: info.encode_utf16().collect(),
         checker: settings::preview_checker(),
+        dpi,
     })
 }
 
@@ -372,13 +385,28 @@ unsafe fn preview_ddb(p: &Preview) -> HBITMAP {
     bmp
 }
 
+/// Which item kind draws the tile: owner-draw on a menu-skinned host or at any display
+/// scale but 100%, the bitmap item otherwise.
+///
+/// The scale half is #61. Above 100%, Windows draws a bitmap item twice: once 1:1 and once
+/// stretched sideways by the scale. Measured on the reporter's own 125% capture: a 162 px
+/// tile covered 202 px of the row, and its "KB" was 18 px wide in one copy and 22 px in
+/// the other, which is the "3 KB KB" caption; at 200% the second copy covered half of the
+/// first. An owner-drawn item is measured and painted only by us, once, into the rect the
+/// menu hands over. Its cost, the light classic menu (module header), now also applies on
+/// scaled displays: a tile drawn once in a light menu beats a doubled one in a dark menu,
+/// and `MenuPreview = 0` still turns the preview off.
+pub(crate) fn preview_owner_drawn(skinned: bool, dpi: u32) -> bool {
+    skinned || dpi != USER_DEFAULT_SCREEN_DPI
+}
+
 /// Insert the preview as an OWNER-DRAWN item — the only item kind whose height we can
 /// claim, via `WM_MEASUREITEM`.
 ///
-/// **This is the SKINNED-host branch only.** A skin's measurement pass sizes any bitmap
-/// item as an icon and clips the ~136 px tile to a ~6 px strip (32-bpp DIB, screen DDB
-/// and 24-bpp DDB clamp identically), so owner-draw is the only thing that survives
-/// there. Its cost is that one owner-drawn item drops the whole popup onto the classic
+/// **This is the SKINNED-host and scaled-display branch only** ([`preview_owner_drawn`]).
+/// A skin's measurement pass sizes any bitmap item as an icon and clips the ~136 px tile
+/// to a ~6 px strip (32-bpp DIB, screen DDB and 24-bpp DDB clamp identically), and a
+/// scaled display draws it twice, so owner-draw is the only thing that survives there. Its cost is that one owner-drawn item drops the whole popup onto the classic
 /// (light) drawing path — which is why unskinned hosts get [`insert_preview_bitmap`]
 /// instead, and why the preview stays opt-out via `MenuPreview = 0` either way.
 unsafe fn insert_preview_item(hmenu: HMENU, pos: u32, cmd: u32) -> bool {
@@ -540,7 +568,7 @@ impl ContextMenu {
             // Reuse the `Initialize`-time metadata (see `preview_eligible`) instead
             // of statting the file again here.
             let meta = self.preview_meta.borrow_mut().take();
-            build_preview(&path, prefetched, meta)
+            build_preview(&path, prefetched, meta, self.dpi.get())
         });
         match built {
             Some(p) => {
@@ -591,7 +619,7 @@ impl ContextMenu {
     /// decodes here. Both placements prefetch during `Initialize`, so the bounded
     /// wait is normally hidden behind Explorer's own menu construction.
     unsafe fn insert_preview(&self, hmenu: HMENU, pos: u32, cmd: u32) -> bool {
-        if menu_skin_loaded() {
+        if preview_owner_drawn(menu_skin_loaded(), self.dpi.get()) {
             return insert_preview_item(hmenu, pos, cmd);
         }
         // No tile means no pixels to hand a bitmap item. Insert nothing rather than
@@ -648,8 +676,12 @@ impl ContextMenu {
                 GetSysColor(COLOR_HIGHLIGHT),
                 GetSysColor(COLOR_HIGHLIGHTTEXT),
             )
-        } else {
+        } else if menu_skin_loaded() {
             menu_theme_colors()
+        } else {
+            // Unskinned, an owner-drawn item has put the whole popup on Windows' classic
+            // drawing path, which paints the system menu colours whatever the app theme.
+            (GetSysColor(COLOR_MENU), GetSysColor(COLOR_MENUTEXT))
         };
         paint_preview(dis.hDC, dis.rcItem, p, bg, fg);
         true

@@ -17,6 +17,7 @@ fn preview_measures_a_real_tile_rect() {
         name: st2k_base::host::wide("photo.jpg"),
         info: st2k_base::host::wide("1500 x 1500 px - 96 KB"),
         checker: true,
+        dpi: USER_DEFAULT_SCREEN_DPI,
     };
     unsafe {
         let (iw, ih) = tile_size(&p);
@@ -77,6 +78,7 @@ fn unskinned_preview_item_is_a_bitmap() {
             name: st2k_base::host::wide("photo.jpg"),
             info: st2k_base::host::wide("1500 x 1500 px - 96 KB"),
             checker: true,
+            dpi: USER_DEFAULT_SCREEN_DPI,
         };
         let bmp = preview_ddb(&p);
         assert!(!bmp.is_invalid(), "the caption-only tile must compose");
@@ -200,5 +202,177 @@ fn separators_never_lead_trail_or_double_up() {
         assert!(!t2.contains(MFT_SEPARATOR), "row 2 must be the second verb");
 
         let _ = DestroyMenu(menu);
+    }
+}
+
+/// #61: above 100% display scaling Windows draws a bitmap menu item twice (1:1 and
+/// stretched sideways by the scale), so a scaled display must get the owner-drawn item,
+/// which only we measure and paint. At 100% an unskinned host keeps the bitmap branch:
+/// here there is no file to decode, so that branch inserts nothing rather than falling
+/// back to owner-draw.
+#[test]
+fn a_scaled_display_gets_an_owner_drawn_preview() {
+    use windows::Win32::UI::WindowsAndMessaging::GetMenuItemCount;
+    if menu_skin_loaded() {
+        return; // a skinned test host owner-draws at every scale; nothing to tell apart
+    }
+    unsafe {
+        for dpi in [120, 144, 192] {
+            let cm = ContextMenu::default();
+            cm.dpi.set(dpi);
+            let menu = CreatePopupMenu().expect("CreatePopupMenu");
+            assert!(cm.insert_preview(menu, 0, 42), "{dpi} DPI: inserted");
+            let (ftype, id) = item_type_and_id(menu, 0);
+            assert_eq!(id, 42);
+            assert!(
+                ftype.contains(MFT_OWNERDRAW),
+                "{dpi} DPI must owner-draw the preview ({ftype:?}); a bitmap item is \
+                 drawn twice by Windows' menu scaling"
+            );
+            let _ = DestroyMenu(menu);
+        }
+        let cm = ContextMenu::default();
+        let menu = CreatePopupMenu().expect("CreatePopupMenu");
+        assert!(
+            !cm.insert_preview(menu, 0, 42),
+            "100%: the bitmap branch, which has no tile without a file"
+        );
+        assert_eq!(GetMenuItemCount(Some(menu)), 0, "100% must not owner-draw");
+        let _ = DestroyMenu(menu);
+    }
+}
+
+/// Paint `p` through the menu's own paint path, black on white, and return the tile's
+/// size and pixels (0x00RRGGBB, top-down).
+unsafe fn paint_tile(p: &Preview) -> (i32, i32, Vec<u32>) {
+    let (w, h) = tile_size(p);
+    let pixels = paint_into_dib(w, h, |dc, rc| {
+        paint_preview(dc, rc, p, 0x00FF_FFFF, 0);
+    });
+    (w, h, pixels)
+}
+
+/// `line` drawn unclipped in the menu font at `dpi`, black on white, on a canvas far
+/// larger than the text: the reference for how tall its ink really is.
+unsafe fn paint_unclipped(line: &[u16], dpi: u32) -> (i32, i32, Vec<u32>) {
+    let (w, h) = (scale_px(600, dpi), scale_px(120, dpi));
+    let pixels = paint_into_dib(w, h, |dc, rc| {
+        let brush = CreateSolidBrush(COLORREF(0x00FF_FFFF));
+        FillRect(dc, &rc, brush);
+        let _ = DeleteObject(brush.into());
+        SetBkMode(dc, TRANSPARENT);
+        let old = select_menu_font(dc, dpi);
+        SetTextColor(dc, COLORREF(0));
+        let mut text = line.to_vec();
+        let mut r = RECT {
+            left: 10,
+            top: 10,
+            right: w - 10,
+            bottom: h - 10,
+        };
+        DrawTextW(
+            dc,
+            &mut text,
+            &mut r,
+            DT_SINGLELINE | windows::Win32::Graphics::Gdi::DT_NOCLIP,
+        );
+        SelectObject(dc, old);
+    });
+    (w, h, pixels)
+}
+
+unsafe fn paint_into_dib(w: i32, h: i32, paint: impl FnOnce(HDC, RECT)) -> Vec<u32> {
+    let bmi = st2k_base::safety::top_down_bmi(w, h);
+    let mut bits: *mut core::ffi::c_void = core::ptr::null_mut();
+    let dib = CreateDIBSection(None, &bmi, DIB_RGB_COLORS, &mut bits, None, 0).expect("DIB");
+    let dc = CreateCompatibleDC(None);
+    let old = SelectObject(dc, dib.into());
+    paint(
+        dc,
+        RECT {
+            left: 0,
+            top: 0,
+            right: w,
+            bottom: h,
+        },
+    );
+    let _ = GdiFlush();
+    let n = (w * h) as usize;
+    let pixels: Vec<u32> = core::slice::from_raw_parts(bits as *const u32, n)
+        .iter()
+        .map(|p| p & 0x00FF_FFFF)
+        .collect();
+    SelectObject(dc, old);
+    let _ = DeleteDC(dc);
+    let _ = DeleteObject(dib.into());
+    pixels
+}
+
+/// The runs of rows holding any non-white pixel, as (first row, height).
+fn ink_runs(w: i32, h: i32, pixels: &[u32]) -> Vec<(i32, i32)> {
+    let mut runs = Vec::new();
+    let mut start = None;
+    for y in 0..h {
+        let row = &pixels[(y * w) as usize..((y + 1) * w) as usize];
+        let ink = row.iter().any(|&p| p != 0x00FF_FFFF);
+        match (ink, start) {
+            (true, None) => start = Some(y),
+            (false, Some(s)) => {
+                runs.push((s, y - s));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(s) = start {
+        runs.push((s, h - s));
+    }
+    runs
+}
+
+/// #61: both caption rows must hold the whole line at the menu's DPI. Before the fix the
+/// rows were a fixed 18 px, so at 200% the 32 px menu font lost the bottom of each line
+/// ("621 x 652 p" printed without the p's tail) and the picture box stayed 88 px. Each
+/// line's ink in the tile must be exactly as tall as the same line drawn unclipped, and
+/// nothing may touch the tile's bottom edge.
+#[test]
+fn caption_rows_hold_the_whole_line_at_every_scale() {
+    for dpi in [96, 120, 144, 192, 288] {
+        let mut p = Preview {
+            hbm: HBITMAP::default(),
+            w: 0,
+            h: 0,
+            name: st2k_base::host::wide("photo.jpg"),
+            info: st2k_base::host::wide("621 \u{00d7} 652 px  \u{2013}  177 KB"),
+            checker: false,
+            dpi,
+        };
+        unsafe {
+            let (w, h, tile) = paint_tile(&p);
+            let runs = ink_runs(w, h, &tile);
+            assert_eq!(runs.len(), 2, "{dpi} DPI: two caption lines, got {runs:?}");
+            for (i, line) in [&p.name, &p.info].into_iter().enumerate() {
+                let (rw, rh, reference) = paint_unclipped(line, dpi);
+                let want = ink_runs(rw, rh, &reference);
+                assert_eq!(want.len(), 1, "{dpi} DPI: reference line {i}: {want:?}");
+                assert_eq!(
+                    runs[i].1, want[0].1,
+                    "{dpi} DPI: caption line {i} is clipped ({} of {} ink rows)",
+                    runs[i].1, want[0].1
+                );
+            }
+            let (last, height) = runs[1];
+            assert!(
+                last + height < h,
+                "{dpi} DPI: the caption touches the tile's edge"
+            );
+            // A scaled tile is never shorter than the 100% one scaled (rounding aside).
+            p.dpi = USER_DEFAULT_SCREEN_DPI;
+            let (_, h96) = tile_size(&p);
+            assert!(
+                h >= scale_px(h96, dpi) - 2,
+                "{dpi} DPI: {h} px is shorter than the 100% tile's {h96} px scaled"
+            );
+        }
     }
 }

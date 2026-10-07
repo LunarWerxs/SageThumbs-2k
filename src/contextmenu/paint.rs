@@ -1,25 +1,74 @@
 //! Menu-preview rendering: caption font/metrics, theme colours, the checker backdrop and
 //! the owner-draw paint itself.
 //!
-//! Split out of `contextmenu.rs` 2026-07-31 (pure move).
+//! Split out of `contextmenu.rs` 2026-07-31 (pure move). DPI-aware since #61: every length
+//! here is a 96-DPI design value scaled to the DPI the menu is shown at.
 
 use super::*;
 use st2k_base::checkerpx::{checker_shades, fill_checker};
+use windows::Win32::Foundation::POINT;
+use windows::Win32::Graphics::Gdi::{
+    GetTextMetricsW, MonitorFromPoint, MONITOR_DEFAULTTONEAREST, TEXTMETRICW,
+};
+use windows::Win32::UI::HiDpi::{GetDpiForMonitor, SystemParametersInfoForDpi, MDT_EFFECTIVE_DPI};
+use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+/// The highest DPI the tile is laid out for (Windows' own ceiling is 500%, 480 DPI). Bounds
+/// the per-DPI font cache and the decoded thumbnail's size against a nonsense answer.
+const MAX_MENU_DPI: u32 = 480;
+
+/// The DPI the menu about to open is drawn at: the effective DPI of the monitor under the
+/// cursor, which is where a right-click menu opens. Answered in the calling thread's own
+/// DPI terms, so a DPI-unaware host (whose menus Windows stretches as a whole) gets 96 and
+/// keeps the 100% tile. 96 whenever the query fails.
+pub(crate) fn menu_dpi() -> u32 {
+    let mut pt = POINT::default();
+    let (mut x, mut y) = (0u32, 0u32);
+    let ok = unsafe {
+        GetCursorPos(&mut pt).is_ok()
+            && GetDpiForMonitor(
+                MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST),
+                MDT_EFFECTIVE_DPI,
+                &mut x,
+                &mut y,
+            )
+            .is_ok()
+    };
+    if ok {
+        clamp_dpi(x)
+    } else {
+        USER_DEFAULT_SCREEN_DPI
+    }
+}
+
+/// Keep a DPI inside what Windows can actually show (100% to 500%).
+pub(crate) fn clamp_dpi(dpi: u32) -> u32 {
+    dpi.clamp(USER_DEFAULT_SCREEN_DPI, MAX_MENU_DPI)
+}
+
+/// Scale a 96-DPI design length to `dpi`, rounded to the nearest pixel (MulDiv's rule).
+pub(crate) fn scale_px(v: i32, dpi: u32) -> i32 {
+    let base = i64::from(USER_DEFAULT_SCREEN_DPI);
+    ((i64::from(v) * i64::from(dpi) + base / 2) / base) as i32
+}
 
 /// The actual menu font (`SPI_GETNONCLIENTMETRICS.lfMenuFont`, e.g. Segoe UI on
-/// Win11), so the caption matches the surrounding menu items exactly — the stock
-/// `DEFAULT_GUI_FONT` is an old, mismatched typeface. `Some` must be deleted by
-/// the caller; `None` means "fall back to the stock GUI font" (do NOT delete).
-pub(crate) unsafe fn menu_font() -> Option<HFONT> {
+/// Win11) at `dpi`, so the caption matches the surrounding menu items exactly — the stock
+/// `DEFAULT_GUI_FONT` is an old, mismatched typeface. `SystemParametersInfoForDpi`, not the
+/// plain call: inside a per-monitor-aware Explorer the plain call answers for the SYSTEM
+/// DPI, the wrong size on any other monitor. `Some` must be deleted by the caller; `None`
+/// means "fall back to the stock GUI font" (do NOT delete).
+pub(crate) unsafe fn menu_font(dpi: u32) -> Option<HFONT> {
     let mut ncm = NONCLIENTMETRICSW {
         cbSize: core::mem::size_of::<NONCLIENTMETRICSW>() as u32,
         ..Default::default()
     };
-    let ok = SystemParametersInfoW(
-        SPI_GETNONCLIENTMETRICS,
+    let ok = SystemParametersInfoForDpi(
+        SPI_GETNONCLIENTMETRICS.0,
         ncm.cbSize,
         Some(&mut ncm as *mut _ as *mut core::ffi::c_void),
-        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        0,
+        dpi,
     )
     .is_ok();
     if ok {
@@ -31,34 +80,44 @@ pub(crate) unsafe fn menu_font() -> Option<HFONT> {
     None
 }
 
-/// The menu font, created once per process and never freed — preview-tile
-/// composition may occur while a live menu still references the bitmap. Same
-/// never-free rationale as
-/// [`menu_logo`]; the classic-menu host is short-lived. Falls back to
-/// [`menu_font`] on the cache-miss path and to the stock GUI font if even that
-/// fails. Returns an HFONT the caller must NOT delete.
-pub(crate) fn menu_font_cached() -> HFONT {
-    use std::sync::OnceLock;
-    static FONT: OnceLock<isize> = OnceLock::new();
-    let h = *FONT.get_or_init(|| {
-        unsafe { menu_font() }
-            .map(|f| f.0 as isize)
-            .unwrap_or_else(|| unsafe { GetStockObject(DEFAULT_GUI_FONT) }.0 as isize)
-    });
+/// The menu font at `dpi`, created once per DPI per process and never freed — preview-tile
+/// composition may occur while a live menu still references the bitmap. Same never-free
+/// rationale as [`menu_logo`]; the classic-menu host is short-lived, and [`clamp_dpi`]
+/// keeps the cache to the handful of DPIs one desk can have. Falls back to the stock GUI
+/// font when [`menu_font`] fails. Returns an HFONT the caller must NOT delete.
+pub(crate) fn menu_font_cached(dpi: u32) -> HFONT {
+    use std::sync::{Mutex, PoisonError};
+    static FONTS: Mutex<Vec<(u32, isize)>> = Mutex::new(Vec::new());
+    let dpi = clamp_dpi(dpi);
+    let mut fonts = FONTS.lock().unwrap_or_else(PoisonError::into_inner);
+    let h = match fonts.iter().find(|(d, _)| *d == dpi) {
+        Some(&(_, h)) => h,
+        None => {
+            let h = unsafe { menu_font(dpi) }
+                .map(|f| f.0 as isize)
+                .unwrap_or_else(|| unsafe { GetStockObject(DEFAULT_GUI_FONT) }.0 as isize);
+            fonts.push((dpi, h));
+            h
+        }
+    };
     HFONT(h as *mut core::ffi::c_void)
 }
 
-/// Select the cached menu font into `hdc`; returns the prior font to restore.
+/// Select the cached menu font for `dpi` into `hdc`; returns the prior font to restore.
 /// The font is process-cached (never freed), so there is nothing to delete —
 /// unlike the old per-call font, callers must NOT delete the returned font.
-pub(crate) unsafe fn select_menu_font(hdc: windows::Win32::Graphics::Gdi::HDC) -> HGDIOBJ {
-    SelectObject(hdc, HGDIOBJ(menu_font_cached().0))
+pub(crate) unsafe fn select_menu_font(
+    hdc: windows::Win32::Graphics::Gdi::HDC,
+    dpi: u32,
+) -> HGDIOBJ {
+    SelectObject(hdc, HGDIOBJ(menu_font_cached(dpi).0))
 }
 
-/// Widest caption line in px (measured with the real menu font), capped.
-pub(crate) unsafe fn caption_width_of(p: &Preview) -> i32 {
+/// The caption as the menu font at the preview's DPI sets it: the widest line's width
+/// (uncapped; [`TileMetrics::size`] applies the cap) and the font's line height.
+pub(crate) unsafe fn caption_metrics(p: &Preview) -> (i32, i32) {
     let hdc = CreateCompatibleDC(None);
-    let old = select_menu_font(hdc);
+    let old = select_menu_font(hdc, p.dpi);
     let mut max_w = 0i32;
     for line in [&p.name, &p.info] {
         let mut sz = SIZE::default();
@@ -66,24 +125,81 @@ pub(crate) unsafe fn caption_width_of(p: &Preview) -> i32 {
             max_w = max_w.max(sz.cx);
         }
     }
+    let mut tm = TEXTMETRICW::default();
+    let line_h = if GetTextMetricsW(hdc, &mut tm).as_bool() {
+        tm.tmHeight
+    } else {
+        0
+    };
     SelectObject(hdc, old);
     let _ = DeleteDC(hdc);
-    max_w.min(CAPTION_MAX) // cap so an absurdly long name can't blow the menu up
+    (max_w, line_h)
+}
+
+/// The tile's layout at one DPI, in device pixels: each length is its 96-DPI design value
+/// scaled to that DPI, and a caption row is never shorter than the font's own line height.
+/// At 96 DPI with the stock menu font this is exactly the tile every earlier version drew.
+/// Before #61 these were fixed 96-DPI pixels, so at 200% a 32 px menu font was drawn into
+/// 18 px rows and lost the bottom of every caption.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TileMetrics {
+    /// Gap above the thumbnail.
+    pub(crate) top: i32,
+    /// Gap between the thumbnail and the first caption row.
+    pub(crate) gap: i32,
+    /// Height of one caption row.
+    pub(crate) row: i32,
+    /// Gap between the two caption rows.
+    pub(crate) row_gap: i32,
+    /// Gap below the second caption row.
+    pub(crate) bottom: i32,
+    /// Caption inset on each side.
+    pub(crate) inset: i32,
+    /// Narrowest body, so a tiny or caption-only tile still reads as a tile.
+    pub(crate) min_w: i32,
+    /// Widest the caption may make the tile; a longer name is cut with an ellipsis.
+    pub(crate) caption_max: i32,
+}
+
+impl TileMetrics {
+    pub(crate) fn at(dpi: u32, line_h: i32) -> Self {
+        let s = |v| scale_px(v, dpi);
+        Self {
+            top: s(4),
+            gap: s(2),
+            row: s(18).max(line_h),
+            row_gap: s(1),
+            bottom: s(5),
+            inset: s(6),
+            min_w: s(72),
+            caption_max: s(CAPTION_MAX),
+        }
+    }
+
+    /// The tile for an `img_w` x `img_h` thumbnail under a caption `caption_w` wide.
+    pub(crate) fn size(&self, img_w: i32, img_h: i32, caption_w: i32) -> (i32, i32) {
+        let body = img_w.max(caption_w.min(self.caption_max)).max(self.min_w);
+        (
+            body + 2 * self.inset,
+            self.top + img_h + self.gap + 2 * self.row + self.row_gap + self.bottom,
+        )
+    }
 }
 
 /// Diagnostics: render the preview tile to a PNG via the SAME compositing path
 /// the menu uses (`paint_preview`), so it can be eyeballed without driving a real
 /// menu. `bg` overrides the background (so light/dark menus can both be
-/// previewed); pass `None` to use the live menu theme colors.
+/// previewed); pass `None` to use the live menu theme colors. `dpi` lays the tile out for
+/// that DPI (`None`: the monitor under the cursor), so a 200% tile can be checked on a
+/// 100% desk.
 #[doc(hidden)]
-pub fn render_preview_png(path: &str, out_png: &str, bg: Option<u32>) -> bool {
+pub fn render_preview_png(path: &str, out_png: &str, bg: Option<u32>, dpi: Option<u32>) -> bool {
     unsafe {
-        let Some(p) = build_preview(path, None, None) else {
+        let dpi = dpi.map_or_else(menu_dpi, clamp_dpi);
+        let Some(p) = build_preview(path, None, None, dpi) else {
             return false;
         };
-        let text_w = caption_width_of(&p);
-        let iw = p.w.max(text_w).max(72) + 12;
-        let ih = p.h + 48;
+        let (iw, ih) = tile_size(&p);
 
         let (cbg, cfg) = match bg {
             Some(c) => {
@@ -187,8 +303,10 @@ pub(crate) unsafe fn paint_preview(hdc: HDC, rc: RECT, p: &Preview, bg: u32, fg:
     // Thumbnail, horizontally centered. Skipped entirely for the caption-only
     // fallback tile (null bitmap / 0×0 — a file that passed the size gate but failed
     // to decode), which shows just the name + size rows below.
+    let (_, line_h) = caption_metrics(p);
+    let m = TileMetrics::at(p.dpi, line_h);
     let bx = rc.left + ((rc.right - rc.left) - p.w) / 2;
-    let by = rc.top + 4;
+    let by = rc.top + m.top;
     if !p.hbm.is_invalid() && p.w > 0 && p.h > 0 {
         // Subtle checkerboard behind the thumbnail so transparent images stay visible
         // against the flat menu colour (default on; toggleable in Settings).
@@ -202,7 +320,7 @@ pub(crate) unsafe fn paint_preview(hdc: HDC, rc: RECT, p: &Preview, bg: u32, fg:
                 right: bx + p.w,
                 bottom: by + p.h,
             };
-            fill_checker(hdc, &cr, c0, c1, 8);
+            fill_checker(hdc, &cr, c0, c1, scale_px(8, p.dpi));
         }
         let mem = CreateCompatibleDC(Some(hdc));
         let old = SelectObject(mem, p.hbm.into());
@@ -220,15 +338,15 @@ pub(crate) unsafe fn paint_preview(hdc: HDC, rc: RECT, p: &Preview, bg: u32, fg:
     // Caption lines, in the menu's own font + text color so they match the
     // surrounding items (both legible — no dim grey).
     SetBkMode(hdc, TRANSPARENT);
-    let oldf = select_menu_font(hdc);
+    let oldf = select_menu_font(hdc, p.dpi);
     SetTextColor(hdc, COLORREF(fg));
 
     let mut name = p.name.clone();
     let mut line1 = RECT {
-        left: rc.left + 6,
-        top: by + p.h + 2,
-        right: rc.right - 6,
-        bottom: by + p.h + 20,
+        left: rc.left + m.inset,
+        top: by + p.h + m.gap,
+        right: rc.right - m.inset,
+        bottom: by + p.h + m.gap + m.row,
     };
     DrawTextW(
         hdc,
@@ -239,10 +357,10 @@ pub(crate) unsafe fn paint_preview(hdc: HDC, rc: RECT, p: &Preview, bg: u32, fg:
 
     let mut info = p.info.clone();
     let mut line2 = RECT {
-        left: rc.left + 6,
-        top: line1.bottom + 1,
-        right: rc.right - 6,
-        bottom: line1.bottom + 19,
+        left: rc.left + m.inset,
+        top: line1.bottom + m.row_gap,
+        right: rc.right - m.inset,
+        bottom: line1.bottom + m.row_gap + m.row,
     };
     DrawTextW(
         hdc,
@@ -254,12 +372,12 @@ pub(crate) unsafe fn paint_preview(hdc: HDC, rc: RECT, p: &Preview, bg: u32, fg:
     SelectObject(hdc, oldf);
 }
 
-/// The preview item's pixel size: wide enough for the thumbnail and the (capped)
-/// caption, tall enough for the image plus the two caption rows. Reported to the menu
-/// from `WM_MEASUREITEM`; the diagnostic PNG repeats the same formula.
+/// The preview item's pixel size at its DPI: wide enough for the thumbnail and the
+/// (capped) caption, tall enough for the image plus the two caption rows. Reported to the
+/// menu from `WM_MEASUREITEM`, and the size of the bitmap item and the diagnostic PNG.
 pub(crate) unsafe fn tile_size(p: &Preview) -> (i32, i32) {
-    let text_w = caption_width_of(p);
-    (p.w.max(text_w).max(72) + 12, p.h + 48)
+    let (caption_w, line_h) = caption_metrics(p);
+    TileMetrics::at(p.dpi, line_h).size(p.w, p.h, caption_w)
 }
 
 /// Open the file with its default app (the preview item's click action).

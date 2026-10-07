@@ -76,7 +76,8 @@ impl Drop for MenuPreviewWorker {
 }
 
 /// The worker's whole job: read `path` within the preview budget, decode it with the cheap
-/// in-process tiers, and scale it to the menu tile.
+/// in-process tiers, and scale it to the menu tile at `dpi` (the 88 px box at 100%, twice
+/// that at 200%, so the picture keeps its size on a scaled display, #61).
 ///
 /// The size is re-checked right before the read, not just once back in Initialize: a file
 /// that grows or gets replaced between that gate and this worker running (download in
@@ -84,7 +85,7 @@ impl Drop for MenuPreviewWorker {
 /// unbounded. Same shared budget `build_preview` re-checks. The metadata is still only a
 /// snapshot, so the READ enforces the cap too (`read_bounded`, F03): a file that grows
 /// between the two calls is refused at the limit rather than followed to EOF.
-fn read_menu_thumb(path: &str) -> Option<MenuThumb> {
+fn read_menu_thumb(path: &str, dpi: u32) -> Option<MenuThumb> {
     let meta = std::fs::metadata(path).ok()?;
     if !within_preview_budget(meta.len()) {
         return None;
@@ -93,8 +94,8 @@ fn read_menu_thumb(path: &str) -> Option<MenuThumb> {
     let bytes = st2k_codecs::decode::read_bounded(file, meta.len()).ok()?;
     let img = st2k_codecs::decode::decode_menu_preview(&bytes).ok()?;
     let (ow, oh) = st2k_codecs::container::real_dims(&bytes).unwrap_or((img.width(), img.height()));
-    // Width up to PREVIEW_WIDE, height up to PREVIEW_BOX: wide images render wide,
-    // normal/tall ones stay capped at the 88px height.
+    // Width up to PREVIEW_WIDE, height up to PREVIEW_BOX (both at the menu's DPI): wide
+    // images render wide, normal/tall ones stay capped at the 88px height.
     //
     // SHRINKING goes through the one shared reduction, so this tile is the same
     // picture the thumbnail provider draws instead of a second, softer filter.
@@ -103,10 +104,12 @@ fn read_menu_thumb(path: &str) -> Option<MenuThumb> {
     // 32px icon drawn 32px wide in a menu that has always filled the 88px cell.
     // That is a visible layout change, not a quality one, so it is not smuggled in
     // with a filter swap.
-    let thumb = if img.width() > PREVIEW_WIDE || img.height() > PREVIEW_BOX {
-        st2k_codecs::decode::reduce_to_fit(img, PREVIEW_WIDE, PREVIEW_BOX)
+    let wide = scale_px(PREVIEW_WIDE as i32, dpi) as u32;
+    let tall = scale_px(PREVIEW_BOX as i32, dpi) as u32;
+    let thumb = if img.width() > wide || img.height() > tall {
+        st2k_codecs::decode::reduce_to_fit(img, wide, tall)
     } else {
-        img.thumbnail(PREVIEW_WIDE, PREVIEW_BOX)
+        img.thumbnail(wide, tall)
     };
     let rgba = thumb.to_rgba8();
     let (w, h) = (rgba.width() as i32, rgba.height() as i32);
@@ -123,8 +126,9 @@ fn read_menu_thumb(path: &str) -> Option<MenuThumb> {
 /// `propstore::probe_budgeted` / `decode_svg`: the worker holds a `st2k_base::host::ModuleRef` and inits
 /// COM (the WIC HEIC/AVIF/RAW tier needs an apartment). Uses only the cheap in-process tiers
 /// (`decode_menu_preview` — container covers, fast image/WIC tiers, and pure-Rust resvg for
-/// SVG; no magick/video/pdf), so the worker is fast and bundled-byte-free.
-pub(crate) fn start_menu_thumb(path: &str) -> Option<MenuThumbJob> {
+/// SVG; no magick/video/pdf), so the worker is fast and bundled-byte-free. `dpi` is the
+/// menu's DPI, which sizes the thumbnail.
+pub(crate) fn start_menu_thumb(path: &str, dpi: u32) -> Option<MenuThumbJob> {
     // The lease below bounds how many workers may be STARTED per window and lets a healthy
     // request reclaim a slot from a hung one; it says nothing about how many hung workers are
     // still alive, since a reclaimed slot's previous holder keeps running. That ceiling is the
@@ -160,7 +164,7 @@ pub(crate) fn start_menu_thumb(path: &str) -> Option<MenuThumbJob> {
                 )
             }
             .is_ok();
-            let out = read_menu_thumb(&path);
+            let out = read_menu_thumb(&path, dpi);
             if inited {
                 unsafe { windows::Win32::System::Com::CoUninitialize() };
             }
@@ -219,8 +223,9 @@ impl Drop for MenuThumbJob {
 pub(crate) fn decode_menu_thumb_budgeted(
     path: &str,
     prefetched: Option<MenuThumbJob>,
+    dpi: u32,
 ) -> Option<MenuThumb> {
-    let job = prefetched.or_else(|| start_menu_thumb(path))?;
+    let job = prefetched.or_else(|| start_menu_thumb(path, dpi))?;
     job.recv_timeout(MENU_PREVIEW_BUDGET)
 }
 
@@ -350,5 +355,32 @@ mod tests {
             !within_preview_budget(100 * 1024 * 1024),
             "a 100 MiB file must exceed the 32 MiB menu-preview cap regardless of settings"
         );
+    }
+
+    /// #61: the picture keeps its on-screen size on a scaled display. At 200% the menu
+    /// is drawn with twice the pixels, so the thumbnail is decoded into twice the box;
+    /// before the fix it stayed 88 px tall, half the size of the 100% tile.
+    #[test]
+    fn the_thumbnail_is_decoded_for_the_menus_dpi() {
+        let path =
+            std::env::temp_dir().join(format!("st2k-menu-thumb-dpi-{}.png", std::process::id()));
+        image::RgbaImage::from_pixel(600, 400, image::Rgba([40, 90, 200, 255]))
+            .save(&path)
+            .expect("write the sample");
+        let path_s = path.to_string_lossy().into_owned();
+        let sizes: Vec<(i32, i32)> = [96, 120, 192]
+            .into_iter()
+            .map(|dpi| {
+                let t = read_menu_thumb(&path_s, dpi).expect("decodes");
+                assert_eq!(
+                    (t.ow, t.oh),
+                    (600, 400),
+                    "the caption keeps the source size"
+                );
+                (t.w, t.h)
+            })
+            .collect();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(sizes, [(132, 88), (165, 110), (264, 176)]);
     }
 }
