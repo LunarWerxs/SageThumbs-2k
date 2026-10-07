@@ -135,7 +135,7 @@ pub(crate) fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn extract_inner(bytes: &[u8], depth: u8) -> Option<Vec<u8>> {
-    let mut zip = ZipArchive::new(Cursor::new(bytes)).ok()?;
+    let mut zip = super::zipguard::open(Cursor::new(bytes)).ok()?;
     from_archive(&mut zip, depth)
 }
 
@@ -149,9 +149,10 @@ fn extract_inner(bytes: &[u8], depth: u8) -> Option<Vec<u8>> {
 /// Accepted bound, not a gap in this file: the `zip` crate's `ZipArchive::new` fully
 /// parses the central directory before any entry-count cap here (or in `zipfmt.rs`'s
 /// `MAX_LIST_ENTRIES`-bounded calls) can run, so a crafted zip of many tiny entries pays
-/// that parse cost regardless. There is no bounded-directory constructor to switch to;
-/// `MAX_INPUT_BYTES` (the whole-file cap upstream of every container extractor) is what
-/// actually limits it.
+/// that parse cost regardless. There is no bounded-directory constructor to switch to.
+/// `MAX_INPUT_BYTES` caps the buffered path; the on-disk preview path has no such cap,
+/// so the constructor's eager `with_capacity` reservation is bounded instead by
+/// [`super::zipguard::open`] (every open in this file routes through it).
 pub(crate) fn archive_is_apk<R: Read + Seek>(zip: &mut ZipArchive<R>) -> bool {
     if zip.by_name("AndroidManifest.xml").is_ok() {
         return true;
@@ -288,7 +289,7 @@ fn wrapper_icon<R: Read + Seek>(zip: &mut ZipArchive<R>, depth: u8) -> Option<Ve
     // buffered just to find a few KB icon).
     if let Ok(seek_reader) = zip.by_index_seek(idx) {
         let boxed: Box<dyn ReadSeek + '_> = Box::new(seek_reader);
-        let mut inner_zip = ZipArchive::new(boxed).ok()?;
+        let mut inner_zip = super::zipguard::open(boxed).ok()?;
         return from_archive(&mut inner_zip, depth.saturating_add(1));
     }
     // Fallback for a COMPRESSED inner member: the `zip` crate has no seekable reader for

@@ -583,7 +583,7 @@ fn big_zip_entries(path: &str) -> Option<Vec<(String, u64, bool)>> {
         inner: std::io::BufReader::with_capacity(4096, std::fs::File::open(path).ok()?),
         left: &budget,
     };
-    let mut zip = zip::ZipArchive::new(reader).ok()?;
+    let mut zip = st2k_codecs::container::zipguard::open(reader).ok()?;
     // The directory is parsed; what follows is the bounded local-header peeks. Each is a seek of
     // its own on this window's thread, so tens of thousands of entries spread over a slow disk
     // are given up on after ZIP_LIST_TIME rather than waited for.

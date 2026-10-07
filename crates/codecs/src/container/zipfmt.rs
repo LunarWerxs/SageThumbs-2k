@@ -6,8 +6,13 @@
 //! ANY of our `MAX_LIST_ENTRIES`/`MAX_COVER` caps can run — that parse is the `zip`
 //! crate's own constructor, and it has no bounded/streaming-directory option to hand
 //! it one. A crafted archive of millions of tiny entries therefore costs the
-//! directory parse regardless of what we cap afterward. No fix available at this
-//! layer; recorded here rather than re-discovered per call site.
+//! directory parse regardless of what we cap afterward.
+//!
+//! What IS bounded: the constructor's up-front `Vec::with_capacity(number_of_files)`
+//! reservation (~232 B/entry, ZIP64 `number_of_files` is a `u64`). Every untrusted
+//! `ZipArchive::new` below goes through [`super::zipguard::open`], which refuses a
+//! ZIP64 archive declaring more than [`super::zipguard::MAX_ZIP_DECLARED_ENTRIES`]
+//! before that reservation runs — see its module docs for the measurement.
 
 use std::io::{Cursor, Read, Seek};
 
@@ -40,7 +45,7 @@ pub(crate) fn covers_from_reader<R: Read + Seek>(
     want: usize,
     prefs: &CoverPrefs,
 ) -> Option<Vec<Vec<u8>>> {
-    let mut zip = ZipArchive::new(reader).ok()?;
+    let mut zip = super::zipguard::open(reader).ok()?;
     match dedicated_preview(&mut zip) {
         Dedicated::Final(cover) => cover.map(|c| vec![c]),
         Dedicated::FallThrough => covers_image_only(&mut zip, want, prefs),
@@ -223,7 +228,7 @@ pub(crate) fn list_entries<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Vec<Entry
 /// extraction). The `max` bound is applied WHILE collecting, so a crafted archive with millions of
 /// tiny entries can't drive millions of `String` allocations.
 pub(crate) fn list_bytes(bytes: &[u8], max: usize) -> Option<Vec<Entry>> {
-    let mut zip = ZipArchive::new(Cursor::new(bytes)).ok()?;
+    let mut zip = super::zipguard::open(Cursor::new(bytes)).ok()?;
     Some(entries_bounded(&mut zip, max))
 }
 

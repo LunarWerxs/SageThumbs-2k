@@ -161,6 +161,8 @@ pub(crate) fn djvu_from_bytes_scaled(
 mod magic;
 mod waveform;
 mod zipfmt;
+/// Shared declared-entry-count pre-check in front of every untrusted `ZipArchive::new`.
+pub mod zipguard;
 use magic::*;
 pub(crate) use magic::{
     is_7z, is_apple_double, looks_like_djvu, looks_like_raster, looks_like_xcf,
@@ -366,7 +368,7 @@ fn try_generic_archive_cover(bytes: &[u8]) -> Option<CoverOut> {
     // `ZipArchive` for the check and `apk::extract`/`zipfmt::extract` opened a
     // second one for the real read, parsing the same directory twice per file.
     if is_zip(bytes) {
-        let Ok(mut zip) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) else {
+        let Ok(mut zip) = zipguard::open(std::io::Cursor::new(bytes)) else {
             return None;
         };
         // Android packages and their split-bundle wrappers: the REAL launcher icon
@@ -507,7 +509,7 @@ pub fn archive_cover_seek<R: std::io::Read + std::io::Seek>(
         // The already-open archive is shared with `extract_from_archive` instead of being
         // re-parsed, and a `.apk`-suffixed entry that turns out not to be a real wrapper
         // falls through to the generic pick below instead of losing the cover entirely.
-        let Ok(mut zip) = zip::ZipArchive::new(reader) else {
+        let Ok(mut zip) = zipguard::open(reader) else {
             return None;
         };
         if apk::archive_is_apk(&mut zip) {
