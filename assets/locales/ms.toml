@@ -844,3 +844,7 @@ shot_tip_blur = "Kabur ({key}) — melembutkan kawasan  ·  untuk menyembunyikan
 shot_tip_crop = "Potong ({key}) — seret bahagian yang hendak disimpan, kemudian Enter"
 shot_tip_pixelate = "Piksel ({key}) — menyekat kawasan  ·  cara selamat untuk menyembunyikan teks"
 shot_tip_save = "Simpan ke fail (Ctrl+S)"
+
+grp_shot_files = "Menyimpan tangkapan skrin"
+nav_shotfiles = "Fail tangkap skrin"
+blurb_shotfiles = "Cara tangkapan skrin disimpan: format, nama, folder."

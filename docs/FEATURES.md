@@ -552,8 +552,8 @@ right away.
 Reached from the Start-menu shortcut (`SageThumbs 2K`); the window is titled
 **Settings**. Native Win32, dark-mode aware, 36 languages. **Redesigned in 0.7.0**: a
 Windows 11-style **category rail** (General · Appearance · File types · Ebook/comic ·
-Right-click menu · Screenshots · Quick action · Advanced · Quick preview · Data & Backup ·
-Licence) on
+Right-click menu · Screenshots · Screenshot files · Quick action · Advanced · Quick preview ·
+Data & Backup · Licence) on
 the left with a content page on the right: **toggle switches**, category icons, and a titled
 header per page. Everyday knobs up front; Diagnostics / Updates / Backup tuck under
 **Advanced**. (Fixed-size window; the old single long scroll is gone.)
@@ -649,6 +649,7 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   screen: a dialog you can't select text in, a video frame, a screenshared document.
   Recognition uses Windows' built-in engine, so it adds nothing to the download. A slashed
   zero that engine reads as `ø`/`Ø` comes out as `0` inside any word that has a digit in it.
+- **Screenshot files** (its own page, next to Screenshots): what a saved capture looks like.
   **Save screenshots as** PNG (the default), JPEG (with its own **quality** setting; a
   transparent capture is laid on white) or WebP (lossless). The **Screenshot file name** is a
   template: `{yyyy}` `{MM}` `{dd}` `{HH}` `{mm}` `{ss}` `{ms}` insert the capture's date and

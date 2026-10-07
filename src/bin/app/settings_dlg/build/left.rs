@@ -424,6 +424,7 @@ pub(super) unsafe fn build_screenshots(hwnd: HWND, lc: &mut LeftCol, sty: &Style
     // a set folder" toggle lives up with the checkboxes.) Both grey out while that toggle is
     // off — see `update_save_dir_enabled`. The display seeds in load_values; the button
     // persists the pick immediately.
+    lc.header(t("grp_shot_files"), sty.hdr, ID_LBL_SHOT_FILES, false);
     lc.status(ID_SHOT_DIR);
     lc.button(t("btn_set_save_dir"), 150, ID_SHOT_SET_DIR);
     // How a saved capture is named and encoded. The template seeds in load_values; the

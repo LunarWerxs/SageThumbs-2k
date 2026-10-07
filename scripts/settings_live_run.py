@@ -31,7 +31,7 @@ def run(exe, theme, outdir):
     si = subprocess.STARTUPINFO()
     si.dwFlags = subprocess.STARTF_USESHOWWINDOW
     si.wShowWindow = 0  # SW_HIDE: the app's own first ShowWindow is overridden by this
-    p = subprocess.Popen([exe, "--tab", "8"], env=env, startupinfo=si)
+    p = subprocess.Popen([exe, "--tab", "nav_quickpreview"], env=env, startupinfo=si)
     hwnd = None
     for _ in range(100):
         time.sleep(0.1)

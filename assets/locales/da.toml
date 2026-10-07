@@ -838,3 +838,7 @@ shot_tip_blur = "Slør ({key}) — gør et område sløret  ·  for at skjule te
 shot_tip_crop = "Beskær ({key}) — træk den del du vil beholde, og tryk Enter"
 shot_tip_pixelate = "Pixeler ({key}) — opdel et område i blokke  ·  den sikre måde at skjule tekst på"
 shot_tip_save = "Gem til en fil (Ctrl+S)"
+
+grp_shot_files = "Lagring af skærmbilleder"
+nav_shotfiles = "Skærmbilledfiler"
+blurb_shotfiles = "Sådan gemmes skærmbilleder: format, navn, mappe."

@@ -11,7 +11,7 @@ check that can see a stale pixel: it captures the DWM surface (`PW_RENDERFULLCON
 window that has been through the app's normal launch path and real message loop, so a repaint
 that was never asked for shows up as the old colour still on screen.
 
-WHAT IT DOES. Launches the exe with `--tab 8` and SW_HIDE, makes the window layered at alpha 0
+WHAT IT DOES. Launches the exe with `--tab nav_quickpreview` and SW_HIDE, makes the window layered at alpha 0
 (never visible, never activated, no focus stolen), shows it, then per theme (ST2K_THEME=light
 and dark, against a scratch ST2K_SETTINGS_ROOT so nothing touches the real settings):
 

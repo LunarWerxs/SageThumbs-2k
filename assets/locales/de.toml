@@ -840,3 +840,7 @@ shot_tip_blur = "Weichzeichnen ({key}) — einen Bereich weicher machen  ·  um 
 shot_tip_crop = "Zuschneiden ({key}) — den zu behaltenden Teil ziehen, dann Enter"
 shot_tip_pixelate = "Verpixeln ({key}) — einen Bereich verblocken  ·  die sichere Art, Text zu verbergen"
 shot_tip_save = "In eine Datei speichern (Ctrl+S)"
+
+grp_shot_files = "Screenshot speichern"
+nav_shotfiles = "Screenshot-Dateien"
+blurb_shotfiles = "Screenshots speichern: Format, Name, Ordner."

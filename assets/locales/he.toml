@@ -845,3 +845,7 @@ shot_tip_blur = "טשטוש ({key}) — ריכוך אזור  ·  כדי להסת
 shot_tip_crop = "חיתוך ({key}) — גוררים את החלק לשמירה, ואז Enter"
 shot_tip_pixelate = "פיקסליזציה ({key}) — הפיכת אזור לבלוקים  ·  הדרך הבטוחה להסתיר טקסט"
 shot_tip_save = "שמירה לקובץ (Ctrl+S)"
+
+grp_shot_files = "שמירת צילום מסך"
+nav_shotfiles = "קובצי צילום מסך"
+blurb_shotfiles = "איך נשמרים צילומי המסך: פורמט, שם, תיקייה."

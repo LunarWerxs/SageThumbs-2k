@@ -843,3 +843,7 @@ shot_tip_blur = "模糊（{key}）— 柔化區域  ·  要遮住文字，用「
 shot_tip_crop = "裁切（{key}）— 拖曳要保留的部分，然後按 Enter"
 shot_tip_pixelate = "像素化（{key}）— 將區域化為色塊  ·  遮住文字的安全做法"
 shot_tip_save = "儲存至檔案（Ctrl+S）"
+
+grp_shot_files = "儲存螢幕擷取畫面"
+nav_shotfiles = "螢幕擷取檔案"
+blurb_shotfiles = "螢幕擷取的儲存方式：格式、檔名、資料夾。"

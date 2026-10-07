@@ -843,3 +843,7 @@ shot_tip_blur = "模糊（{key}） — 柔化区域  ·  要隐藏文字，马�
 shot_tip_crop = "裁剪（{key}） — 拖动要保留的部分，然后按 Enter"
 shot_tip_pixelate = "马赛克（{key}） — 将区域变成方块  ·  安全隐藏文字的方式"
 shot_tip_save = "保存到文件（Ctrl+S）"
+
+grp_shot_files = "保存截图"
+nav_shotfiles = "截图文件"
+blurb_shotfiles = "截图保存方式：格式、名称、文件夹。"

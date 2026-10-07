@@ -846,3 +846,7 @@ shot_tip_blur = "Rozmycie ({key}) — zmiękcza obszar  ·  do ukrycia tekstu be
 shot_tip_crop = "Kadruj ({key}) — przeciągnij część do zachowania, potem Enter"
 shot_tip_pixelate = "Pikselizacja ({key}) — zamienia obszar na bloki  ·  bezpieczny sposób ukrycia tekstu"
 shot_tip_save = "Zapisz do pliku (Ctrl+S)"
+
+grp_shot_files = "Zapisywanie zrzutu"
+nav_shotfiles = "Pliki zrzutów"
+blurb_shotfiles = "Zapis zrzutów ekranu: format, nazwa, folder."

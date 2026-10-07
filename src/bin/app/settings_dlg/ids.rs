@@ -102,6 +102,7 @@ pub(super) const ID_LBL_SHOT_QUALITY: i32 = 1279;
 pub(super) const ID_SHOT_QUALITY: i32 = 1280;
 pub(super) const ID_LBL_SHOT_BLUR: i32 = 1281;
 pub(super) const ID_SHOT_BLUR: i32 = 1282;
+pub(super) const ID_LBL_SHOT_FILES: i32 = 1283;
 // "General" section header (right-click-menu settings + UI language).
 pub(super) const ID_LBL_GENERAL: i32 = 1138;
 // "Menu items" checklist header (per-item context-menu visibility).
@@ -369,7 +370,7 @@ pub(super) const ID_NUDGE_DISCORD: i32 = 1261;
 // below — which only parses THIS file — actually covers them; see NCAT's build-time
 // assert in navrail.rs for the id-space relationship between the two.
 pub(super) const ID_NAV_BASE: i32 = 1700; // nav items occupy ID_NAV_BASE .. ID_NAV_BASE+NCAT
-pub(super) const ID_PANE_HEADER: i32 = 1711; // NCAT = 11 (the Licence category added it)
+pub(super) const ID_PANE_HEADER: i32 = 1712; // NCAT = 12 (Screenshot files added it)
 
 // Menu-items popup editor (menuitems.rs). Moved here for the same reason as the nav-rail
 // ids above. NOT 1: that is IDOK, and a colliding id would route the popup's Done button

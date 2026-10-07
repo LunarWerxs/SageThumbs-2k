@@ -846,3 +846,7 @@ shot_tip_blur = "Uskarp ({key}) — gjør et område mykere  ·  for å skjule t
 shot_tip_crop = "Beskjær ({key}) — dra rundt delen du vil beholde, og trykk Enter"
 shot_tip_pixelate = "Pikseler ({key}) — blokker et område  ·  den trygge måten å skjule tekst på"
 shot_tip_save = "Lagre til en fil (Ctrl+S)"
+
+grp_shot_files = "Lagre et skjermbilde"
+nav_shotfiles = "Skjermbildefiler"
+blurb_shotfiles = "Hvordan skjermbilder lagres: format, navn, mappe."

@@ -841,3 +841,7 @@ shot_tip_blur = "Estompare ({key}) — estompează o zonă  ·  pentru a ascunde
 shot_tip_crop = "Decupare ({key}) — trage partea de păstrat, apoi Enter"
 shot_tip_pixelate = "Pixelare ({key}) — transformă o zonă în blocuri  ·  modul sigur de a ascunde textul"
 shot_tip_save = "Salvează într-un fișier (Ctrl+S)"
+
+grp_shot_files = "Salvarea unei capturi de ecran"
+nav_shotfiles = "Fișiere de captură"
+blurb_shotfiles = "Cum se salvează capturile: format, nume, folder."

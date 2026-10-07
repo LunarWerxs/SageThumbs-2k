@@ -79,6 +79,11 @@ pub(in super::super) unsafe fn draw_cat_icon(
                 el(9, 10, 15, 16);
             }
             6 => {
+                // file: a page with a folded corner (Screenshot files)
+                ln(&[(5, 3), (14, 3), (19, 8), (19, 21), (5, 21), (5, 3)]);
+                ln(&[(14, 3), (14, 8), (19, 8)]);
+            }
+            7 => {
                 // bolt: a lightning shape (Quick action)
                 ln(&[
                     (13, 2),
@@ -90,19 +95,19 @@ pub(in super::super) unsafe fn draw_cat_icon(
                     (13, 2),
                 ]);
             }
-            7 => {
+            8 => {
                 // sliders: two lines, each with a knob (Advanced)
                 ln(&[(4, 8), (20, 8)]);
                 ln(&[(4, 16), (20, 16)]);
                 el(13, 5, 19, 11);
                 el(5, 13, 11, 19);
             }
-            8 => {
+            9 => {
                 // eye: a wide almond outline + a round iris (Quick preview)
                 el(3, 8, 21, 16);
                 el(10, 9, 14, 15);
             }
-            9 => {
+            10 => {
                 // save/backup: a down-arrow into an open tray (Data & Backup)
                 ln(&[(12, 3), (12, 14)]);
                 ln(&[(8, 10), (12, 14), (16, 10)]);
@@ -128,10 +133,11 @@ pub(in super::super) fn cat_blurb(ci: usize) -> &'static str {
         3 => t("blurb_ebook"),
         4 => t("blurb_menu"),
         5 => t("blurb_screenshots"),
-        6 => t("blurb_quickaction"),
-        7 => t("blurb_advanced"),
-        8 => t("blurb_quickpreview"),
-        9 => t("blurb_databackup"),
+        6 => t("blurb_shotfiles"),
+        7 => t("blurb_quickaction"),
+        8 => t("blurb_advanced"),
+        9 => t("blurb_quickpreview"),
+        10 => t("blurb_databackup"),
         _ => t("blurb_licence"),
     }
 }

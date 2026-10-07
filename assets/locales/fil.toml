@@ -836,3 +836,7 @@ shot_tip_blur = "Blur ({key}) — paglambutin ang isang rehiyon  ·  para magtag
 shot_tip_crop = "Crop ({key}) — i-drag ang bahaging pananatilihin, tapos Enter"
 shot_tip_pixelate = "Pixelate ({key}) — gawing bloke ang isang rehiyon  ·  ang ligtas na paraan para magtago ng teksto"
 shot_tip_save = "I-save sa file (Ctrl+S)"
+
+grp_shot_files = "Pag-save ng screenshot"
+nav_shotfiles = "File ng screenshot"
+blurb_shotfiles = "Pag-save ng screenshot: format, pangalan, folder."

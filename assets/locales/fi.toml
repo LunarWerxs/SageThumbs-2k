@@ -836,3 +836,7 @@ shot_tip_blur = "Sumennus ({key}) — pehmennä aluetta  ·  tekstin piilottamis
 shot_tip_crop = "Rajaus ({key}) — vedä säilytettävä osa, sitten Enter"
 shot_tip_pixelate = "Pikselöinti ({key}) — muuta alue palikoiksi  ·  turvallinen tapa piilottaa teksti"
 shot_tip_save = "Tallenna tiedostoon (Ctrl+S)"
+
+grp_shot_files = "Kuvakaappauksen tallennus"
+nav_shotfiles = "Kaappaustiedostot"
+blurb_shotfiles = "Kuvakaappausten tallennus: muoto, nimi, kansio."

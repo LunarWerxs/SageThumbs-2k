@@ -845,3 +845,7 @@ shot_tip_blur = "Bulanıklaştır ({key}) — bir bölgeyi yumuşat  ·  metni g
 shot_tip_crop = "Kırp ({key}) — tutmak istediğiniz bölümü sürükleyin, sonra Enter'a basın"
 shot_tip_pixelate = "Pikselleştir ({key}) — bir bölgeyi bloklaştır  ·  metni gizlemenin güvenli yolu"
 shot_tip_save = "Dosyaya kaydet (Ctrl+S)"
+
+grp_shot_files = "Ekran görüntüsü kaydetme"
+nav_shotfiles = "Görüntü dosyaları"
+blurb_shotfiles = "Ekran görüntüsü kaydı: biçim, ad, klasör."

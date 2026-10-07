@@ -161,6 +161,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_DEFAULTS, "btn_defaults"),
         (ID_LBL_LANG, "lbl_language"),
         (ID_LBL_SHOT, "grp_screenshots"),
+        (ID_LBL_SHOT_FILES, "grp_shot_files"),
         (ID_SHOT_ENABLE, "chk_screenshot"),
         (ID_SHOT_HIDE_TRAY, "chk_hide_tray"),
         (ID_LBL_SHOT_HK, "lbl_shot_hotkey"),

@@ -846,3 +846,7 @@ shot_tip_blur = "ぼかし ({key}) — 領域をぼかす  ·  文字を隠す�
 shot_tip_crop = "切り抜き ({key}) — 残す部分をドラッグして Enter"
 shot_tip_pixelate = "モザイク ({key}) — 領域をモザイク化  ·  文字を隠す安全な方法"
 shot_tip_save = "ファイルに保存 (Ctrl+S)"
+
+grp_shot_files = "スクリーンショットの保存"
+nav_shotfiles = "ファイル保存"
+blurb_shotfiles = "スクリーンショットの保存方法: 形式、ファイル名、フォルダー。"

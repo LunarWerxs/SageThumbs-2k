@@ -845,3 +845,7 @@ shot_tip_blur = "Zamućenje ({key}) — ublaži područje  ·  za skrivanje teks
 shot_tip_crop = "Obreži ({key}) — povucite dio koji želite zadržati, zatim Enter"
 shot_tip_pixelate = "Pikselizacija ({key}) — pretvori područje u blokove  ·  siguran način za skrivanje teksta"
 shot_tip_save = "Spremi u datoteku (Ctrl+S)"
+
+grp_shot_files = "Spremanje snimke zaslona"
+nav_shotfiles = "Datoteke snimki"
+blurb_shotfiles = "Kako se spremaju snimke: format, naziv, mapa."

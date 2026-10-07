@@ -846,3 +846,7 @@ shot_tip_blur = "Sfocatura ({key}) — ammorbidisci una zona  ·  per nascondere
 shot_tip_crop = "Ritaglia ({key}) — trascina la parte da mantenere, poi Invio"
 shot_tip_pixelate = "Pixellatura ({key}) — riduci a blocchi una zona  ·  il modo sicuro per nascondere il testo"
 shot_tip_save = "Salva su file (Ctrl+S)"
+
+grp_shot_files = "Salvataggio degli screenshot"
+nav_shotfiles = "File screenshot"
+blurb_shotfiles = "Salvataggio degli screenshot: formato, nome, cartella."

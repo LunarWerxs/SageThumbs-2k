@@ -846,3 +846,7 @@ shot_tip_blur = "Buram ({key}) — haluskan suatu area  ·  untuk menyembunyikan
 shot_tip_crop = "Pangkas ({key}) — seret bagian yang dipertahankan, lalu Enter"
 shot_tip_pixelate = "Piksel ({key}) — ubah area menjadi blok  ·  cara aman untuk menyembunyikan teks"
 shot_tip_save = "Simpan ke file (Ctrl+S)"
+
+grp_shot_files = "Menyimpan tangkapan layar"
+nav_shotfiles = "File tangkapan"
+blurb_shotfiles = "Tangkapan layar disimpan: format, nama, folder."

@@ -70,7 +70,7 @@ pub(super) const GENERAL_INSTALLED: [Row; 11] = {
 
 /// Advanced — system behaviors only: Diagnostics / Updates / Hotkey service.
 /// (Settings sync + Backup moved to their own "Data & Backup" tab.) Unlike GENERAL, this
-/// list is NOT sliced for installed builds — `cat_rows`' `7 => &ADVANCED` arm is
+/// list is NOT sliced for installed builds — `cat_rows`' `8 => &ADVANCED` arm is
 /// unconditional, and ADVANCED[0] is the Diagnostics header, not a portable-only row.
 pub(super) const ADVANCED: [Row; 12] = {
     use Row::*;
@@ -221,11 +221,11 @@ pub(in super::super) fn cat_rows(ci: usize) -> &'static [Row] {
             Btn(ID_MENU_ITEMS_EDIT, 200),
         ],
         5 => &[
-            // Screenshots — custom action lives on its own tab; "Hide tray icon" on Advanced.
+            // Screenshots — custom action lives on its own tab, saving on Screenshot files,
+            // "Hide tray icon" on Advanced.
             Head(ID_LBL_SHOT),
             Switch(ID_SHOT_ENABLE),
             Switch(ID_SHOT_QUICK_ENABLE),
-            Switch(ID_SHOT_USE_DIR),
             Pair(ID_LBL_SHOT_HK, ID_SHOT_HOTKEY, 156, 200),
             Pair(ID_LBL_SHOT_QUICK_HK, ID_SHOT_QUICK_HOTKEY, 156, 200),
             Pair(ID_LBL_SHOT_TOOL, ID_SHOT_TOOL, 156, 200),
@@ -239,30 +239,37 @@ pub(in super::super) fn cat_rows(ci: usize) -> &'static [Row] {
             // also what makes the row directly above it honest, since that switch can read ON
             // while nothing is actually listening.
             BtnStatus(ID_SHOT_RESTART, 184, ID_SHOT_STATUS),
-            Status(ID_SHOT_DIR),
-            Btn(ID_SHOT_SET_DIR, 150),
-            // How the capture lands in that folder: its name template and its format.
-            Pair(ID_LBL_SHOT_NAME, ID_SHOT_NAME, 220, 18),
-            Pair(ID_LBL_SHOT_FORMAT, ID_SHOT_FORMAT, 156, 200),
-            Pair(ID_LBL_SHOT_QUALITY, ID_SHOT_QUALITY, 84, 18),
             Btn(ID_EDIT_UPLOAD_HOSTS, 184),
             Btn(ID_UPLOAD_HISTORY, 184),
         ],
+        // Screenshot files — what Save writes: format, name, and the Ctrl+S folder. Its own
+        // page since 2026-10-07, when the format, quality and name rows took Screenshots
+        // 134px past the footer (618 > 484); the folder rows came along, since they answer
+        // the same question.
         6 => &[
+            Head(ID_LBL_SHOT_FILES),
+            Pair(ID_LBL_SHOT_FORMAT, ID_SHOT_FORMAT, 156, 200),
+            Pair(ID_LBL_SHOT_QUALITY, ID_SHOT_QUALITY, 84, 18),
+            Pair(ID_LBL_SHOT_NAME, ID_SHOT_NAME, 220, 18),
+            Switch(ID_SHOT_USE_DIR),
+            Status(ID_SHOT_DIR),
+            Btn(ID_SHOT_SET_DIR, 150),
+        ],
+        7 => &[
             // Quick action — bind a global hotkey to run a tool.
             Head(ID_LBL_QUICKACTION),
             Switch(ID_CUSTOM_ACTION_ENABLE),
             Pair(ID_LBL_SHOT_ACTION, ID_SHOT_ACTION, 156, 200),
             Pair(ID_LBL_SHOT_ACTION_HK, ID_SHOT_ACTION_HK, 156, 200),
         ],
-        7 => &ADVANCED,
+        8 => &ADVANCED,
         // Quick preview — QuickLook-style "press Space, see the file". The master toggle drives
         // daemon residency (like Screenshots); the rest are viewer prefs. The HTML/.url rows only
         // exist when the `html-preview` feature is compiled in: ONE list, with the two rows
         // gated in place, because this page used to exist twice (one copy per build) and a
         // control added to only one of them was invisible in whichever build you were not
         // looking at - exactly how the theme row came to be missing the first time.
-        8 => &[
+        9 => &[
             Head(ID_LBL_PREVIEW_BEHAVIOR),
             Switch(ID_PREVIEW_ENABLED),
             Switch(ID_PREVIEW_HOLD_PEEK),
@@ -288,7 +295,7 @@ pub(in super::super) fn cat_rows(ci: usize) -> &'static [Row] {
             #[cfg(feature = "html-preview")]
             Switch(ID_PREVIEW_URL_LIVE),
         ],
-        9 => &[
+        10 => &[
             // Data & Backup — settings portability: optional cloud sync + local backup/restore.
             // Controls are created in build_controls; listing them here places them into this
             // pane + registers them for nav show/hide.

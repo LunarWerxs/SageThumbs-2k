@@ -16,8 +16,10 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   - **Crop** (`X`) keeps the part you drag: the rest is shaded, Enter crops, Esc cancels, and
     Ctrl+Z brings the rest back. Copy, Save, Upload and Copy text (OCR) all use the cropped
     picture.
-- **Screenshots save as PNG, JPEG or WebP, under a name you choose.** Settings > Screenshots >
-  *Save screenshots as* picks the format: PNG stays the default, JPEG has its own quality
+- **Screenshots save as PNG, JPEG or WebP, under a name you choose.** A new Settings page,
+  **Screenshot files**, holds everything about the saved file: the format, its quality, the
+  name, and the Ctrl+S folder (moved there from Screenshots). *Save screenshots as* picks the
+  format: PNG stays the default, JPEG has its own quality
   setting and lays a transparent picture on white, and WebP keeps every pixel. *Screenshot file
   name* takes a template: `{yyyy}` `{MM}` `{dd}` `{HH}` `{mm}` `{ss}` `{ms}` for the capture's
   date and time, `{app}` for the program that was in front (or `Desktop`), and `/` or `\` for

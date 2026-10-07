@@ -840,3 +840,7 @@ shot_tip_blur = "Rozmazání ({key}) — změkčí oblast  ·  pro skrytí textu
 shot_tip_crop = "Ořez ({key}) — přetáhněte část, kterou chcete zachovat, a stiskněte Enter"
 shot_tip_pixelate = "Pixelace ({key}) — rozdělí oblast na bloky  ·  bezpečný způsob, jak skrýt text"
 shot_tip_save = "Uložit do souboru (Ctrl+S)"
+
+grp_shot_files = "Ukládání snímku obrazovky"
+nav_shotfiles = "Soubory snímků"
+blurb_shotfiles = "Ukládání snímků: formát, název, složka."

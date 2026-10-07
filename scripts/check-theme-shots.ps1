@@ -158,14 +158,14 @@ $code = Join-Path $root 'crates\preview\src\preview\highlight.rs'
 
 $cases = @(
     @{ Name = 'settings'; Args = @('--window', 'settings') }
-    @{ Name = 'settings-tab7'; Args = @('--window', 'settings', '--tab', '7') }
+    @{ Name = 'settings-advanced'; Args = @('--window', 'settings', '--tab', 'nav_advanced') }
     @{ Name = 'convert'; Args = @('--window', 'convert') }
     @{ Name = 'about'; Args = @('--window', 'about') }
     @{ Name = 'feedback'; Args = @('--window', 'feedback') }
     @{ Name = 'ocr'; Args = @('--window', 'ocr') }
     # Licence, the category added 2026-09-02. `settings` above only ever builds tab 0, so a
     # new page is covered by nothing until it is named here.
-    @{ Name = 'settings-licence'; Args = @('--window', 'settings', '--tab', '10') }
+    @{ Name = 'settings-licence'; Args = @('--window', 'settings', '--tab', 'nav_licence') }
     # These five have dedicated run_shot_* capture code and were covered by NOTHING here
     # (doctor and convert-report by nothing anywhere), so a theme regression on them shipped
     # silently. The docstring above claimed "every window" while omitting them.

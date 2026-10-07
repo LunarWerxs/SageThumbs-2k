@@ -381,6 +381,18 @@ mod tests {
             })
             .collect();
         let _ = std::fs::remove_file(&path);
-        assert_eq!(sizes, [(132, 88), (165, 110), (264, 176)]);
+        let heights: Vec<i32> = sizes.iter().map(|&(_, h)| h).collect();
+        assert_eq!(
+            heights,
+            [88, 110, 176],
+            "the tile's box scales with the DPI"
+        );
+        // The fit's own rounding may land a pixel either side of 3:2 (131 x 88 at 96 DPI).
+        for (w, h) in sizes {
+            assert!(
+                (w - h * 3 / 2).abs() <= 1,
+                "{w} x {h} lost the 3:2 picture's shape"
+            );
+        }
     }
 }

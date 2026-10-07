@@ -21,13 +21,14 @@
 # Russian are the long ones; ja/zh are the short ones; ar/he/fa are right-to-left. A layout bug
 # here is invisible in the code and invisible to every test -- only a capture shows it.
 #
-# Usage: pwsh -File scripts\nudge-shot.ps1 [-Out out.png] [-Tab 9] [-Theme dark|light] [-Lang de]
+# Usage: pwsh -File scripts\nudge-shot.ps1 [-Out out.png] [-Tab nav_databackup] [-Theme dark|light] [-Lang de]
 [CmdletBinding()]
 param(
     [string] $Out = '',
     # Which Settings page to capture behind the banner. It is page-independent chrome, so any
-    # page shows it; 9 (Data & Backup) is the one that also shows what it is offering.
-    [int]    $Tab = 9,
+    # page shows it; Data & Backup is the one that also shows what it is offering. A nav key,
+    # not a number: page numbers shift when a page is added.
+    [string] $Tab = 'nav_databackup',
     [ValidateSet('dark', 'light')]
     [string] $Theme = 'dark',
     # A locale code from assets/locales (e.g. de, ru, ja, ar). Empty = whatever this machine

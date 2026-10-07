@@ -846,3 +846,7 @@ shot_tip_blur = "Desfoque ({key}) — suaviza uma região  ·  para esconder tex
 shot_tip_crop = "Recortar ({key}) — arraste a parte que quer manter, depois Enter"
 shot_tip_pixelate = "Pixelizar ({key}) — transforma uma região em blocos  ·  a forma segura de esconder texto"
 shot_tip_save = "Salvar em um arquivo (Ctrl+S)"
+
+grp_shot_files = "Salvar uma captura de tela"
+nav_shotfiles = "Arquivos de captura"
+blurb_shotfiles = "Como as capturas são salvas: formato, nome, pasta."

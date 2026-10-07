@@ -840,3 +840,7 @@ shot_tip_blur = "Oskärpa ({key}) — mjuka upp ett område  ·  för att dölja
 shot_tip_crop = "Beskär ({key}) — dra delen du vill behålla och tryck sedan Enter"
 shot_tip_pixelate = "Pixla ({key}) — gör ett område blockigt  ·  det säkra sättet att dölja text"
 shot_tip_save = "Spara till en fil (Ctrl+S)"
+
+grp_shot_files = "Spara en skärmbild"
+nav_shotfiles = "Skärmbildsfiler"
+blurb_shotfiles = "Hur skärmbilder sparas: format, namn, mapp."

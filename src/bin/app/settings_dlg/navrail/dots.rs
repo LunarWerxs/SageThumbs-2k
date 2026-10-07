@@ -4,7 +4,7 @@ use super::*;
 
 thread_local! {
     /// Bitmask of pages whose dot has already been ACKNOWLEDGED, cached from settings.
-    /// `u32::MAX` is the "not loaded yet" sentinel — there are only `NCAT` (11) pages, so
+    /// `u32::MAX` is the "not loaded yet" sentinel — there are only `NCAT` (12) pages, so
     /// it can never be a real mask.
     static DOTS_SEEN: std::cell::Cell<u32> = const { std::cell::Cell::new(u32::MAX) };
 }
@@ -76,6 +76,29 @@ pub(super) fn advanced_page_has_non_defaults() -> bool {
         || s::tray_double_click() != s::TrayDoubleClick::Capture
 }
 
+// Screenshot files: the save format, its JPEG quality, the name template and the Ctrl+S
+// folder switch.
+pub(super) fn shot_files_page_has_non_defaults() -> bool {
+    use st2k_base::settings as s;
+    s::shot_save_format() != s::ShotFormat::Png
+        || s::shot_save_quality() != s::DEFAULT_SHOT_SAVE_QUALITY
+        || s::shot_file_name() != s::DEFAULT_SHOT_FILE_NAME
+        || s::screenshot_use_save_dir()
+}
+
+/// Page `ci`'s bit in the persisted seen-mask. The bits were the page indices until
+/// Screenshot files went in at 6 (2026-10-07); every older page keeps its old bit and the
+/// new page takes the next free one, so a dot someone already acknowledged neither comes
+/// back nor moves to a neighbouring page.
+fn seen_bit(ci: usize) -> u32 {
+    let bit = match ci {
+        0..=5 => ci,
+        6 => NCAT - 1,
+        _ => ci - 1,
+    };
+    1u32 << bit
+}
+
 /// Does this settings page hold any value the user has CHANGED from its default?
 /// Drives the little dot on the nav rail — the answer to "where did I change something"
 /// across nine pages, without opening each one. Reads the live settings (cheap registry /
@@ -94,10 +117,11 @@ pub(in super::super) fn page_has_non_defaults(ci: usize) -> bool {
         // Screenshots / Quick preview: their daemon-backed master switches are OFF by
         // default (first-run offers them), so ON is the changed state.
         5 => st2k_screenshot::screenshot::is_enabled(),
+        6 => shot_files_page_has_non_defaults(),
         // Quick action: unbound (vk == 0) is the default; any bound hotkey is a change.
-        6 => s::custom_action_hotkey().1 != 0,
-        8 => s::preview_enabled(),
-        7 => advanced_page_has_non_defaults(),
+        7 => s::custom_action_hotkey().1 != 0,
+        9 => s::preview_enabled(),
+        8 => advanced_page_has_non_defaults(),
         _ => false,
     }
 }
@@ -118,7 +142,7 @@ pub(super) fn dots_seen() -> u32 {
 /// been to the page yet. The dot answers "where did I change something" for someone opening
 /// Settings cold; once they've actually opened that page it has done its job, so it stops.
 pub(in super::super) fn dot_visible(ci: usize) -> bool {
-    ci < 32 && page_has_non_defaults(ci) && dots_seen() & (1u32 << ci) == 0
+    page_has_non_defaults(ci) && dots_seen() & seen_bit(ci) == 0
 }
 
 /// Acknowledge page `ci`'s dot. Called on every category switch — including the initial
@@ -127,7 +151,7 @@ pub(super) fn mark_dot_seen(ci: usize) {
     if ci >= 32 {
         return;
     }
-    let (cur, bit) = (dots_seen(), 1u32 << ci);
+    let (cur, bit) = (dots_seen(), seen_bit(ci));
     if cur & bit != 0 {
         return;
     }

@@ -10,7 +10,7 @@ WM_COMMAND, WM_CLOSE, BM_CLICK = 0x111, 0x10, 0xF5
 
 # ---- ids from the source, when we are inside the repo ------------------------------------
 IDS = {"ID_NAV_BASE": 1700, "ID_PREVIEW_ENABLED": 1203, "ID_PREVIEW_BLOCKED_EXTS": 1260,
-       "ID_LBL_PREVIEW_BLOCKED_EXTS": 1259, "NCAT": 11}
+       "ID_LBL_PREVIEW_BLOCKED_EXTS": 1259, "NCAT": 12}
 src = Path(__file__).resolve().parent.parent / "src" / "bin" / "app" / "settings_dlg"
 for fname in ("ids.rs", "navrail.rs"):
     f = src / fname

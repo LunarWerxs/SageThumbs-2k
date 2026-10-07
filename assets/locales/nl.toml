@@ -846,3 +846,7 @@ shot_tip_blur = "Vervagen ({key}) — verzacht een gebied  ·  om tekst te verbe
 shot_tip_crop = "Bijsnijden ({key}) — sleep het deel dat je wilt behouden en druk dan op Enter"
 shot_tip_pixelate = "Pixeliseren ({key}) — maakt een gebied blokkerig  ·  de veilige manier om tekst te verbergen"
 shot_tip_save = "Opslaan naar een bestand (Ctrl+S)"
+
+grp_shot_files = "Een schermafbeelding opslaan"
+nav_shotfiles = "Bestanden opslaan"
+blurb_shotfiles = "Hoe ze worden opgeslagen: indeling, naam, map."

@@ -183,18 +183,24 @@ fn blur(r: RECT, radius: i32) -> Shape {
     }
 }
 
-/// How much the blue channel changes between neighbours inside `r`: the edge energy a blur
-/// takes away.
-fn variation(px: &[u8], w: i32, r: RECT) -> u64 {
-    let at = |x: i32, y: i32| i64::from(px[((y * w + x) * 4) as usize]);
-    let mut sum = 0u64;
-    for y in r.top..r.bottom - 1 {
-        for x in r.left..r.right - 1 {
-            sum +=
-                (at(x + 1, y) - at(x, y)).unsigned_abs() + (at(x, y + 1) - at(x, y)).unsigned_abs();
-        }
+/// One hard vertical edge, dark on the left half of a 256 px canvas and light on the right.
+fn edge(x: i32, _y: i32) -> u8 {
+    if x < 128 {
+        20
+    } else {
+        230
     }
-    sum
+}
+
+/// The steepest step of the blue channel between neighbours along row `y`, from `x0` to
+/// `x1`: the sharpness of the edge. A blur of sigma s flattens a step of height h to a slope
+/// of about h / (2.5 s), so it falls steadily as the blur gets stronger.
+fn steepest_step(px: &[u8], w: i32, y: i32, x0: i32, x1: i32) -> u8 {
+    let at = |x: i32| px[((y * w + x) * 4) as usize];
+    (x0..x1 - 1)
+        .map(|x| at(x + 1).abs_diff(at(x)))
+        .max()
+        .unwrap_or(0)
 }
 
 /// The Blur tool changes the pixels inside its rect and not one pixel outside it, also when
@@ -242,24 +248,31 @@ fn blur_changes_only_the_pixels_inside_its_rect() {
     }
 }
 
-/// A higher strength blurs more: less edge energy is left inside the rect at each step up.
+/// A higher strength blurs more: the hard edge inside the rect gets softer at each step up,
+/// across the setting's range (2 is its minimum, 16 above its default of 12).
 #[test]
 fn a_stronger_blur_is_blurrier() {
     unsafe {
+        let (w, h) = (256, 24);
+        // The rect spans the edge with flat margins wider than the strongest blur reaches,
+        // so its own borders add no slope of their own.
         let r = RECT {
             left: 8,
-            top: 8,
-            right: 56,
-            bottom: 40,
+            top: 0,
+            right: 248,
+            bottom: h,
         };
-        let original = variation(&Canvas::new(64, 48, stripes).pixels(), 64, r);
-        let mut last = original;
+        let mut last = steepest_step(&Canvas::new(w, h, edge).pixels(), w, h / 2, 8, 248);
+        assert_eq!(last, 210, "the unblurred edge is one full step");
         for radius in [2, 6, 16] {
-            let c = Canvas::new(64, 48, stripes);
+            let c = Canvas::new(w, h, edge);
             draw_shape(c.dc, 0, 0, &blur(r, radius));
-            let v = variation(&c.pixels(), 64, r);
-            assert!(v < last, "radius {radius} left {v}, not less than {last}");
-            last = v;
+            let step = steepest_step(&c.pixels(), w, h / 2, 8, 248);
+            assert!(
+                step < last,
+                "radius {radius} left a step of {step}, not less than {last}"
+            );
+            last = step;
         }
     }
 }

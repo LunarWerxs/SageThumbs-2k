@@ -847,3 +847,7 @@ shot_tip_blur = "Elmosás ({key}) — egy terület lágyítása  ·  szöveg elr
 shot_tip_crop = "Kivágás ({key}) — húzza ki a megtartandó részt, majd Enter"
 shot_tip_pixelate = "Pixelezés ({key}) — egy terület pixelezése  ·  a szöveg elrejtésének biztonságos módja"
 shot_tip_save = "Mentés fájlba (Ctrl+S)"
+
+grp_shot_files = "Képernyőkép mentése"
+nav_shotfiles = "Képernyőkép-fájlok"
+blurb_shotfiles = "Képernyőképek mentése: formátum, név, mappa."

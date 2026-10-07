@@ -356,11 +356,11 @@ if ($fitSkipped) {
   $RAIL_MAX  = 126
   $SYNC_BTN_MAX    = 140
   $SYNC_STATUS_MAX = 348
-  # All ELEVEN pages. The Licence page was missing from this list from the day it was added,
+  # All TWELVE pages. The Licence page was missing from this list from the day it was added,
   # which is how its blurb shipped ellipsised in English ("...and its curr…") with the gate
   # green (found 2026-09-15 on a capture; fixed by shortening the blurb and listing the page).
   $navKeys = @('nav_general','nav_appearance','nav_filetypes','nav_ebook','nav_menu',
-               'nav_screenshots','nav_quickaction','nav_advanced','nav_quickpreview','nav_databackup',
+               'nav_screenshots','nav_shotfiles','nav_quickaction','nav_advanced','nav_quickpreview','nav_databackup',
                'nav_licence')
   # The Licence page's three doors share one `Row::Btn3`: (PANE_W 528 - 2 * 8) / 3 = 170 per
   # button. The owner-drawn button centres its label and clips only past the rect, so the

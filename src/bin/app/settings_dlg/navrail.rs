@@ -36,7 +36,7 @@ pub(super) const PANE_X: i32 = 212;
 pub(super) const PANE_W: i32 = 528;
 pub(super) const PANE_TOP: i32 = 16;
 pub(super) const PANE_HEAD_H: i32 = 50; // the icon-chip + title + blurb page header
-pub(super) const NCAT: usize = 11;
+pub(super) const NCAT: usize = 12;
 /// The Licence page's index: the last category, the `_` arm of [`nav_key`]. Named so the code
 /// that shows and hides that page's own rows (`licence_ui::apply_conditional_visibility`) can
 /// ask "is it the page on screen" instead of re-deriving the arm; `licence_is_the_last_category`
@@ -45,15 +45,16 @@ pub(super) const CAT_LICENCE: usize = NCAT - 1;
 // ID_NAV_BASE and ID_PANE_HEADER live in ids.rs now (so `control_ids_are_unique` there
 // covers them), but the id-space relationship is this module's invariant to keep, so the
 // build-time check stays here. The nav ids and ID_PANE_HEADER share one id space, and at
-// NCAT = 11 they fit with exactly ZERO headroom: nav owns 1700..=1710 and the header sits
-// on 1711. A twelfth category would silently hand the pane header a nav item's identity,
+// NCAT = 12 they fit with exactly ZERO headroom: nav owns 1700..=1711 and the header sits
+// on 1712. A thirteenth category would silently hand the pane header a nav item's identity,
 // and the two `(ID_NAV_BASE..ID_NAV_BASE + NCAT)` range tests — `commands.rs`'s WM_COMMAND,
 // which routes nav clicks, and `paintmsg.rs`'s WM_DRAWITEM, which picks the active row to draw
 // — would start routing clicks on the header as a category switch. Nothing about that fails
 // to compile or looks wrong in a diff, which is exactly the shape of bug this repo keeps
 // paying for, so it fails the BUILD instead.
 // (The stale comment this replaces still said the range ended at 1708, from when NCAT was 8,
-// then 1709/NCAT=10 when the Licence category — the 11th — was added.)
+// then 1709/NCAT=10 when the Licence category — the 11th — was added, then 1711/NCAT=12
+// for Screenshot files.)
 const _: () = assert!(
     ID_NAV_BASE as usize + NCAT <= ID_PANE_HEADER as usize,
     "a new Settings category pushed the nav ids onto ID_PANE_HEADER: move ID_PANE_HEADER up"
@@ -71,10 +72,11 @@ pub(super) fn nav_key(ci: usize) -> &'static str {
         3 => "nav_ebook",
         4 => "nav_menu",
         5 => "nav_screenshots",
-        6 => "nav_quickaction",
-        7 => "nav_advanced",
-        8 => "nav_quickpreview",
-        9 => "nav_databackup",
+        6 => "nav_shotfiles",
+        7 => "nav_quickaction",
+        8 => "nav_advanced",
+        9 => "nav_quickpreview",
+        10 => "nav_databackup",
         _ => "nav_licence",
     }
 }

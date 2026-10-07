@@ -842,3 +842,7 @@ shot_tip_blur = "Flou ({key}) — adoucir une zone  ·  pour masquer du texte, P
 shot_tip_crop = "Recadrer ({key}) — glissez la partie à garder, puis Enter"
 shot_tip_pixelate = "Pixéliser ({key}) — mosaïquer une zone  ·  le moyen sûr de masquer du texte"
 shot_tip_save = "Enregistrer dans un fichier (Ctrl+S)"
+
+grp_shot_files = "Enregistrement des captures"
+nav_shotfiles = "Fichiers de capture"
+blurb_shotfiles = "Enregistrement des captures : format, nom, dossier."

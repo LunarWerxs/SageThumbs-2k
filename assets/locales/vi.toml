@@ -843,3 +843,7 @@ shot_tip_blur = "Làm mờ ({key}) — làm mềm một vùng  ·  để che ch�
 shot_tip_crop = "Cắt ({key}) — kéo chọn phần cần giữ, rồi nhấn Enter"
 shot_tip_pixelate = "Pixel hóa ({key}) — chia một vùng thành khối  ·  cách an toàn để che chữ"
 shot_tip_save = "Lưu vào tệp (Ctrl+S)"
+
+grp_shot_files = "Lưu ảnh chụp màn hình"
+nav_shotfiles = "Tệp ảnh chụp"
+blurb_shotfiles = "Cách lưu ảnh chụp: định dạng, tên, thư mục."
