@@ -10,9 +10,9 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 ## Unreleased
 
 - **Restarting File Explorer brings your folder windows back.** Setup's "Restart File
-  Explorer" box and the **Rebuild thumbnail cache** button now ask Explorer to close and
-  reopen it, the way installers do, instead of ending it. The folders you had open come back,
-  and no other program is closed.
+  Explorer" box and the **Rebuild thumbnail cache** button now ask Explorer to close and start
+  again, the way installers do, instead of ending it, then reopen the folders you had open. No
+  other program is closed.
 - **The background helper starts at sign-in from a scheduled task.** The small helper behind
   the screenshot hotkey and Space to preview used to start from the Windows Run list, which
   some security programs treat as suspicious and empty (Kaspersky did, #14). It now starts

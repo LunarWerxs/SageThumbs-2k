@@ -35,8 +35,26 @@ Changed the same day (after 3.7.0), the same features without those shapes:
   `SageThumbs2K_Helper_<SID>`; an existing `Run` value moves over on the next heal, and the
   uninstaller removes both.
 - **No `taskkill`, `del` or `cmd`.** "Restart File Explorer" / "Rebuild thumbnail cache" ask
-  Explorer to close and reopen it through Restart Manager, the API installers use, which also
-  brings folder windows back.
+  Explorer to close and start again through Restart Manager, the API installers use, then
+  reopen the folder windows that were open.
+
+Measured the same day: an installer built from that code (0386102a, unsigned, because only
+the release pipeline signs) went to VirusTotal next to the published, signed 3.7.0.
+
+| | published 3.7.0 (signed) | test build (unsigned) |
+|---|---|---|
+| sigma rules hit | 5 (3 medium, 2 low) | 2 (both medium) |
+| Autorun keys, schtasks from a temp path, schtasks, `del` | all four | none |
+| Inno's own `.tmp` unpacking | yes | yes |
+| "Unsigned DLL Loaded by Windows Utility" (`regsvr32` on our DLL) | no | yes |
+| engines flagging the file | 0/70 | 1/70 (Skyhigh `BehavesLike.Win32.Dropper.vc`) |
+| Kaspersky | clean | clean |
+
+The two new marks follow the missing signature, not the change: the shipped DLL is signed
+by LUNARWERX LLC, the test build's is not, and Skyhigh also flagged the unsigned builds
+before 3.0 (1.7.4, 2.5.0; below). The sandbox's process list now shows the install starting
+Explorer again as `explorer.exe /LOADSAVEDWINDOWS` (Restart Manager) where it used to show
+`taskkill`.
 
 To measure the next build the same way: upload the installer (`push_to_vt.py`), then read the
 sandbox's sigma list for that hash (`/api/v3/files/<sha256>`, `sigma_analysis_results`). The

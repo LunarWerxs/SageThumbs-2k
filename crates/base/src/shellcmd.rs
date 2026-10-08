@@ -14,6 +14,8 @@
 //!
 //! `raw_arg` appends the string verbatim, which is what `cmd` wants.
 
+mod folders;
+
 use std::os::windows::process::CommandExt;
 use std::process::{Child, Command};
 
@@ -134,8 +136,8 @@ fn explorers_holding(
 
 /// Close the Explorer processes holding the cache, delete the cache, reopen Explorer, all
 /// through Restart Manager: the API installers use to replace a file in use. It asks Explorer
-/// to close (it saves its state and exits) and starts it again with its folder windows. No
-/// `cmd`, no `taskkill`, no `del`: a program force-killing `explorer.exe` and deleting files
+/// to close and starts it again (`explorer.exe /LOADSAVEDWINDOWS`; the folder windows come
+/// back through `folders`, not that switch). No `cmd`, no `taskkill`, no `del`: a program force-killing `explorer.exe` and deleting files
 /// through `cmd` is how VirusTotal's sandbox described the old one-liner (sigma "File
 /// Deletion Via Del"), and what behaviour-based antivirus scores. The files are deleted
 /// best-effort either way; one Explorer still holds open simply stays.
@@ -199,9 +201,13 @@ pub fn restart_explorer_clearing_cache() -> bool {
     // process matters: a process exists the instant it starts, while the window only appears
     // once the shell is actually up and serving, which is what the user cares about.
     let shell_is_up = || unsafe { FindWindowW(w!("Shell_TrayWnd"), None).is_ok() };
+    // Read before the restart closes them; reopened once the taskbar is back.
+    let open = folders::open_folders();
+    let settle = std::time::Duration::from_secs(3);
 
     cycle_explorer(&thumbcache_files());
     if wait_for_shell(&shell_is_up) {
+        folders::reopen_missing(open, settle);
         return true;
     }
     crate::safety::log("explorer did not return after the cache rebuild - relaunching directly");
@@ -209,6 +215,7 @@ pub fn restart_explorer_clearing_cache() -> bool {
         .creation_flags(CREATE_NO_WINDOW)
         .spawn();
     if wait_for_shell(&shell_is_up) {
+        folders::reopen_missing(open, settle);
         return true;
     }
     crate::safety::log("explorer STILL not back after a direct relaunch");
