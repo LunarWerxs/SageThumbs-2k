@@ -496,7 +496,7 @@ Filename: "{app}\{#AppExe}"; Parameters: "{code:UpdatedParams}"; \
 Filename: "{app}\{#AppExe}"; Parameters: "--heal-hotkeys"; \
   Flags: nowait runasoriginaluser; Check: ConsoleUserStep('--heal-hotkeys')
 ; Register the per-user update-check Scheduled Task ("SageThumbs2K.exe --update-check",
-; daily with a 6h repetition, /rl LIMITED). Before this, the ONLY periodic update check
+; daily with a 6h repetition, unelevated). Before this, the ONLY periodic update check
 ; lived inside the OPT-IN resident screenshot helper - so every install where the user
 ; never enabled screenshots got zero update checks, forever, while the default-on
 ; "Automatically check for updates" setting made it look wired up. The task is not a
