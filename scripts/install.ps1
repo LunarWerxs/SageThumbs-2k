@@ -178,7 +178,10 @@ if ($Uninstall) {
         $l = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) $f
         if (Test-Path $l) { Remove-Item $l -Force -ErrorAction SilentlyContinue }
     }
-    # Turn the screenshot hotkey off: remove its autostart entry + stop the daemon.
+    # Turn the resident helper off: remove its sign-in task (and the Run value older versions
+    # used) + stop the daemon.
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    Unregister-ScheduledTask -TaskName "SageThumbs2K_Helper_$sid" -Confirm:$false -ErrorAction SilentlyContinue
     Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'SageThumbs2KScreenshot' -ErrorAction SilentlyContinue
     Get-Process SageThumbs2K -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     if (Test-Path $prog) { Remove-Item $prog -Recurse -Force -ErrorAction SilentlyContinue }

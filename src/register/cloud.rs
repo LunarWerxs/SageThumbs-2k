@@ -23,7 +23,6 @@
 //! and by the daily update check ([`relink`]).
 
 use super::*;
-use std::os::windows::process::CommandExt;
 
 use st2k_base::guids::{CLOUD_THUMB_APPID_STR, CLSID_CLOUD_THUMB_PROVIDER_STR};
 
@@ -330,39 +329,20 @@ pub(super) fn unregister_class(classes: &Key) {
 /// user signs in (a cloud client re-registering its folder at startup may put its own provider
 /// back after the first run). A logon trigger scoped to the creating user needs no elevation.
 pub(crate) fn relink_task_xml(exe: &str, user: &str) -> String {
-    let esc = |s: &str| {
-        s.replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;")
-            .replace('"', "&quot;")
-    };
-    let (exe, user) = (esc(exe), esc(user));
-    let trigger = |delay: &str| {
-        format!(
-            "    <LogonTrigger>\n      <Enabled>true</Enabled>\n      <UserId>{user}</UserId>\n      \
-             <Delay>{delay}</Delay>\n    </LogonTrigger>\n"
-        )
-    };
-    format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n\
-         <Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n  \
-         <RegistrationInfo>\n    <Description>Keeps SageThumbs 2K thumbnails working in cloud sync folders (OneDrive, Synology Drive, ...).</Description>\n  </RegistrationInfo>\n  \
-         <Triggers>\n{t1}{t5}  </Triggers>\n  \
-         <Principals>\n    <Principal id=\"Author\">\n      <UserId>{user}</UserId>\n      \
-         <LogonType>InteractiveToken</LogonType>\n      <RunLevel>LeastPrivilege</RunLevel>\n    </Principal>\n  </Principals>\n  \
-         <Settings>\n    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n    \
-         <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n    \
-         <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n    \
-         <ExecutionTimeLimit>PT2M</ExecutionTimeLimit>\n    <Enabled>true</Enabled>\n  </Settings>\n  \
-         <Actions Context=\"Author\">\n    <Exec>\n      <Command>{exe}</Command>\n      \
-         <Arguments>--cloud-relink</Arguments>\n    </Exec>\n  </Actions>\n</Task>\n",
-        t1 = trigger("PT1M"),
-        t5 = trigger("PT5M"),
+    use st2k_base::tasksched::{exec_task_xml, logon_trigger};
+    let triggers = logon_trigger(user, "PT1M") + &logon_trigger(user, "PT5M");
+    exec_task_xml(
+        "Keeps SageThumbs 2K thumbnails working in cloud sync folders (OneDrive, Synology Drive, ...).",
+        &triggers,
+        exe,
+        "--cloud-relink",
+        "PT2M",
     )
 }
 
 /// Create or drop the per-user logon task to match the setting. `exe` is the companion EXE the
-/// task runs. Best-effort: schtasks being unavailable only costs the sign-in re-link, and the
+/// task runs. Registered in-process ([`st2k_base::tasksched`]): no `schtasks.exe`, no XML file
+/// in `%TEMP%`. Best-effort: Task Scheduler refusing only costs the sign-in re-link, and the
 /// other triggers (app launch, the daily update check) still run.
 pub fn sync_relink_task(exe: &std::path::Path, wanted: bool) {
     if !wanted {
@@ -374,42 +354,16 @@ pub fn sync_relink_task(exe: &std::path::Path, wanted: bool) {
         _ => return,
     };
     let xml = relink_task_xml(&exe.to_string_lossy(), &user);
-    let file = std::env::temp_dir().join(format!("st2k-cloudtask-{}.xml", std::process::id()));
-    // schtasks reads the XML as UTF-16 (the declaration says so); write it with a BOM.
-    let mut bytes = vec![0xFF, 0xFE];
-    bytes.extend(xml.encode_utf16().flat_map(u16::to_le_bytes));
-    if std::fs::write(&file, bytes).is_err() {
-        return;
-    }
-    let out = schtasks(&[
-        "/create",
-        "/f",
-        "/tn",
-        RELINK_TASK,
-        "/xml",
-        &file.to_string_lossy(),
-    ]);
-    let _ = std::fs::remove_file(&file);
-    if let Some(o) = out.filter(|o| !o.status.success()) {
+    if let Err(e) = st2k_base::tasksched::register(RELINK_TASK, &xml) {
         log_error(&format!(
-            "cloud: could not create the sign-in re-link task ({}): {}",
-            o.status,
-            String::from_utf8_lossy(&o.stderr).trim()
+            "cloud: could not create the sign-in re-link task: {e}"
         ));
     }
 }
 
 /// Drop the per-user logon task, if there is one.
 pub fn remove_relink_task() {
-    let _ = schtasks(&["/delete", "/f", "/tn", RELINK_TASK]);
-}
-
-fn schtasks(args: &[&str]) -> Option<std::process::Output> {
-    std::process::Command::new("schtasks.exe")
-        .args(args)
-        .creation_flags(st2k_base::host::CREATE_NO_WINDOW)
-        .output()
-        .ok()
+    let _ = st2k_base::tasksched::delete(RELINK_TASK);
 }
 
 #[cfg(test)]

@@ -25,7 +25,10 @@ mod upload;
 use st2k_appkit::win::window_shot;
 
 pub use daemon::run_daemon;
-pub use enable::{heal_if_wanted, is_daemon_running, is_enabled, quit, reload_hotkey, set_enabled};
+pub use enable::{
+    forget_autostart, heal_if_wanted, is_daemon_running, is_enabled, quit, reload_hotkey,
+    set_enabled,
+};
 pub use overlay::{capture_instant, run_capture, run_capture_automation, run_capture_ocr};
 pub use upload::{open_hosts_config, run_upload, run_upload_keep, with_busy_pill};
 

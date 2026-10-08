@@ -5,32 +5,44 @@
 //! The resident tray daemon is wanted whenever EITHER the screenshot feature is on
 //! OR a custom action hotkey is bound (see [`crate::hotkey`]) OR Quick preview is
 //! enabled — so a colour-picker hotkey works without forcing the user to enable
-//! screenshots. The autostart entry (`…\Run`) therefore means
+//! screenshots. The autostart (a per-user sign-in task) therefore means
 //! "the daemon should run", and the screenshot feature's
 //! own on/off lives in its own `ScreenshotEnabled` DWORD (migrated from the old
-//! "autostart-present == enabled" meaning). [`reconcile`] aligns the autostart entry
+//! "autostart-present == enabled" meaning). [`reconcile`] aligns the autostart
 //! and the running daemon with whatever wants it. Default (nothing bound) = nothing
 //! running, so the no-background-bloat promise holds until the user opts in.
+//!
+//! The autostart used to be a `…\Run` value naming this exe. Behaviour scanners read a
+//! low-prevalence program writing itself into `Run`, then holding a keyboard hook, as a
+//! dropper installing persistence: Kaspersky deleted the value as `Trojan-Dropper` (issue
+//! #14), and VirusTotal's sandbox flags the write ("CurrentVersion Autorun Keys
+//! Modification"). A sign-in task registered in-process starts the helper the same way
+//! without that shape; an install that still has the value moves over on its next heal.
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW, WM_CLOSE};
 
-const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-const RUN_NAME: &str = "SageThumbs2KScreenshot";
+/// Where installs before the sign-in task kept the autostart: read for the migration and the
+/// pre-`ScreenshotEnabled` fallback, otherwise only ever deleted.
+const LEGACY_RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+const LEGACY_RUN_NAME: &str = "SageThumbs2KScreenshot";
+/// The helper's sign-in task is `SageThumbs2K_Helper_<user SID>`, one per user (the shape
+/// OneDrive's per-user tasks take), so two accounts on one PC never fight over one task.
+const HELPER_TASK_PREFIX: &str = "SageThumbs2K_Helper_";
 /// Set by [`quit`], cleared by [`set_enabled`] (the single choke point every
 /// Settings ▸ Save routes through, see `settings_dlg/values.rs`). While set, nothing else
 /// wanting the daemon can bring it back — see [`daemon_wanted_from`].
 const DAEMON_STOPPED_KEY: &str = "DaemonStopped";
 
 /// Is the screenshot capture feature enabled? Stored as the `ScreenshotEnabled` DWORD.
-/// For users upgrading from before that flag existed, fall back to the autostart entry's
+/// For users upgrading from before that flag existed, fall back to the old `…\Run` value's
 /// presence (which used to BE the screenshot-enabled state) so their setting migrates
 /// cleanly — once `set_enabled` writes the DWORD, the fallback is never consulted again.
 pub fn is_enabled() -> bool {
     match st2k_base::settings::get_dword_opt("ScreenshotEnabled") {
         Some(v) => v != 0,
-        None => run_entry_present(),
+        None => legacy_run_value_present(),
     }
 }
 
@@ -74,14 +86,14 @@ fn daemon_wanted() -> bool {
     )
 }
 
-/// True when something wants the daemon to survive logon, but the `…\Run` autostart entry
-/// isn't there to make that happen — the write in [`reconcile`] can fail silently (a
-/// locked hive, an AV product deleting the value moments later, …) while THIS session's
+/// True when something wants the daemon to survive logon, but the sign-in task isn't there
+/// to make that happen — the registration in [`reconcile`] can fail (a policy, a security
+/// product deleting it moments later, …) while THIS session's
 /// daemon keeps running fine, so nothing else looks wrong until the next reboot, when the
 /// hotkey/Quick-preview simply never comes back. Consulted by the daemon's tray tooltip so
 /// the gap is visible somewhere the user will actually see it.
 pub(crate) fn autostart_missing_while_wanted() -> bool {
-    autostart_missing_while_wanted_from(daemon_wanted(), autostart_allowed(), !run_entry_present())
+    autostart_missing_while_wanted_from(daemon_wanted(), autostart_allowed(), !autostart_present())
 }
 
 /// Pure core of [`autostart_missing_while_wanted`]: the mismatch that means "something
@@ -96,8 +108,8 @@ fn autostart_missing_while_wanted_from(wanted: bool, allowed: bool, missing: boo
 
 /// Whether we may touch logon autostart at all.
 ///
-/// A portable copy never does. Its exe lives wherever the user unzipped it, so a `…\Run`
-/// entry would be persistent machine state from a build whose entire promise is that it
+/// A portable copy never does. Its exe lives wherever the user unzipped it, so a sign-in
+/// task would be persistent machine state from a build whose entire promise is that it
 /// leaves none — and it would point at a path that dies the moment the folder is moved,
 /// renamed, or unplugged, which is precisely the stale-autostart failure the guard in
 /// [`autostart_points_at_other_install`] exists to clean up after. The daemon still runs
@@ -106,39 +118,51 @@ fn autostart_allowed() -> bool {
     !st2k_base::settings::portable()
 }
 
-/// Is the `…\Run` autostart entry present? (The legacy "screenshots enabled" signal, now
-/// just "the daemon should autostart".)
-fn run_entry_present() -> bool {
+/// This user's sign-in task name, or `None` when the token gives no SID.
+fn helper_task() -> Option<String> {
+    st2k_base::tasksched::current_user_sid().map(|sid| format!("{HELPER_TASK_PREFIX}{sid}"))
+}
+
+/// Is the sign-in task registered? A file check, no COM
+/// ([`st2k_base::tasksched::file_present`]): the tray tooltip asks from the thread that owns
+/// the keyboard hook.
+fn autostart_present() -> bool {
+    helper_task().is_some_and(|task| st2k_base::tasksched::file_present(&task))
+}
+
+/// Does this user still have the pre-task `…\Run` value? (Once the "screenshots enabled"
+/// signal, then "the daemon should autostart"; now only something to migrate away from.)
+fn legacy_run_value_present() -> bool {
     windows_registry::CURRENT_USER
-        .open(RUN_KEY)
-        .and_then(|k| k.get_string(RUN_NAME))
+        .open(LEGACY_RUN_KEY)
+        .and_then(|k| k.get_string(LEGACY_RUN_NAME))
         .map(|s| !s.is_empty())
         .unwrap_or(false)
 }
 
-/// Does the existing autostart entry point at a live exe that ISN'T `current`? True means
-/// "leave the entry alone" — someone else's healthy install owns it (the usual case: the
-/// machine-wide install under Program Files, while `current` is a dev/portable build). An
-/// absent, unparseable, or dead-target entry returns false, i.e. rewrite freely — this exe
-/// beats a path that no longer launches anything. Comparison is by canonical path, so an
-/// entry that names *this* exe through a different spelling still refreshes normally.
-fn autostart_points_at_other_install(current: &std::path::Path) -> bool {
-    let Ok(k) = windows_registry::CURRENT_USER.open(RUN_KEY) else {
+/// Delete the pre-task `…\Run` value, if this user has one.
+fn remove_legacy_run_value() {
+    if let Ok(k) = windows_registry::CURRENT_USER.open(LEGACY_RUN_KEY) {
+        let _ = k.remove_value(LEGACY_RUN_NAME);
+    }
+}
+
+/// Does `task` start a live exe that ISN'T `current`? True means "leave the task alone" —
+/// someone else's healthy install owns it (the usual case: the machine-wide install under
+/// Program Files, while `current` is a dev/portable build). An absent task, or one whose
+/// target is gone, returns false, i.e. rewrite freely — this exe beats a path that no longer
+/// launches anything. Comparison is by canonical path, so a task that names *this* exe
+/// through a different spelling still refreshes normally.
+fn autostart_points_at_other_install(task: &str, current: &std::path::Path) -> bool {
+    let Some(target) = st2k_base::tasksched::definition(task)
+        .and_then(|xml| st2k_base::tasksched::command_of(&xml))
+    else {
         return false;
     };
-    let Ok(v) = k.get_string(RUN_NAME) else {
-        return false;
-    };
-    // Our own format is `"C:\path\to\exe" --screenshot-daemon` — take the quoted path.
-    let rest = match v.trim().strip_prefix('"') {
-        Some(r) => r,
-        None => return false, // unquoted/foreign format — reclaim it
-    };
-    let Some(end) = rest.find('"') else {
-        return false;
-    };
-    let target = std::path::Path::new(&rest[..end]);
-    match (target.canonicalize(), current.canonicalize()) {
+    match (
+        std::path::Path::new(&target).canonicalize(),
+        current.canonicalize(),
+    ) {
         // Target exists and is genuinely a different file → it's someone's live install.
         (Ok(t), Ok(c)) => t != c,
         // Target missing/unreadable → stale, rewrite.
@@ -160,34 +184,55 @@ pub fn is_daemon_running() -> bool {
 /// expectation. A no-op when already
 /// running or not wanted.
 pub fn heal_if_wanted() {
-    if !daemon_wanted() {
-        return;
-    }
-    // Two separate broken states, and checking only the first one missed a real case.
-    //
-    //   1. daemon not running  -> crash, kill, or a logon where it never came up.
-    //   2. autostart entry gone while the daemon is STILL ALIVE. Antivirus does exactly this:
-    //      Kaspersky deleted our `...\Run` value as "Trojan-Dropper" persistence (issue #14)
-    //      and left the process untouched. Nothing looked wrong until the next sign-in, when
-    //      the hotkey simply never came back, and the old `!is_daemon_running()` guard meant
-    //      opening Settings could not repair it either.
-    let missing_autostart = autostart_missing_while_wanted();
-    if missing_autostart {
-        // Log BEFORE reconcile() writes the value back — a crash between the two would
+    let (count_heal, reconcile_now) = heal_plan(
+        daemon_wanted(),
+        autostart_allowed(),
+        legacy_run_value_present(),
+        autostart_present(),
+        is_daemon_running(),
+    );
+    if count_heal {
+        // Log BEFORE reconcile() registers the task again — a crash between the two would
         // rather leave a log line with no heal than a heal nobody can explain afterwards.
         record_autostart_heal();
     }
-    if !is_daemon_running() || missing_autostart {
+    if reconcile_now {
         reconcile();
     }
 }
 
-/// How many times [`heal_if_wanted`] has had to restore a missing autostart entry while
+/// Pure core of [`heal_if_wanted`]: `(count and log a heal, reconcile)`. Three broken states,
+/// and checking only the first one once missed a real case.
+///
+///   1. daemon not running -> crash, kill, or a logon where it never came up.
+///   2. sign-in task gone while the daemon is STILL ALIVE. Antivirus does exactly this:
+///      Kaspersky deleted the old `...\Run` value as "Trojan-Dropper" persistence (issue
+///      #14) and left the process untouched. Nothing looked wrong until the next sign-in,
+///      when the hotkey simply never came back. Counted, because it means something keeps
+///      removing it.
+///   3. an install from before the sign-in task still starts the helper from `...\Run`:
+///      reconcile moves it over. A migration, not case 2, so never counted or logged as one.
+fn heal_plan(
+    wanted: bool,
+    allowed: bool,
+    legacy_run_value: bool,
+    task_present: bool,
+    running: bool,
+) -> (bool, bool) {
+    if !wanted {
+        return (false, false);
+    }
+    let migrate = allowed && legacy_run_value;
+    let missing = !migrate && autostart_missing_while_wanted_from(wanted, allowed, !task_present);
+    (missing, !running || missing || migrate)
+}
+
+/// How many times [`heal_if_wanted`] has had to restore a missing sign-in task while
 /// the daemon was still wanted. Persisted (not just logged) so the message can tell a
 /// first-time heal from "this keeps happening" across separate launches/logons.
 const AUTOSTART_HEAL_COUNT_KEY: &str = "AutostartHealCount";
 
-/// Record + log a case-2 heal from [`heal_if_wanted`]. We still rewrite the Run entry every
+/// Record + log a case-2 heal from [`heal_if_wanted`]. We still register the task again every
 /// single time — refusing to would leave the user's hotkeys dead until they notice and open
 /// Settings, which is worse than fighting the AV once per scan — so what's bounded here is
 /// the LOG, not the heal: instead of an identical "healed" line forever (which reads, to a
@@ -199,17 +244,18 @@ fn record_autostart_heal() {
     let _ = st2k_base::settings::set_dword(AUTOSTART_HEAL_COUNT_KEY, prior.saturating_add(1));
     if prior == 0 {
         st2k_base::safety::log(
-            "screenshot: autostart Run entry was missing while the daemon is still wanted \
-             (settings say autostart on, but the registry value is gone) — restoring it. \
+            "screenshot: the helper's sign-in task was missing while the daemon is still \
+             wanted (settings say autostart on, but the task is gone) — restoring it. \
              Likely cause: antivirus/cleanup software flagging it as persistence, as \
-             Kaspersky did in issue #14. If this recurs, the user's security software is the \
-             place to look — check its quarantine/threat log and add an exclusion for our exe.",
+             Kaspersky did to the old Run value in issue #14. If this recurs, the user's \
+             security software is the place to look — check its quarantine/threat log and \
+             add an exclusion for our exe.",
         );
     } else {
         st2k_base::safety::log(&format!(
-            "screenshot: autostart Run entry went missing AGAIN (heal #{}) — something on \
-             this machine keeps deleting it, most likely antivirus real-time protection re-\
-             flagging the value on every scan. Restoring it again, but this is no longer a \
+            "screenshot: the helper's sign-in task went missing AGAIN (heal #{}) — something \
+             on this machine keeps deleting it, most likely antivirus real-time protection \
+             re-flagging it on every scan. Restoring it again, but this is no longer a \
              one-off: point the user at their security product's exclusions/quarantine.",
             prior + 1
         ));
@@ -255,52 +301,65 @@ fn reconcile_wanted() {
     }
 }
 
-/// Point the autostart entry at THIS exe — unless a healthy entry already points at a
+/// Point the sign-in task at THIS exe — unless a healthy task already points at a
 /// DIFFERENT install. Without that guard, merely opening Settings from a dev/test build
 /// silently repointed logon autostart at a transient build path; when that path later
 /// changed or vanished, the daemon simply never came up at the next boot (hotkeys dead, no
-/// error anywhere) until something opened Settings again.
+/// error anywhere) until something opened Settings again. Once the task is in, the old
+/// `…\Run` value (if any) goes: one autostart, never two.
 fn install_autostart_entry() {
-    let Ok(exe) = std::env::current_exe() else {
+    let (Ok(exe), Some(sid)) = (
+        std::env::current_exe(),
+        st2k_base::tasksched::current_user_sid(),
+    ) else {
         return;
     };
-    if autostart_points_at_other_install(&exe) {
+    let task = format!("{HELPER_TASK_PREFIX}{sid}");
+    if autostart_points_at_other_install(&task, &exe) {
         return;
     }
-    match windows_registry::CURRENT_USER.create(RUN_KEY) {
-        Ok(k) => {
-            // A swallowed Err here left hotkeys silently dead at the
-            // next logon — this session's daemon starts fine regardless, so
-            // there was no other sign anything had gone wrong.
-            if let Err(e) = k.set_string(
-                RUN_NAME,
-                format!("\"{}\" --screenshot-daemon", exe.display()),
-            ) {
-                st2k_base::safety::log(&format!(
-                    "screenshot: failed to write autostart Run entry: {e}"
-                ));
-            }
-        }
-        Err(e) => {
-            st2k_base::safety::log(&format!(
-                "screenshot: failed to open Run key for autostart: {e}"
-            ));
-        }
+    let xml = st2k_base::tasksched::exec_task_xml(
+        "Starts the SageThumbs 2K helper (hotkeys, Quick preview) when you sign in.",
+        &st2k_base::tasksched::logon_trigger(&sid, "PT5S"),
+        &exe.to_string_lossy(),
+        "--screenshot-daemon",
+        // No time limit: the helper is meant to run for the whole session.
+        "PT0S",
+    );
+    // A failure here leaves hotkeys silently dead at the next logon — this session's daemon
+    // starts fine regardless, so the log (and the tray tooltip) are the only signs.
+    match st2k_base::tasksched::register(&task, &xml) {
+        Ok(()) => remove_legacy_run_value(),
+        Err(e) => st2k_base::safety::log(&format!(
+            "screenshot: failed to register the helper's sign-in task: {e}"
+        )),
     }
 }
 
-/// Drop the autostart `...\Run` entry, unless autostart isn't allowed at all, in which case
-/// there is nothing of ours there. `action` names the caller in the failure log line
-/// (`screenshot: {action} autostart Run entry: ...`).
+/// Drop the sign-in task (and any old `…\Run` value), unless autostart isn't allowed at
+/// all, in which case there is nothing of ours there. `action` names the caller in the
+/// failure log line (`screenshot: {action} the helper's sign-in task: ...`).
 fn remove_autostart_entry(action: &str) {
     if !autostart_allowed() {
         return;
     }
-    if let Ok(k) = windows_registry::CURRENT_USER.create(RUN_KEY) {
-        if let Err(e) = k.remove_value(RUN_NAME) {
-            st2k_base::safety::log(&format!("screenshot: {action} autostart Run entry: {e}"));
+    if let Some(task) = helper_task() {
+        if let Err(e) = st2k_base::tasksched::delete(&task) {
+            st2k_base::safety::log(&format!(
+                "screenshot: {action} the helper's sign-in task: {e}"
+            ));
         }
     }
+    remove_legacy_run_value();
+}
+
+/// Uninstall (`--remove-user-state`): drop this user's sign-in task and any old `…\Run`
+/// value, touching no setting and no running process.
+pub fn forget_autostart() {
+    if let Some(task) = helper_task() {
+        let _ = st2k_base::tasksched::delete(&task);
+    }
+    remove_legacy_run_value();
 }
 
 /// The "nothing wants it" branch of [`reconcile`]: drop the autostart entry (when autostart
@@ -386,5 +445,45 @@ mod tests {
         assert!(!autostart_missing_while_wanted_from(false, true, false));
         assert!(!autostart_missing_while_wanted_from(true, false, false));
         assert!(!autostart_missing_while_wanted_from(false, false, false));
+    }
+
+    /// Upgrading from an install that still starts the helper from the old `...\Run` value
+    /// moves it to the sign-in task without counting a heal (which would log "antivirus keeps
+    /// deleting it" to every upgrading user); a task that is genuinely gone is healed AND
+    /// counted; a healthy, running helper is left alone; nothing happens when nothing wants
+    /// the helper, or for a portable copy, which never has a task.
+    #[test]
+    fn heal_migrates_the_run_value_quietly_and_counts_only_real_losses() {
+        // (wanted, allowed, legacy Run value, task present, running) -> (count, reconcile)
+        assert_eq!(
+            heal_plan(true, true, true, false, true),
+            (false, true),
+            "upgrade migrates"
+        );
+        assert_eq!(
+            heal_plan(true, true, false, false, true),
+            (true, true),
+            "task deleted"
+        );
+        assert_eq!(
+            heal_plan(true, true, false, true, true),
+            (false, false),
+            "healthy"
+        );
+        assert_eq!(
+            heal_plan(true, true, false, true, false),
+            (false, true),
+            "not running"
+        );
+        assert_eq!(
+            heal_plan(true, false, false, false, true),
+            (false, false),
+            "portable"
+        );
+        assert_eq!(
+            heal_plan(false, true, true, false, false),
+            (false, false),
+            "not wanted"
+        );
     }
 }

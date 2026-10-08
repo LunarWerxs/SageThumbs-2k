@@ -737,19 +737,14 @@ pub(super) unsafe fn dispatch_user_state_modes(args: &[String]) -> bool {
 /// the same "wipe the root, then leave one value behind" shape
 /// [`st2k_base::settings::clear_tombstone`]'s doc comment describes the machine-wide
 /// uninstaller performing — via the general string setter (which targets the exact same
-/// key `tombstone_version`/`clear_tombstone` read and clear), and drops the screenshot
-/// daemon's logon autostart entry. `RUN_KEY`/`RUN_NAME` mirror the private constants in
-/// `screenshot::enable` (that module owns the daemon's own add/remove of the same value;
-/// its consts aren't `pub`, so the literal is repeated here — keep both in sync).
+/// key `tombstone_version`/`clear_tombstone` read and clear), and drops the resident
+/// helper's sign-in task (and the `…\Run` value older versions used instead), through
+/// `screenshot::enable`, which owns both.
 pub(super) unsafe fn remove_user_state() {
     let _ = windows_registry::CURRENT_USER.remove_tree(st2k_base::settings::ROOT);
     let _ = st2k_base::settings::set_string("Tombstone", env!("CARGO_PKG_VERSION"));
 
-    const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-    const RUN_NAME: &str = "SageThumbs2KScreenshot";
-    if let Ok(k) = windows_registry::CURRENT_USER.open(RUN_KEY) {
-        let _ = k.remove_value(RUN_NAME);
-    }
+    st2k_screenshot::screenshot::forget_autostart();
 
     // This user's runtime files: the diagnostics log (and its one rotated backup), the
     // update-check cache and the self-update records. The installer's [UninstallDelete] rows

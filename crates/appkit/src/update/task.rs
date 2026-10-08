@@ -2,41 +2,37 @@
 
 use super::*;
 
-/// Run `schtasks.exe` with no console flash, returning its output.
-pub(super) fn schtasks(args: &[&str]) -> std::io::Result<std::process::Output> {
-    std::process::Command::new("schtasks.exe")
-        .args(args)
-        .creation_flags(st2k_base::host::CREATE_NO_WINDOW)
-        .output()
-}
+/// The update-check task's schedule: daily from 09:00, repeating every 6 h through the day.
+const UPDATE_TRIGGER: &str = "    <CalendarTrigger>\n      \
+     <StartBoundary>2026-01-01T09:00:00</StartBoundary>\n      \
+     <Repetition>\n        <Interval>PT6H</Interval>\n        <Duration>P1D</Duration>\n      \
+     </Repetition>\n      <Enabled>true</Enabled>\n      \
+     <ScheduleByDay>\n        <DaysInterval>1</DaysInterval>\n      </ScheduleByDay>\n    \
+     </CalendarTrigger>\n";
 
 /// Register (or refresh) the per-user update-check task: `SageThumbs2K.exe --update-check`,
-/// daily with a 6 h repetition, at the user's NORMAL token (`/rl LIMITED` — the check writes
-/// only `%LOCALAPPDATA%` and pops a tray balloon; it never needs admin). The 6 h cadence
-/// mirrors what the resident helper does; the actual network hit stays throttled to once a
-/// day inside [`check_throttled`], so the extra ticks only cover machines that were asleep.
-/// Returns false if `schtasks` refused (policy, missing binary) — the piggyback path then
-/// carries the feature on its own. Best-effort with logging; never fatal.
+/// daily with a 6 h repetition, at the user's NORMAL token (the check writes only
+/// `%LOCALAPPDATA%` and pops a tray balloon; it never needs admin). The 6 h cadence mirrors
+/// what the resident helper does; the actual network hit stays throttled to once a day inside
+/// [`check_throttled`], so the extra ticks only cover machines that were asleep. Registered
+/// in-process ([`st2k_base::tasksched`]), never through `schtasks.exe`. Returns false if Task
+/// Scheduler refused (policy) — the piggyback path then carries the feature on its own.
+/// Best-effort with logging; never fatal.
 pub(crate) fn install_update_task() -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
     };
-    let tr = format!("\"{}\" --update-check", exe.display());
-    #[rustfmt::skip]
-    let created = schtasks(&["/create", "/f", "/tn", UPDATE_TASK, "/sc", "DAILY", "/st", "09:00",
-                             "/ri", "360", "/du", "9999:59", "/rl", "LIMITED", "/tr", &tr]);
-    match created {
-        Ok(o) if o.status.success() => true,
-        Ok(o) => {
-            st2k_base::safety::log(&format!(
-                "update: schtasks create failed ({}): {}",
-                o.status,
-                String::from_utf8_lossy(&o.stderr).trim()
-            ));
-            false
-        }
+    let xml = st2k_base::tasksched::exec_task_xml(
+        "Checks once a day whether a newer SageThumbs 2K is out.",
+        UPDATE_TRIGGER,
+        &exe.to_string_lossy(),
+        "--update-check",
+        "PT72H",
+    );
+    match st2k_base::tasksched::register(UPDATE_TASK, &xml) {
+        Ok(()) => true,
         Err(e) => {
-            st2k_base::safety::log(&format!("update: schtasks unavailable ({e})"));
+            st2k_base::safety::log(&format!("update: could not register the update task: {e}"));
             false
         }
     }
@@ -45,7 +41,7 @@ pub(crate) fn install_update_task() -> bool {
 /// Drop the update-check task (the user turned auto-check off, or we're uninstalling).
 /// A missing task is not an error.
 pub fn remove_update_task() {
-    let _ = schtasks(&["/delete", "/f", "/tn", UPDATE_TASK]);
+    let _ = st2k_base::tasksched::delete(UPDATE_TASK);
 }
 
 /// What [`sync_update_task`] does to the Scheduled Task.

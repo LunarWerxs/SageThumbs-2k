@@ -93,52 +93,41 @@ unsafe fn is_elevated() -> bool {
     st2k_base::host::is_elevated()
 }
 
-/// De-elevate the heal through a ONE-SHOT `LIMITED` scheduled task: the task starts
-/// `--heal-hotkeys` with the interactive user's NORMAL token (`/rl LIMITED` strips the
-/// admin half even for an admin account), and that non-elevated instance takes the plain
-/// `heal_if_wanted` path below. A scheduled task needs no running Explorer — which is
-/// down at this exact moment (Restart Manager only restarts it AFTER the [Run] section) —
-/// so the shell-token de-elevation trick would not work here. Best-effort with logging;
-/// if the task cannot be created, or schtasks is unavailable, fall back to healing elevated
-/// (worse than a clean heal, but far better than leaving the hotkeys dead until next logon).
+/// De-elevate the heal through a ONE-SHOT scheduled task: the task starts `--heal-hotkeys`
+/// with the interactive user's NORMAL token (least privilege strips the admin half even for
+/// an admin account), and that non-elevated instance takes the plain `heal_if_wanted` path
+/// below. A scheduled task needs no running Explorer — which is down at this exact moment
+/// (Restart Manager only restarts it AFTER the [Run] section) — so the shell-token
+/// de-elevation trick would not work here. Registered and started in-process
+/// ([`st2k_base::tasksched`]), never through `schtasks.exe`. Best-effort with logging; if
+/// Task Scheduler refuses, fall back to healing elevated (worse than a clean heal, but far
+/// better than leaving the hotkeys dead until next logon).
 fn schedule_unelevated_heal() {
-    use std::os::windows::process::CommandExt;
+    use st2k_base::tasksched;
     const TASK: &str = "SageThumbs2K_HealHotkeys";
     let Ok(exe) = std::env::current_exe() else {
         st2k_screenshot::screenshot::heal_if_wanted();
         return;
     };
-    let tr = format!("\"{}\" --heal-hotkeys", exe.display());
-    let run = |args: &[&str]| {
-        std::process::Command::new("schtasks.exe")
-            .args(args)
-            .creation_flags(st2k_base::host::CREATE_NO_WINDOW)
-            .output()
-    };
-    // `/sc once /st 00:00` only satisfies schtasks' mandatory-schedule syntax — the task
-    // is fired immediately via `/run` and removed right after.
-    #[rustfmt::skip]
-    let created = run(&["/create", "/f", "/tn", TASK, "/sc", "once", "/st", "00:00",
-                        "/rl", "LIMITED", "/tr", &tr]);
-    match created {
-        Ok(o) if o.status.success() => {
-            let _ = run(&["/run", "/tn", TASK]);
+    // No trigger: it only ever runs when started just below, and is removed right after.
+    let xml = tasksched::exec_task_xml(
+        "Restarts the SageThumbs 2K helper after an install.",
+        "",
+        &exe.to_string_lossy(),
+        "--heal-hotkeys",
+        "PT72H",
+    );
+    match tasksched::register(TASK, &xml).and_then(|()| tasksched::run(TASK)) {
+        Ok(()) => {
             // Give Task Scheduler a moment to actually start the process before the
             // task definition disappears out from under it.
             std::thread::sleep(std::time::Duration::from_secs(2));
-            let _ = run(&["/delete", "/f", "/tn", TASK]);
-        }
-        Ok(o) => {
-            st2k_base::safety::log(&format!(
-                "heal: schtasks create failed ({}): {} — healing elevated instead",
-                o.status,
-                String::from_utf8_lossy(&o.stderr).trim()
-            ));
-            st2k_screenshot::screenshot::heal_if_wanted();
+            let _ = tasksched::delete(TASK);
         }
         Err(e) => {
+            let _ = tasksched::delete(TASK);
             st2k_base::safety::log(&format!(
-                "heal: schtasks unavailable ({e}) — healing elevated instead"
+                "heal: could not start the one-shot heal task ({e}) — healing elevated instead"
             ));
             st2k_screenshot::screenshot::heal_if_wanted();
         }
@@ -355,13 +344,13 @@ unsafe fn dispatch_cli_launch_modes(hinst: HINSTANCE, dark: bool, args: &[String
     // and concludes it is broken. Same mechanism the FormatBadge toggle already clears the
     // cache for.
     //
-    // Reuses the exact string the "Rebuild thumbnail cache" / "Repair file associations"
-    // buttons use, through `cmd_c`, so the kill-then-relaunch stays one `cmd` line and
-    // cannot repeat issue #5 (Explorer killed, relaunch mis-quoted, user left with no
-    // shell). Never silent-by-default: setup only runs this if the box is ticked.
+    // The same restart the "Rebuild thumbnail cache" / "Repair file associations" buttons
+    // use (`shellcmd::restart_explorer_clearing_cache`: Restart Manager closes and reopens
+    // Explorer, and the shell is confirmed back). Never silent-by-default: setup only runs
+    // this if the box is ticked.
     if args.iter().any(|a| a == "--rebuild-thumbnail-cache") {
-        // `restart_explorer_clearing_cache` can take up to ~30s (it waits out the
-        // taskkill, then polls for the taskbar to come back). This flag is invoked
+        // `restart_explorer_clearing_cache` can take up to ~30s (Explorer closes, then it
+        // polls for the taskbar to come back). This flag is invoked
         // synchronously from the installer's postinstall [Run] step, which by default
         // blocks Setup's own UI for however long we take — so detach: re-spawn ourselves
         // with the actual work and return immediately, rather than making the installer

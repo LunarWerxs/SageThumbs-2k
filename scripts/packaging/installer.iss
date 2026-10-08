@@ -1882,15 +1882,17 @@ begin
     '-NoProfile -Command "' + ModernMenuRegisterScript('') + '"', 'modern-menu');
 end;
 
-// Sweep the Run-key autostart value across EVERY loaded user hive, not just whichever account
-// happens to be HKEY_CURRENT_USER in this elevated process. HKEY_USERS enumerates every
+// Sweep the resident helper's autostart across EVERY loaded user hive, not just whichever
+// account happens to be HKEY_CURRENT_USER in this elevated process: its per-user sign-in task
+// (`SageThumbs2K_Helper_<SID>`, see screenshot/enable.rs) and the Run value older versions
+// used instead. The elevated uninstaller may delete any user's task. HKEY_USERS enumerates every
 // profile Windows currently has loaded (every signed-in user on a shared/RDS machine, plus
 // service accounts); skip the ones that are never a real interactive user so this does not
 // waste time or risk touching something unrelated.
 procedure RemoveRunKeyForAllUsers;
 var
   Sids: TArrayOfString;
-  I: Integer;
+  I, TaskR: Integer;
   Sid: String;
 begin
   if not RegGetSubkeyNames(HKEY_USERS, '', Sids) then
@@ -1909,6 +1911,8 @@ begin
       Continue;
     RegDeleteValue(HKEY_USERS, Sid + '\Software\Microsoft\Windows\CurrentVersion\Run',
       'SageThumbs2KScreenshot');
+    Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN "SageThumbs2K_Helper_' + Sid + '" /F',
+      '', SW_HIDE, ewWaitUntilTerminated, TaskR);
   end;
 end;
 

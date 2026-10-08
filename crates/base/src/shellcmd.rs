@@ -32,19 +32,141 @@ pub fn cmd_c(line: &str) -> std::io::Result<Child> {
         .spawn()
 }
 
-/// The taskkill → delete-thumbcache → relaunch sequence shared by the "Rebuild
-/// thumbnail cache" and "Repair file associations" buttons. Errors are swallowed on
-/// purpose (a missing cache file is not a failure); the chain is one `cmd` line so the
-/// relaunch cannot run before the kill.
-pub const RESTART_EXPLORER_CLEARING_CACHE: &str = "taskkill /f /im explorer.exe >nul 2>&1 & \
-     del /f /q \"%LOCALAPPDATA%\\Microsoft\\Windows\\Explorer\\thumbcache_*.db\" >nul 2>&1 & \
-     start \"\" explorer.exe";
+/// Every `thumbcache_*.db` in this user's Explorer cache folder.
+fn thumbcache_files() -> Vec<std::path::PathBuf> {
+    let Some(local) = std::env::var_os("LOCALAPPDATA") else {
+        return Vec::new();
+    };
+    let dir = std::path::Path::new(&local).join(r"Microsoft\Windows\Explorer");
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("thumbcache_") && n.ends_with(".db"))
+        })
+        .collect()
+}
+
+/// A Restart Manager session, ended when dropped.
+struct RmSession(u32);
+
+impl RmSession {
+    fn start() -> Option<Self> {
+        use windows::core::PWSTR;
+        use windows::Win32::Foundation::ERROR_SUCCESS;
+        use windows::Win32::System::RestartManager::{RmStartSession, CCH_RM_SESSION_KEY};
+        let mut handle = 0u32;
+        let mut key = [0u16; CCH_RM_SESSION_KEY as usize + 1];
+        let started = unsafe { RmStartSession(&mut handle, None, PWSTR(key.as_mut_ptr())) };
+        (started == ERROR_SUCCESS).then_some(Self(handle))
+    }
+}
+
+impl Drop for RmSession {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = windows::Win32::System::RestartManager::RmEndSession(self.0);
+        }
+    }
+}
+
+/// The Explorer processes in THIS session that hold any of `files` open, as Restart Manager
+/// sees them. Explorer only: another program reading the cache (a file manager using the
+/// shell's thumbnails) is never closed, and neither is anyone else's Explorer.
+fn explorers_holding(
+    files: &[std::path::PathBuf],
+) -> Vec<windows::Win32::System::RestartManager::RM_UNIQUE_PROCESS> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{ERROR_MORE_DATA, ERROR_SUCCESS};
+    use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+    use windows::Win32::System::RestartManager::{
+        RmExplorer, RmGetList, RmRegisterResources, RM_PROCESS_INFO,
+    };
+    use windows::Win32::System::Threading::GetCurrentProcessId;
+    let Some(session) = RmSession::start() else {
+        return Vec::new();
+    };
+    let wide: Vec<Vec<u16>> = files
+        .iter()
+        .map(|f| crate::host::wide(&f.to_string_lossy()))
+        .collect();
+    let names: Vec<PCWSTR> = wide.iter().map(|w| PCWSTR(w.as_ptr())).collect();
+    if unsafe { RmRegisterResources(session.0, Some(&names), None, None) } != ERROR_SUCCESS {
+        return Vec::new();
+    }
+    let mut ours = 0u32;
+    let _ = unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut ours) };
+    let mut list: Vec<RM_PROCESS_INFO> = Vec::new();
+    // Twice at most: the first call sizes the list, the second fills it (a third would mean the
+    // set keeps changing under us, and then doing nothing is the safe answer).
+    for _ in 0..2 {
+        let (mut needed, mut count, mut reasons) = (0u32, list.len() as u32, 0u32);
+        let got = unsafe {
+            RmGetList(
+                session.0,
+                &mut needed,
+                &mut count,
+                Some(list.as_mut_ptr()),
+                &mut reasons,
+            )
+        };
+        if got == ERROR_MORE_DATA {
+            list.resize(needed as usize, RM_PROCESS_INFO::default());
+            continue;
+        }
+        if got != ERROR_SUCCESS {
+            return Vec::new();
+        }
+        list.truncate(count as usize);
+        return list
+            .iter()
+            .filter(|p| p.ApplicationType == RmExplorer && p.TSSessionId == ours)
+            .map(|p| p.Process)
+            .collect();
+    }
+    Vec::new()
+}
+
+/// Close the Explorer processes holding the cache, delete the cache, reopen Explorer, all
+/// through Restart Manager: the API installers use to replace a file in use. It asks Explorer
+/// to close (it saves its state and exits) and starts it again with its folder windows. No
+/// `cmd`, no `taskkill`, no `del`: a program force-killing `explorer.exe` and deleting files
+/// through `cmd` is how VirusTotal's sandbox described the old one-liner (sigma "File
+/// Deletion Via Del"), and what behaviour-based antivirus scores. The files are deleted
+/// best-effort either way; one Explorer still holds open simply stays.
+fn cycle_explorer(cache: &[std::path::PathBuf]) {
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+    use windows::Win32::System::RestartManager::{RmRegisterResources, RmRestart, RmShutdown};
+    let explorers = explorers_holding(cache);
+    let session = (!explorers.is_empty()).then(RmSession::start).flatten();
+    let registered = session.as_ref().is_some_and(|s| unsafe {
+        RmRegisterResources(s.0, None, Some(&explorers), None) == ERROR_SUCCESS
+    });
+    if registered {
+        if let Some(s) = &session {
+            // 0: ask, never force. An Explorer that will not close keeps running untouched.
+            let _ = unsafe { RmShutdown(s.0, 0, None) };
+        }
+    }
+    for file in cache {
+        let _ = std::fs::remove_file(file);
+    }
+    if registered {
+        if let Some(s) = &session {
+            let _ = unsafe { RmRestart(s.0, None, None) };
+        }
+    }
+}
 
 /// Poll `is_up` every 200 ms for ~15 s, returning `true` as soon as it reports the shell
 /// back and `false` if the window never appears.
 ///
-/// ~15s for `start` to bring Explorer back; a cold shell on a busy machine takes a few
-/// seconds.
+/// ~15s for Explorer to come back; a cold shell on a busy machine takes a few seconds.
 fn wait_for_shell(is_up: &impl Fn() -> bool) -> bool {
     for _ in 0..75 {
         if is_up() {
@@ -55,18 +177,15 @@ fn wait_for_shell(is_up: &impl Fn() -> bool) -> bool {
     false
 }
 
-/// Restart Explorer + clear the thumbnail cache, then CHECK THE SHELL CAME BACK.
+/// Restart Explorer + clear the thumbnail cache (the "Rebuild thumbnail cache" and "Repair
+/// file associations" buttons, setup's "Restart File Explorer" box, the post-update toast),
+/// then CHECK THE SHELL CAME BACK.
 ///
-/// The one-liner above is fire-and-forget: it kills Explorer, deletes the cache, and asks
-/// `start` to relaunch. If that last step does not take, the user is staring at an empty
-/// desktop with no taskbar and no idea why - which is exactly what issue #5 did to somebody,
-/// via a quoting bug that made `start` open a UNC root instead of the shell. That specific
-/// bug is fixed and locked by tests, but "we killed your shell and something went wrong on the
-/// way back" is severe enough to be worth confirming rather than assuming, especially now that
-/// setup offers this to every user at the end of an install.
-///
-/// So: issue it, wait for the taskbar window to exist again, and if it does not, relaunch
-/// Explorer directly (no `cmd`, no quoting to get wrong) and check once more. Windows'
+/// "We closed your shell and something went wrong on the way back" is severe enough to be
+/// worth confirming rather than assuming: issue #5 left somebody staring at an empty desktop
+/// with no taskbar (a quoting bug in the old `cmd` relaunch). Restart Manager returns once
+/// Explorer is down and its restart issued, so the check below sees the NEW taskbar, never the
+/// old one; if it does not appear, relaunch Explorer directly and check once more. Windows'
 /// `AutoRestartShell` is a third net beneath both, but it is a registry value a machine can
 /// have turned off, so it is not something to rely on.
 ///
@@ -78,31 +197,15 @@ pub fn restart_explorer_clearing_cache() -> bool {
 
     // `Shell_TrayWnd` is the taskbar. Checking for the WINDOW rather than an `explorer.exe`
     // process matters: a process exists the instant it starts, while the window only appears
-    // once the shell is actually up and serving, which is what the user cares about. It also
-    // stays correct when Explorer is running merely as a file-browser window.
+    // once the shell is actually up and serving, which is what the user cares about.
     let shell_is_up = || unsafe { FindWindowW(w!("Shell_TrayWnd"), None).is_ok() };
 
-    let _ = cmd_c(RESTART_EXPLORER_CLEARING_CACHE);
-
-    // SETTLE FIRST. `cmd_c` only spawns the interpreter; taskkill has not necessarily run when
-    // it returns. Polling immediately finds the OLD taskbar and reports a verified restart
-    // having verified nothing - the first two versions of this function both did exactly that,
-    // returning "success" in 0.8s while Explorer actually went down and came back seconds
-    // later. Trying to catch the down-transition instead is just a smaller race.
-    //
-    // So do not chase the transition at all. Wait long enough that the kill has certainly been
-    // attempted, then assert the thing that actually matters: the shell is up at the end.
-    std::thread::sleep(std::time::Duration::from_secs(3));
-
-    // ~15s for `start` to bring it back; a cold shell on a busy machine takes a few seconds.
+    cycle_explorer(&thumbcache_files());
     if wait_for_shell(&shell_is_up) {
         return true;
     }
-
-    // Not back. Relaunch WITHOUT cmd, so no quoting can be misread this time (issue #5 was a
-    // quoting bug in exactly this spot, and it left someone with no shell).
     crate::safety::log("explorer did not return after the cache rebuild - relaunching directly");
-    let _ = std::process::Command::new("explorer.exe")
+    let _ = Command::new("explorer.exe")
         .creation_flags(CREATE_NO_WINDOW)
         .spawn();
     if wait_for_shell(&shell_is_up) {
@@ -134,25 +237,6 @@ mod tests {
             stdout.trim(),
             "\"quoted\"",
             "cmd saw a mangled line: {stdout:?}"
-        );
-    }
-
-    /// The specific token that broke: `start ""` must not become `start \"\"`, whose
-    /// target `cmd` resolves to `\\`.
-    #[test]
-    fn start_empty_title_is_not_mangled() {
-        assert!(RESTART_EXPLORER_CLEARING_CACHE.contains("start \"\" explorer.exe"));
-        // `echo` the same token through cmd and confirm the interpreter agrees.
-        let out = Command::new("cmd")
-            .arg("/c")
-            .raw_arg("echo start \"\" explorer.exe")
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .expect("spawn cmd");
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(
-            !stdout.contains('\\'),
-            "backslash escaping leaked into cmd: {stdout:?}"
         );
     }
 }

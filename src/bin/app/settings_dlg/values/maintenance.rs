@@ -159,9 +159,8 @@ pub(in super::super) unsafe fn rebuild_thumbnail_cache(hwnd: HWND) {
     ) {
         return;
     }
-    // Kill Explorer (releases the cache files' lock), delete thumbcache_*.db, relaunch.
-    // Must go through `shellcmd::cmd_c` — `Command::args` would escape the quotes for
-    // the MSVCRT convention and `cmd` would misread them (see shellcmd, issue #5).
+    // Close Explorer (releases the cache files' lock), delete thumbcache_*.db, reopen it:
+    // `shellcmd::restart_explorer_clearing_cache`, through Restart Manager.
     // Backgrounded — see `spawn_cache_rebuild`; the success message shows once it's back.
     spawn_cache_rebuild(
         hwnd,
