@@ -166,6 +166,7 @@ fn update_piggyback_wanted(args: &[String]) -> bool {
         "--screenshot-daemon",
         "--update-check",
         "--update-task",
+        "--remove-tasks",
         "--update-selftest",
         "--first-run-seen",
         "--updated",
@@ -173,7 +174,7 @@ fn update_piggyback_wanted(args: &[String]) -> bool {
         "--updated-notice",
         "--heal-hotkeys",
         // Restarts Explorer and exits; piggybacking an update check onto that would leave a
-        // network call running out of a process whose whole job was one `cmd` line.
+        // network call running out of a process whose whole job was that one restart.
         "--rebuild-thumbnail-cache",
         "--rebuild-thumbnail-cache-now",
         // The hidden dev measurement flags: no window, and no side effect beyond the file they

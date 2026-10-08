@@ -471,7 +471,7 @@ pub fn verbose_logging() -> bool {
 
 /// Whether the app periodically checks for a newer release (throttled to once/day) and pops
 /// a tray toast when one exists. ON by default. Three things honor it, none of them a
-/// resident service: the per-user `SageThumbs2K_UpdateCheck` Scheduled Task (registered at
+/// resident service: the per-user `SageThumbs2K_UpdateCheck_<SID>` Scheduled Task (registered at
 /// install; runs `--update-check` and exits), the same one-shot spawned opportunistically by
 /// any ordinary app launch, and the opt-in screenshot helper's 6 h timer when it happens to
 /// be running. Turning this off in Settings also removes the Scheduled Task.

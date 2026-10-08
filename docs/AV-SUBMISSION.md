@@ -4,6 +4,45 @@ Fill-in-the-blanks kit for reporting the installer as a false positive. The fina
 needs a signed-in Microsoft account and a file upload, so that last click is yours; every
 piece of information you need is assembled here.
 
+## 2026-10-08: the static scan is clean; VirusTotal's SANDBOX names what a behaviour engine sees
+
+A survey answer on 3.6.0 said Kaspersky "detects and removes" it. Every 3.7.0 file went to
+VirusTotal the same day: both installers, `SageThumbs2K.exe`, `st2k.exe` and the portable zip
+came back 0 of 68-71, Kaspersky clean on each. So, as with issue #14 below, there is no
+signature to answer; what removes us is a behaviour engine on the user's PC.
+
+VirusTotal does show that side too. Its sandbox (Zenbox) ran the 3.6.0 installer and recorded
+what an install does in its first seconds, with the sigma rules each step matched:
+
+| what the install did | sigma rule (level) |
+|---|---|
+| `SageThumbs2K.exe` wrote itself into `HKCU\...\CurrentVersion\Run` (the helper's autostart) | CurrentVersion Autorun Keys Modification (medium) |
+| `schtasks.exe /create ... /xml %TEMP%\st2k-cloudtask-*.xml` | Schedule Task Creation From Env Variable Or Potentially Suspicious Path Via Schtasks.EXE (medium) |
+| `schtasks.exe /create` for the update check | Scheduled Task Creation Via Schtasks.EXE (low) |
+| `cmd /c taskkill /f /im explorer.exe & del /f /q ...thumbcache_*.db & start explorer.exe` | File Deletion Via Del (low) |
+| Inno Setup unpacking its own `.tmp` executables | Sysmon File Executable Creation Detected (medium; every Inno installer) |
+
+Its verdict was CLEAN, but together that is the shape of a dropper: a new, rare program that
+plants autostart, creates tasks from a temp file, kills Explorer and deletes files through
+`cmd`, then keeps a keyboard hook resident (Quick preview's Space hook, on by default for new
+installs since 3.6.0). Each step is ours and benign; a behaviour engine scores the sum.
+
+Changed the same day (after 3.7.0), the same features without those shapes:
+
+- **No `schtasks.exe`, no temp XML.** Every task is registered in-process through the Task
+  Scheduler API (`crates/base/src/tasksched.rs`).
+- **No `Run` value.** The helper starts from a per-user sign-in task,
+  `SageThumbs2K_Helper_<SID>`; an existing `Run` value moves over on the next heal, and the
+  uninstaller removes both.
+- **No `taskkill`, `del` or `cmd`.** "Restart File Explorer" / "Rebuild thumbnail cache" ask
+  Explorer to close and reopen it through Restart Manager, the API installers use, which also
+  brings folder windows back.
+
+To measure the next build the same way: upload the installer (`push_to_vt.py`), then read the
+sandbox's sigma list for that hash (`/api/v3/files/<sha256>`, `sigma_analysis_results`). The
+sigma count is a proxy for what a behaviour engine weighs, not Kaspersky itself; only a PC
+running Kaspersky proves Kaspersky.
+
 ## 2026-08-31: the count was MEASURED end to end, and the payload is not the cause (issue #30)
 
 A user reported v2.5.0 x64 at 9 detections and called it abnormally high. They were right that
@@ -283,12 +322,12 @@ so building a Scheduled Task variant and scanning it would produce 0/75 either w
 nothing. Measuring it honestly needs a real machine with Kaspersky installed, doing a real
 install, twice. Do not mistake a clean VT result on a rebuilt variant for a fix.
 
-**Candidate fix, NOT implemented and NOT measured: move the daemon's autostart from the Run key
-to a logon Scheduled Task.** We already create a per-user scheduled task for update checks
-(`--update-task`), so the machinery exists and the pattern is proven in this codebase. A logon
-task is markedly less heuristically loaded than an `HKCU\...\Run` self-reference. Before doing
-it, MEASURE, the way the entropy and VERSIONINFO knobs above were measured, rather than assuming:
-build one variant that registers a task instead of a Run value and scan both. The table above is
+**Done 2026-10-08 (see the top section): the daemon's autostart moved from the Run key to a
+per-user logon Scheduled Task.** A logon task is markedly less heuristically loaded than an
+`HKCU\...\Run` self-reference. The measurement this paragraph asked for turned out to exist
+after all: VirusTotal's static scan cannot see a behavioural rule, but its sandbox report
+lists the Run write by name (sigma "CurrentVersion Autorun Keys Modification"), so the sandbox's
+sigma list on the next installer shows whether it is gone. That is a proxy; the table above is
 a standing reminder that a reasonable-sounding AV hypothesis can simply fail to replicate.
 
 ## 2026-08-05: Kaspersky joined the generic-verdict list, and the VT gate was taught to read it

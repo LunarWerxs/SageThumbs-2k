@@ -349,12 +349,16 @@ pub fn sync_relink_task(exe: &std::path::Path, wanted: bool) {
         remove_relink_task();
         return;
     }
-    let user = match (std::env::var("USERDOMAIN"), std::env::var("USERNAME")) {
-        (Ok(d), Ok(u)) if !d.is_empty() && !u.is_empty() => format!("{d}\\{u}"),
-        _ => return,
+    let Some(sid) = st2k_base::tasksched::current_user_sid() else {
+        return;
     };
-    let xml = relink_task_xml(&exe.to_string_lossy(), &user);
-    if let Err(e) = st2k_base::tasksched::register(RELINK_TASK, &xml) {
+    let xml = relink_task_xml(&exe.to_string_lossy(), &sid);
+    let registered = st2k_base::tasksched::register(&format!("{RELINK_TASK}_{sid}"), &xml);
+    if registered.is_ok() {
+        // The one machine-wide task versions before per-user names registered.
+        st2k_base::tasksched::delete_if_ours(RELINK_TASK);
+    }
+    if let Err(e) = registered {
         log_error(&format!(
             "cloud: could not create the sign-in re-link task: {e}"
         ));
@@ -363,7 +367,10 @@ pub fn sync_relink_task(exe: &std::path::Path, wanted: bool) {
 
 /// Drop the per-user logon task, if there is one.
 pub fn remove_relink_task() {
-    let _ = st2k_base::tasksched::delete(RELINK_TASK);
+    if let Some(name) = st2k_base::tasksched::per_user_name(RELINK_TASK) {
+        let _ = st2k_base::tasksched::delete(&name);
+    }
+    st2k_base::tasksched::delete_if_ours(RELINK_TASK);
 }
 
 #[cfg(test)]

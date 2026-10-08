@@ -27,9 +27,9 @@ use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW, WM_CLOS
 /// pre-`ScreenshotEnabled` fallback, otherwise only ever deleted.
 const LEGACY_RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const LEGACY_RUN_NAME: &str = "SageThumbs2KScreenshot";
-/// The helper's sign-in task is `SageThumbs2K_Helper_<user SID>`, one per user (the shape
-/// OneDrive's per-user tasks take), so two accounts on one PC never fight over one task.
-const HELPER_TASK_PREFIX: &str = "SageThumbs2K_Helper_";
+/// The helper's sign-in task is `SageThumbs2K_Helper_<user SID>`, one per user
+/// ([`st2k_base::tasksched::per_user_name`]), so two accounts on one PC never fight over one.
+const HELPER_TASK: &str = "SageThumbs2K_Helper";
 /// Set by [`quit`], cleared by [`set_enabled`] (the single choke point every
 /// Settings ▸ Save routes through, see `settings_dlg/values.rs`). While set, nothing else
 /// wanting the daemon can bring it back — see [`daemon_wanted_from`].
@@ -120,7 +120,7 @@ fn autostart_allowed() -> bool {
 
 /// This user's sign-in task name, or `None` when the token gives no SID.
 fn helper_task() -> Option<String> {
-    st2k_base::tasksched::current_user_sid().map(|sid| format!("{HELPER_TASK_PREFIX}{sid}"))
+    st2k_base::tasksched::per_user_name(HELPER_TASK)
 }
 
 /// Is the sign-in task registered? A file check, no COM
@@ -314,7 +314,7 @@ fn install_autostart_entry() {
     ) else {
         return;
     };
-    let task = format!("{HELPER_TASK_PREFIX}{sid}");
+    let task = format!("{HELPER_TASK}_{sid}");
     if autostart_points_at_other_install(&task, &exe) {
         return;
     }

@@ -19,7 +19,10 @@ const UPDATE_TRIGGER: &str = "    <CalendarTrigger>\n      \
 /// Scheduler refused (policy) — the piggyback path then carries the feature on its own.
 /// Best-effort with logging; never fatal.
 pub(crate) fn install_update_task() -> bool {
-    let Ok(exe) = std::env::current_exe() else {
+    let (Ok(exe), Some(name)) = (
+        std::env::current_exe(),
+        st2k_base::tasksched::per_user_name(UPDATE_TASK),
+    ) else {
         return false;
     };
     let xml = st2k_base::tasksched::exec_task_xml(
@@ -29,8 +32,12 @@ pub(crate) fn install_update_task() -> bool {
         "--update-check",
         "PT72H",
     );
-    match st2k_base::tasksched::register(UPDATE_TASK, &xml) {
-        Ok(()) => true,
+    match st2k_base::tasksched::register(&name, &xml) {
+        Ok(()) => {
+            // The one machine-wide task versions before per-user names registered.
+            st2k_base::tasksched::delete_if_ours(UPDATE_TASK);
+            true
+        }
         Err(e) => {
             st2k_base::safety::log(&format!("update: could not register the update task: {e}"));
             false
@@ -41,7 +48,10 @@ pub(crate) fn install_update_task() -> bool {
 /// Drop the update-check task (the user turned auto-check off, or we're uninstalling).
 /// A missing task is not an error.
 pub fn remove_update_task() {
-    let _ = st2k_base::tasksched::delete(UPDATE_TASK);
+    if let Some(name) = st2k_base::tasksched::per_user_name(UPDATE_TASK) {
+        let _ = st2k_base::tasksched::delete(&name);
+    }
+    st2k_base::tasksched::delete_if_ours(UPDATE_TASK);
 }
 
 /// What [`sync_update_task`] does to the Scheduled Task.

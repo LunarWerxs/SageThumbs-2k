@@ -68,6 +68,11 @@ pub(super) unsafe fn dispatch_update_modes(args: &[String]) -> bool {
         crate::first_run::mark_shown();
         return true;
     }
+    // Uninstall (elevated): every task this app registered, for every user on the PC.
+    if args.iter().any(|a| a == "--remove-tasks") {
+        st2k_base::tasksched::delete_all_with_prefix("SageThumbs2K_");
+        return true;
+    }
     if let Some(pos) = args.iter().position(|a| a == "--update-task") {
         if args.get(pos + 1).map(String::as_str) == Some("remove") {
             st2k_appkit::update::remove_update_task();

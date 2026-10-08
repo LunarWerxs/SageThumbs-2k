@@ -17,7 +17,8 @@ use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
 use windows::Win32::System::TaskScheduler::{
-    ITaskFolder, ITaskService, TaskScheduler, TASK_CREATE_OR_UPDATE, TASK_LOGON_INTERACTIVE_TOKEN,
+    ITaskFolder, ITaskService, TaskScheduler, TASK_CREATE_OR_UPDATE, TASK_ENUM_HIDDEN,
+    TASK_LOGON_INTERACTIVE_TOKEN,
 };
 use windows::Win32::System::Variant::VARIANT;
 
@@ -73,6 +74,46 @@ pub fn delete(name: &str) -> Result<()> {
             other => other,
         }
     })
+}
+
+/// Delete the machine-wide task `name` an older version registered (before task names
+/// carried the user's SID), if it runs as THIS user. Another account's is left alone.
+pub fn delete_if_ours(name: &str) {
+    if let (Some(sid), Some(xml)) = (current_user_sid(), definition(name)) {
+        if xml.contains(&sid) {
+            let _ = delete(name);
+        }
+    }
+}
+
+/// Delete every task in the root folder whose name starts with `prefix`, whoever registered
+/// it, and return how many went. For the uninstaller, which runs elevated: every user's
+/// tasks, signed in or not (a per-hive sweep only reaches the profiles loaded right now).
+pub fn delete_all_with_prefix(prefix: &str) -> usize {
+    let prefix = prefix.to_owned();
+    with_root_folder(move |root| unsafe {
+        let tasks = root.GetTasks(TASK_ENUM_HIDDEN.0)?;
+        let mut ours = Vec::new();
+        // The collection is 1-based.
+        for i in 1..=tasks.Count()? {
+            let name = tasks.get_Item(&VARIANT::from(i))?.Name()?.to_string();
+            if name.starts_with(&prefix) {
+                ours.push(name);
+            }
+        }
+        Ok(ours
+            .iter()
+            .filter(|name| root.DeleteTask(&BSTR::from(name.as_str()), 0).is_ok())
+            .count())
+    })
+    .unwrap_or(0)
+}
+
+/// `base_<user SID>`: a task that belongs to one user, so two accounts on one PC never share
+/// (or overwrite) one, the way OneDrive names its per-user tasks. `None` when the token gives
+/// no SID.
+pub fn per_user_name(base: &str) -> Option<String> {
+    current_user_sid().map(|sid| format!("{base}_{sid}"))
 }
 
 /// Start `name` now, whatever its triggers say.
@@ -245,5 +286,31 @@ mod tests {
         assert!(definition(&name).is_none(), "deleted task still registered");
         assert!(!file_present(&name));
         delete(&name).expect("deleting a missing task is not an error");
+    }
+
+    /// The uninstall sweep: every task under the prefix goes, a task outside it stays. This
+    /// is what keeps an uninstall from leaving a signed-out user's sign-in task behind,
+    /// pointing at a deleted exe.
+    #[test]
+    fn the_uninstall_sweep_deletes_every_task_under_the_prefix() {
+        let prefix = format!("SageThumbs2K_Sweep_{}_", std::process::id());
+        let outside = format!("SageThumbs2K_Kept_{}", std::process::id());
+        let xml = exec_task_xml(
+            "test",
+            "",
+            r"C:\Windows\System32\cmd.exe",
+            "/c exit",
+            "PT1M",
+        );
+        for name in [format!("{prefix}a"), format!("{prefix}b"), outside.clone()] {
+            register(&name, &xml).expect("register");
+        }
+        let swept = delete_all_with_prefix(&prefix);
+        let kept = definition(&outside).is_some();
+        let _ = delete(&outside);
+        assert_eq!(swept, 2);
+        assert!(definition(&format!("{prefix}a")).is_none());
+        assert!(definition(&format!("{prefix}b")).is_none());
+        assert!(kept, "a task outside the prefix must survive the sweep");
     }
 }

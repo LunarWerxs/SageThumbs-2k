@@ -7,6 +7,23 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## Unreleased
+
+- **Restarting File Explorer brings your folder windows back.** Setup's "Restart File
+  Explorer" box and the **Rebuild thumbnail cache** button now ask Explorer to close and
+  reopen it, the way installers do, instead of ending it. The folders you had open come back,
+  and no other program is closed.
+- **The background helper starts at sign-in from a scheduled task.** The small helper behind
+  the screenshot hotkey and Space to preview used to start from the Windows Run list, which
+  some security programs treat as suspicious and empty (Kaspersky did, #14). It now starts
+  from your own task in Task Scheduler, so it no longer shows under Task Manager's Startup
+  apps; switch it off in Settings or with **Quit** on its tray icon. Updating moves it over by
+  itself.
+- **Less for antivirus to flag while installing.** SageThumbs registers its scheduled tasks
+  directly, no longer through `schtasks.exe` and a file in the temp folder.
+- **Every Windows account gets its own scheduled tasks**, so on a shared PC a second account no
+  longer misses out, and uninstalling removes them for every account, signed in or not.
+
 ## 3.7.0
 
 **TL;DR**

@@ -508,13 +508,14 @@ Filename: "{app}\{#AppExe}"; Parameters: "--update-task"; \
   Flags: nowait runasoriginaluser; Check: ConsoleUserStep('--update-task')
 
 [UninstallRun]
-; Drop the update-check Scheduled Task first, while our EXE is still on disk. Harmless if
-; it was never created (schtasks /delete /f on a missing task just fails quietly). NOTE:
-; [UninstallRun] does NOT accept runasoriginaluser (ISCC rejects it outright) - but it does
-; not need it either: the task lives in the machine-wide Task Scheduler library, so the
-; elevated uninstaller can delete it regardless of which principal it runs as.
-Filename: "{app}\{#AppExe}"; Parameters: "--update-task remove"; \
-  Flags: runhidden waituntilterminated; RunOnceId: "DelUpdateTask"
+; Drop every Scheduled Task of ours first, while our EXE is still on disk: each user's update
+; check, cloud-folder re-link and helper sign-in task, signed in or not (`--remove-tasks`
+; enumerates the Task Scheduler library; nothing there is no error). NOTE: [UninstallRun] does
+; NOT accept runasoriginaluser (ISCC rejects it outright) - but it does not need it either: the
+; tasks live in the machine-wide Task Scheduler library, so the elevated uninstaller can delete
+; them regardless of which principal they run as.
+Filename: "{app}\{#AppExe}"; Parameters: "--remove-tasks"; \
+  Flags: runhidden waituntilterminated; RunOnceId: "DelTasks"
 ; Remove the trusted cert (F08 + F09, 2026-09-05 audit; best-effort; harmless if nothing was
 ; ever trusted). Package removal moved OUT of [UninstallRun] entirely - see
 ; CurUninstallStepChanged in [Code] - because Add-AppxPackage/Remove-AppxPackage is per-user,
@@ -1882,17 +1883,17 @@ begin
     '-NoProfile -Command "' + ModernMenuRegisterScript('') + '"', 'modern-menu');
 end;
 
-// Sweep the resident helper's autostart across EVERY loaded user hive, not just whichever
-// account happens to be HKEY_CURRENT_USER in this elevated process: its per-user sign-in task
-// (`SageThumbs2K_Helper_<SID>`, see screenshot/enable.rs) and the Run value older versions
-// used instead. The elevated uninstaller may delete any user's task. HKEY_USERS enumerates every
+// Sweep the Run value older versions used for the helper's autostart across EVERY loaded
+// user hive, not just whichever account happens to be HKEY_CURRENT_USER in this elevated
+// process. (Its sign-in task, like every task of ours, goes in [UninstallRun]'s
+// --remove-tasks, which reaches signed-out users too.) HKEY_USERS enumerates every
 // profile Windows currently has loaded (every signed-in user on a shared/RDS machine, plus
 // service accounts); skip the ones that are never a real interactive user so this does not
 // waste time or risk touching something unrelated.
 procedure RemoveRunKeyForAllUsers;
 var
   Sids: TArrayOfString;
-  I, TaskR: Integer;
+  I: Integer;
   Sid: String;
 begin
   if not RegGetSubkeyNames(HKEY_USERS, '', Sids) then
@@ -1911,8 +1912,6 @@ begin
       Continue;
     RegDeleteValue(HKEY_USERS, Sid + '\Software\Microsoft\Windows\CurrentVersion\Run',
       'SageThumbs2KScreenshot');
-    Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN "SageThumbs2K_Helper_' + Sid + '" /F',
-      '', SW_HIDE, ewWaitUntilTerminated, TaskR);
   end;
 end;
 
