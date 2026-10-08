@@ -61,6 +61,22 @@ sandbox's sigma list for that hash (`/api/v3/files/<sha256>`, `sigma_analysis_re
 sigma count is a proxy for what a behaviour engine weighs, not Kaspersky itself; only a PC
 running Kaspersky proves Kaspersky.
 
+### The signed 3.7.1, measured the same day
+
+3.7.1 shipped those changes, signed. Every published 3.7.1 file went to VirusTotal after the
+release:
+
+| file | engines flagging it | Kaspersky |
+|---|---|---|
+| `SageThumbs2K-Setup-3.7.1.exe` | 0/70 | clean |
+| `SageThumbs2K-Setup-3.7.1-arm64.exe` | 0/68 | clean |
+| `SageThumbs2K-Portable-3.7.1.zip` | 0/65 | clean |
+| `SageThumbs2K-Portable-3.7.1-arm64.zip` | 0/65 | clean |
+
+Skyhigh's `BehavesLike.Win32.Dropper` mark on the unsigned test build is gone on the signed
+installer, as the signature predicted. The sandbox (Zenbox) ran the x64 portable zip and
+called it CLEAN.
+
 ## 2026-08-31: the count was MEASURED end to end, and the payload is not the cause (issue #30)
 
 A user reported v2.5.0 x64 at 9 detections and called it abnormally high. They were right that
