@@ -305,9 +305,7 @@ fn join(rootdir: &str, href: &str) -> String {
 }
 
 fn pct(s: &str) -> String {
-    percent_encoding::percent_decode_str(s)
-        .decode_utf8_lossy()
-        .into_owned()
+    st2k_base::percent::decode(s)
 }
 
 /// Read an entry by exact name, falling back to a case-insensitive match (EPUB

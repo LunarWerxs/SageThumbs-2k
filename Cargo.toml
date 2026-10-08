@@ -209,7 +209,6 @@ base64 = "0.23"
 # feature left to name; the crate is no_std-by-default without one. LTO dead-strips it from
 # the shell-extension DLL, which never touches the licence module.
 ed25519-dalek = { version = "3", default-features = false }
-percent-encoding = "2"
 
 # --- FLV Flash codecs: VP6 + Sorenson Spark (issue #26) ---
 # Pure-Rust decoders for the two pre-H.264 FLV codecs, the exact crates Ruffle ships

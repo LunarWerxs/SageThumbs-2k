@@ -55,7 +55,6 @@ EXTERNAL = {
     "image": 'image = { workspace = true }',
     "serde_json": 'serde_json = "1"',
     "base64": 'base64 = "0.23"',
-    "percent_encoding": 'percent-encoding = "2"',
     "moxcms": 'moxcms = "0.8"',
     "zune_jpeg": 'zune-jpeg = "0.5"',
     "tiff": 'tiff = { version = "0.11", default-features = false }',

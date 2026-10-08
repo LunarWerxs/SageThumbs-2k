@@ -76,7 +76,6 @@ rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8", "
 # Pure-Rust, MIT OR Apache-2.0. Used read-only — we only pull the picture block.
 lofty = "0.25"
 moxcms = "0.8"
-percent-encoding = "2"
 # RAR (cbr) cover decode — the PURE-RUST `rars` crate (MIT OR Apache-2.0, no C, no
 # proprietary UnRAR, `#![forbid(unsafe_code)]`). Validated byte-identical to UnRAR on
 # real RAR3/RAR5 + a real comic. Replaces the old optional `unrar` C++ dep (2026-06-15),

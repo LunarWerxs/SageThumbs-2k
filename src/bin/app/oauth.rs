@@ -453,13 +453,7 @@ fn parse_query(target: &str) -> HashMap<String, String> {
     if let Some((_, query)) = target.split_once('?') {
         for pair in query.split('&') {
             if let Some((k, v)) = pair.split_once('=') {
-                let key = percent_encoding::percent_decode_str(k)
-                    .decode_utf8_lossy()
-                    .into_owned();
-                let val = percent_encoding::percent_decode_str(v)
-                    .decode_utf8_lossy()
-                    .into_owned();
-                map.insert(key, val);
+                map.insert(st2k_base::percent::decode(k), st2k_base::percent::decode(v));
             }
         }
     }

@@ -19,7 +19,6 @@ name = "st2k_appkit"
 base64 = "0.23"
 ed25519-dalek = { version = "3", default-features = false }
 image = { workspace = true }
-percent-encoding = "2"
 serde_json = "1"
 windows = { workspace = true }
 windows-registry = "0.6"

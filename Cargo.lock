@@ -1168,12 +1168,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
-name = "percent-encoding"
-version = "2.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
-
-[[package]]
 name = "pico-args"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1477,7 +1471,6 @@ dependencies = [
  "nihav_core",
  "nihav_duck",
  "oxideav-mpeg12video",
- "percent-encoding",
  "rust_h264",
  "sagethumbs2k-actions",
  "sagethumbs2k-appkit",
@@ -1524,7 +1517,6 @@ dependencies = [
  "base64",
  "ed25519-dalek",
  "image",
- "percent-encoding",
  "sagethumbs2k-base",
  "sagethumbs2k-codecs",
  "serde_json",
@@ -1559,7 +1551,6 @@ dependencies = [
  "lofty",
  "moxcms",
  "parking_lot",
- "percent-encoding",
  "png 0.18.1",
  "rars",
  "rav1d",

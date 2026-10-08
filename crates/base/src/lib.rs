@@ -29,6 +29,7 @@ pub mod licence_state;
 // because it isn't a stable public API — just a shared helper across our own crates.
 #[doc(hidden)]
 pub mod parallel;
+pub mod percent;
 pub mod safety;
 pub mod settings;
 pub mod shellcmd;
