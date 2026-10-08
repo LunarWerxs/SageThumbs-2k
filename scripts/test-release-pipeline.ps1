@@ -205,28 +205,52 @@ It continues on a second line.
             throw 'a bullet without a bold lead did not fall back to its first sentence'
         }
     }
-    $written = "**TL;DR**`n`n- **Big thing** in short`n- **Two** in short,`n  wrapped`n`n**Everything in 9.8.7**`n`n- **Big thing.** Long detail.`n- **Two.** Detail.`n- **Three.** Detail."
-    Assert-Passes 'a written TL;DR is used as is, the markers go, the detail folds under Read more' {
+    # The TL;DR the owner asked for (2026-10-08): every change as a headline, grouped New, then
+    # Changed, then Fixed, licence items aside.
+    $written = ("**TL;DR**`n`n**New**`n`n- **Big thing** in short`n`n**Fixed**`n`n- **Two** in short,`n  wrapped`n- **Three**" +
+        "`n`n**Everything in 9.8.7**`n`n- **Big thing.** Long detail.`n- **Two.** Detail.`n- **Three.** Detail." +
+        "`n- For the few installations on a business licence: one short line.")
+    Assert-Passes 'a written TL;DR is used as is, by group, the markers go, the detail folds under Read more' {
         $body = Format-ReleaseNotesBody -Section $written -Version '9.8.7'
         $fold = $body.IndexOf('<details>')
-        foreach ($head in @('- **Big thing** in short', '- **Two** in short, wrapped')) {
-            $at = $body.IndexOf($head)
-            if ($at -lt 0 -or $at -gt $fold) { throw "written headline not above the fold: $head" }
+        $order = @('## TL;DR', '**🆕 New**', '- **Big thing** in short', '**🩹 Fixed**', '- **Two** in short, wrapped', '- **Three**', '<details>')
+        for ($k = 1; $k -lt $order.Count; $k++) {
+            if ($body.IndexOf($order[$k]) -le $body.IndexOf($order[$k - 1])) { throw "out of place above the fold: $($order[$k])" }
         }
-        if ($body.Contains('**TL;DR**') -or $body.Contains('**Everything in 9.8.7**')) { throw 'a marker line leaked into the body' }
-        if ($body.Contains('- **Three**') -and $body.IndexOf('- **Three**') -lt $fold) { throw 'the fallback headlines ran despite a written TL;DR' }
+        foreach ($marker in @('**TL;DR**', '**New**', '**Fixed**', '**Everything in 9.8.7**')) {
+            if ($body.Replace('**🆕 New**', '').Replace('**🩹 Fixed**', '').Contains($marker)) { throw "a marker line leaked into the body: $marker" }
+        }
         foreach ($must in @('- **Big thing.** Long detail.', '- **Three.** Detail.')) {
             if ($body.IndexOf($must) -lt $fold) { throw "detail missing below the fold: $must" }
         }
     }
-    Assert-Passes 'release.ps1 refuses a long section with no written TL;DR' {
-        $threw = $false
-        try { Assert-ReleaseNotesTldr -Section "- **A.** x`n- **B.** y`n- **C.** z" -Version '9.8.7' } catch { $threw = $true }
-        if (-not $threw) { throw 'three changes and no TL;DR passed' }
+    Assert-Passes 'release.ps1 refuses a section whose TL;DR is missing, partial, ungrouped or out of order' {
         Assert-ReleaseNotesTldr -Section $written -Version '9.8.7'
-        Assert-ReleaseNotesTldr -Section "- **A.** x`n- **B.** y" -Version '9.8.7'
+        $bad = [ordered]@{
+            'no TL;DR, even for two changes' = "- **A.** x`n- **B.** y"
+            'a change with no headline' = $written.Replace("`n- **Three**`n", "`n")
+            'a headline above every group' = $written.Replace("**New**`n`n", '')
+            'Fixed before New' = "**TL;DR**`n`n**Fixed**`n`n- **B**`n`n**New**`n`n- **A**`n`n**Everything in 9.8.7**`n`n- **A.** x`n- **B.** y"
+            'a licence headline' = $written.Replace('- **Three**', "- **Three**`n- **A business licence line**")
+        }
+        foreach ($case in $bad.Keys) {
+            $threw = $false
+            try { Assert-ReleaseNotesTldr -Section $bad[$case] -Version '9.8.7' } catch { $threw = $true }
+            if (-not $threw) { throw "passed: $case" }
+        }
         if (-not (Get-Content -Raw (Join-Path $root 'scripts\release.ps1')).Contains('Assert-ReleaseNotesTldr -Section $section')) {
             throw 'release.ps1 no longer runs the TL;DR gate'
+        }
+    }
+    # The gate runs on the version being released; this holds every 3.x section to it too, as
+    # rewritten on 2026-10-08, so an edit to an old section cannot drop a headline unseen.
+    Assert-Passes 'every 3.x changelog section has a complete, grouped TL;DR' {
+        $changelog = Join-Path $root 'docs\CHANGELOG.md'
+        $versions = @([regex]::Matches((Get-Content -LiteralPath $changelog -Raw), '(?m)^##[ ]+(3\.\d+\.\d+)[ ]*\r?$') |
+            ForEach-Object { $_.Groups[1].Value })
+        if ($versions.Count -lt 16) { throw "only $($versions.Count) 3.x sections found" }
+        foreach ($v in $versions) {
+            Assert-ReleaseNotesTldr -Section (Get-ReleaseChangelogSection -ChangelogPath $changelog -Version $v) -Version $v
         }
     }
     Assert-Passes 'a section with no intro paragraph gets no intro block' {

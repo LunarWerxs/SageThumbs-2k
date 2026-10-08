@@ -1058,38 +1058,103 @@ function Get-ReleaseChangelogSection {
     return $section
 }
 
-# The written TL;DR of a changelog section: a `**TL;DR**` line, its headline bullets, then a
-# bold-only line (`**Everything in 3.3.0**`) that starts the detail. Returns the TL;DR's
-# bullet lines (continuations folded) and the section with that block and both marker lines
-# removed; `Tldr` is empty when the section has none.
+# The written TL;DR of a changelog section: a `**TL;DR**` line, its headline bullets under the
+# group labels `**New**`, `**Changed**` and `**Fixed**`, then a bold-only line
+# (`**Everything in 3.3.0**`) that starts the detail. Returns the TL;DR's bullet lines
+# (continuations folded), the same lines by group (`Groups`: `Name` and `Lines`, in written
+# order; a headline above every label lands in a group with no name), and the section with
+# that block and its marker lines removed. `Tldr` is empty when the section has none.
 function Split-ReleaseNotesTldr {
     param([Parameter(Mandatory)][string]$Section)
     $lines = @($Section -split "\r?\n")
     $start = -1
     for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^\*\*TL;DR\*\*\s*$') { $start = $i; break } }
-    if ($start -lt 0) { return [pscustomobject]@{ Tldr = @(); Rest = $Section } }
+    if ($start -lt 0) { return [pscustomobject]@{ Tldr = @(); Groups = @(); Rest = $Section } }
     $tldr = New-Object System.Collections.Generic.List[string]
+    $groups = New-Object System.Collections.Generic.List[object]
+    $group = $null
     $end = $lines.Count
     for ($j = $start + 1; $j -lt $lines.Count; $j++) {
+        if ($lines[$j] -match '^\*\*(New|Changed|Fixed)\*\*\s*$') {
+            $group = [pscustomobject]@{ Name = $Matches[1]; Lines = New-Object System.Collections.Generic.List[string] }
+            $groups.Add($group)
+            continue
+        }
         if ($lines[$j] -match '^\*\*[^*]+\*\*\s*$') { $end = $j; break }
-        if ($lines[$j] -match '^-[ ]+\S') { $tldr.Add($lines[$j].TrimEnd()) }
-        elseif ($lines[$j] -match '^\s+\S' -and $tldr.Count) { $tldr[$tldr.Count - 1] += ' ' + $lines[$j].Trim() }
+        if ($lines[$j] -match '^-[ ]+\S') {
+            if ($null -eq $group) {
+                $group = [pscustomobject]@{ Name = ''; Lines = New-Object System.Collections.Generic.List[string] }
+                $groups.Add($group)
+            }
+            $tldr.Add($lines[$j].TrimEnd())
+            $group.Lines.Add($lines[$j].TrimEnd())
+        } elseif ($lines[$j] -match '^\s+\S' -and $tldr.Count) {
+            $tldr[$tldr.Count - 1] += ' ' + $lines[$j].Trim()
+            $group.Lines[$group.Lines.Count - 1] += ' ' + $lines[$j].Trim()
+        }
     }
     $before = if ($start -gt 0) { @($lines[0..($start - 1)]) } else { @() }
     $after = @($lines | Select-Object -Skip ($end + 1))
-    return [pscustomobject]@{ Tldr = @($tldr); Rest = (($before + $after) -join "`n") }
+    return [pscustomobject]@{ Tldr = @($tldr); Groups = $groups.ToArray(); Rest = (($before + $after) -join "`n") }
 }
 
-# Release-day gate (release.ps1 [1/6]): a section with more than two changes must carry a
-# written TL;DR. The bold leads cannot stand in for one - half of 3.3.0's were fragments
-# ("DDS textures whose sides are not powers of two"), and a headline has to read on its own.
+# The changes a section's detail lists: its top-level bullets, continuations folded, up to a
+# `###` heading other than New, Changed or Fixed (3.0.1's "What 3.0 brought" recaps an older
+# release, and none of it is a 3.0.1 change).
+function Get-ReleaseNotesChanges {
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Rest)
+    $changes = New-Object System.Collections.Generic.List[string]
+    foreach ($line in @($Rest -split "\r?\n")) {
+        if ($line -match '^###[ ]+(.+?)\s*$' -and $Matches[1] -notin @('New', 'Changed', 'Fixed')) { break }
+        if ($line -match '^-[ ]+\S') { $changes.Add($line.Trim()) }
+        elseif ($line -match '^\s+\S' -and $line -notmatch '^\s*[-*+][ ]' -and $changes.Count) {
+            $changes[$changes.Count - 1] += ' ' + $line.Trim()
+        }
+    }
+    return @($changes)
+}
+
+# Is this change a licence item (business seats, keys, pricing)? Read off its headline - the
+# bold lead or the first sentence - so a fix that merely mentions the Licence page in its
+# detail is still a change everyone gets.
+function Test-ReleaseNotesLicenceItem {
+    param([Parameter(Mandatory)][string]$Bullet)
+    return (Get-ReleaseNotesHeadline $Bullet) -match '(?i)\blicen[cs]|\brenew|\bbusiness\b'
+}
+
+# Release-day gate (release.ps1 [1/6]): every section opens with a written TL;DR that lists
+# EVERY change, one headline each, grouped under `**New**`, `**Changed**` and `**Fixed**` in
+# that order (Michael, 2026-10-08: "the TL;DR to be pretty much all of the items, just the
+# headlines ... sorted by additions and then fixes"). Licence items stay out of it: they are one
+# short line at the end of the detail and never lead (Michael, 2026-09-11). The bold leads
+# cannot stand in for headlines - half of 3.3.0's were fragments ("DDS textures whose sides are
+# not powers of two"), and a headline has to read on its own.
 function Assert-ReleaseNotesTldr {
     param([Parameter(Mandatory)][string]$Section, [Parameter(Mandatory)][string]$Version)
     $split = Split-ReleaseNotesTldr -Section $Section
-    $changes = @([regex]::Matches($split.Rest, '(?m)^-[ ]+\S')).Count
-    if ($changes -gt 2 -and -not $split.Tldr.Count) {
-        throw ("changelog section $Version has $changes changes and no TL;DR: open it with a ``**TL;DR**`` line, " +
-            "one short headline bullet per change that matters, then ``**Everything in $Version**`` before the full list")
+    $changes = @(Get-ReleaseNotesChanges -Rest $split.Rest | Where-Object { -not (Test-ReleaseNotesLicenceItem $_) }).Count
+    $how = ("open it with a ``**TL;DR**`` line, one short headline per change under ``**New**``, ``**Changed**`` " +
+        "and ``**Fixed**`` (in that order), then ``**Everything in $Version**`` before the full list")
+    if (-not $split.Tldr.Count) {
+        if ($changes) { throw "changelog section $Version has $changes changes and no TL;DR: $how" }
+        return
+    }
+    $order = @('New', 'Changed', 'Fixed')
+    $names = @($split.Groups | ForEach-Object { $_.Name })
+    if ($names -contains '') { throw "changelog section ${Version}: a TL;DR headline sits above every group label: $how" }
+    for ($k = 1; $k -lt $names.Count; $k++) {
+        if ($order.IndexOf($names[$k]) -le $order.IndexOf($names[$k - 1])) {
+            throw "changelog section ${Version}: TL;DR groups are $($names -join ', '); each once, in the order New, Changed, Fixed"
+        }
+    }
+    if (@($split.Groups | Where-Object { -not $_.Lines.Count }).Count) {
+        throw "changelog section ${Version}: a TL;DR group label has no headlines under it"
+    }
+    if (@($split.Tldr | Where-Object { $_ -match '(?i)\blicen[cs]' }).Count) {
+        throw "changelog section ${Version}: a licence item made the TL;DR; it stays one short line at the end of the detail"
+    }
+    if ($split.Tldr.Count -ne $changes) {
+        throw "changelog section $Version lists $changes changes, licence items aside, but its TL;DR has $($split.Tldr.Count) headlines: one per change"
     }
 }
 
@@ -1188,14 +1253,23 @@ function Format-ReleaseNotesBody {
     # click away; nothing extra to write, nothing to forget. Licence items stay out of it (they
     # are one short line at the end of the detail, and never lead). A section of two bullets or
     # fewer is already short, and is shown whole.
-    # The changelog's written TL;DR is used as is (release.ps1 refuses a long section without
-    # one); the bold leads are only the fallback for a hand export of an older section.
+    # The changelog's written TL;DR is used as is, under its group labels with the same emoji
+    # as the headings below (release.ps1 refuses a section without one); the bold leads are only
+    # the fallback for a hand export of a section older than 3.0.
     $bullets = @($body | Where-Object { $_ -match '^-[ ]+\S' })
     if ($split.Tldr.Count -or $bullets.Count -gt 2) {
         $out.Add('## TL;DR')
         $out.Add('')
         if ($split.Tldr.Count) {
-            foreach ($t in $split.Tldr) { $out.Add($t) }
+            foreach ($group in $split.Groups) {
+                if ($group.Name) {
+                    $out.Add("**$($emoji[$group.Name])**")
+                    $out.Add('')
+                }
+                foreach ($t in $group.Lines) { $out.Add($t) }
+                $out.Add('')
+            }
+            $out.RemoveAt($out.Count - 1)
         } else {
             foreach ($b in $bullets) {
                 if ($b -match '(?i)\blicen[cs]') { continue }
