@@ -87,37 +87,59 @@ fn zip64_declares_over_ceiling<R: Read + Seek>(reader: &mut R) -> bool {
         Ok(len) if len >= 22 => len,
         _ => return false,
     };
-    let Some(tail) = read_eocd_tail(reader, len) else {
-        return false;
-    };
-    for eocd in eocd_offsets(&tail) {
-        if !eocd_claims_zip64(&tail, eocd) {
-            continue;
-        }
-        let Some(off) = locator_eocd64_offset(&tail, eocd, len) else {
-            continue;
+    let floor = len - EOCD_MAX_BACK.min(len);
+    // The tail is scanned in stack-sized chunks, latest first, so opening an archive costs
+    // no heap allocation (the allocation ceilings count every one). Consecutive chunks
+    // overlap by 3 bytes so a signature straddling a boundary is still seen; the latest
+    // possible EOCD starts at `len - 22`.
+    let mut buf = [0u8; SCAN_CHUNK];
+    let mut end = len - 18;
+    while end - floor >= 4 {
+        let start = floor.max(end.saturating_sub(SCAN_CHUNK as u64));
+        let Some(chunk) = read_at(reader, start, &mut buf[..(end - start) as usize]) else {
+            return false;
         };
-        if eocd64_total_entries(reader, off).is_some_and(|n| n > MAX_ZIP_DECLARED_ENTRIES) {
-            return true;
+        for i in signature_offsets(chunk) {
+            if candidate_over_ceiling(reader, start + i as u64, len) {
+                return true;
+            }
         }
+        end = start + 3;
     }
     false
 }
 
-/// The trailing bytes that can hold the EOCD and its preceding ZIP64 locator.
-fn read_eocd_tail<R: Read + Seek>(reader: &mut R, len: u64) -> Option<Vec<u8>> {
-    let back = EOCD_MAX_BACK.min(len);
-    reader.seek(SeekFrom::Start(len - back)).ok()?;
-    let mut tail = vec![0u8; back as usize];
-    reader.read_exact(&mut tail).ok()?;
-    Some(tail)
+/// Bytes per tail-scan read.
+const SCAN_CHUNK: usize = 4096;
+
+/// Every EOCD signature offset in `chunk`, latest first (the crate scans backward).
+fn signature_offsets(chunk: &[u8]) -> impl Iterator<Item = usize> + '_ {
+    (0..=chunk.len().saturating_sub(4))
+        .rev()
+        .filter(|&i| chunk.get(i..i + 4) == Some(&EOCD_SIG[..]))
 }
 
-/// Every EOCD signature offset in `tail`, latest first (the crate scans backward).
-fn eocd_offsets(tail: &[u8]) -> impl Iterator<Item = usize> + '_ {
-    (0..=tail.len().saturating_sub(22))
-        .rev()
-        .filter(|&i| tail[i..i + 4] == EOCD_SIG)
+/// Whether the EOCD at absolute offset `eocd` resolves through its ZIP64 locator to an
+/// EOCD64 declaring more than [`MAX_ZIP_DECLARED_ENTRIES`].
+fn candidate_over_ceiling<R: Read + Seek>(reader: &mut R, eocd: u64, len: u64) -> bool {
+    // The locator's 20 bytes, then the EOCD's 22.
+    let mut rec = [0u8; 42];
+    let Some(loc) = eocd.checked_sub(20) else {
+        return false;
+    };
+    if read_at(reader, loc, &mut rec).is_none() || !eocd_claims_zip64(&rec, 20) {
+        return false;
+    }
+    locator_eocd64_offset(&rec, 20, len)
+        .and_then(|off| eocd64_total_entries(reader, off))
+        .is_some_and(|n| n > MAX_ZIP_DECLARED_ENTRIES)
+}
+
+/// Fill `buf` from absolute offset `at`.
+fn read_at<'b, R: Read + Seek>(reader: &mut R, at: u64, buf: &'b mut [u8]) -> Option<&'b [u8]> {
+    reader.seek(SeekFrom::Start(at)).ok()?;
+    reader.read_exact(buf).ok()?;
+    Some(buf)
 }
 
 /// Whether the EOCD at `eocd` carries a ZIP64 sentinel in any of the three fields the
