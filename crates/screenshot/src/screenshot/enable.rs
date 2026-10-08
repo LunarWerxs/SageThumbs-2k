@@ -140,10 +140,20 @@ fn legacy_run_value_present() -> bool {
         .unwrap_or(false)
 }
 
-/// Delete the pre-task `…\Run` value, if this user has one.
+/// Delete the pre-task `…\Run` value, if this user has one. `create`, not `open`: `open` is
+/// read-only, the delete then fails with access denied, and the helper is left with two
+/// autostarts (a dev build did exactly that).
 fn remove_legacy_run_value() {
-    if let Ok(k) = windows_registry::CURRENT_USER.open(LEGACY_RUN_KEY) {
-        let _ = k.remove_value(LEGACY_RUN_NAME);
+    if !legacy_run_value_present() {
+        return;
+    }
+    let removed = windows_registry::CURRENT_USER
+        .create(LEGACY_RUN_KEY)
+        .and_then(|k| k.remove_value(LEGACY_RUN_NAME));
+    if let Err(e) = removed {
+        st2k_base::safety::log(&format!(
+            "screenshot: could not remove the old autostart Run value: {e}"
+        ));
     }
 }
 
