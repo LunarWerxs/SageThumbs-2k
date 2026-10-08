@@ -48,7 +48,8 @@ The three most common causes it finds:
 <summary><b>Some thumbnails appear, others stay as blank icons</b></summary>
 
 Windows caches thumbnails aggressively, and a file it failed on once stays failed. Settings,
-Advanced, **Rebuild thumbnail cache** clears Windows' cache and restarts Explorer.
+Advanced, **Rebuild thumbnail cache** clears Windows' cache and restarts Explorer, then reopens
+the folder windows you had open.
 
 If it is a whole format rather than scattered files, check that format is ticked in Settings,
 File types.
@@ -208,9 +209,9 @@ If you missed it, or you have hidden the tray icon, **run `st2k doctor` with the
                                    never delivers the Space keypress to us
 ```
 
-The supported way around it would require the whole app to be code-signed with a purchased
-certificate, and that is not something this project has. **The fix is to run Everything as a
-standard user**, which voidtools also recommends:
+The supported way around it is a "UI Access" build, a specially marked program Windows lets
+reach administrator windows, and SageThumbs does not ship one. **The fix is to run Everything
+as a standard user**, which voidtools also recommends:
 
 - In Everything: Tools, Options, General, untick **Run as administrator**, tick **Everything
   Service**, then exit and restart Everything.
@@ -289,6 +290,10 @@ than for most:
 - The Open/Save dialog preview works by briefly loading a small helper into the program that
   opened the dialog. There is no other way to read a file dialog's selection, and it is the same
   technique other preview tools use, but it does look unusual to a scanner.
+
+Scanners that judge what a program *does* (Kaspersky's among them) are a separate case. Since
+3.7.1 setup avoids the steps they watch for: it no longer writes itself into the Windows Run
+list, creates its scheduled tasks through `schtasks.exe`, or ends Explorer to restart it.
 
 If a scanner quarantines the DLL, thumbnails stop working and setup will tell you so. Allow the
 install folder, then run Settings, Advanced, **Repair file associations**. Reports of specific

@@ -718,7 +718,9 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   for the small background helper that powers the screenshot & custom-action hotkeys, plus
   Quick preview, the **Hide tray icon** toggle (the hotkeys still fire when it's hidden), and
   **Double-click tray icon**: take a screenshot (the default), open Settings, or do nothing.
-  There is one resident helper, not a separate watchdog. Opening Settings, installing an
+  There is one resident helper, not a separate watchdog. It starts at sign-in from your own
+  Task Scheduler task, not the Windows Run list, so it is not listed under Task Manager's
+  Startup apps. Opening Settings, installing an
   update, or the next logon brings it back after a crash or manual termination. The hotkeys
   also **survive the things Windows silently breaks them with**: sleep/resume, locking your
   PC, remote-desktop reconnects, Explorer restarts (the tray icon comes back too), and app

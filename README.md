@@ -314,6 +314,11 @@ installer, the shell extension, the app and the command-line tool. Right-click t
 Properties, Digital Signatures, and the signer is there to check. The signature is what removes
 the machine-learning "unknown binary" verdicts that releases up to 2.5 collected.
 
+Scanners that judge what a program *does* while it installs (Kaspersky's among them) are a
+separate case. Since 3.7.1 setup no longer writes itself into the Windows Run list, creates its
+scheduled tasks through `schtasks.exe`, or ends Explorer to restart it. Measured on 2026-10-08,
+every 3.7.1 file, both installers included, had 0 detections on VirusTotal, Kaspersky clean.
+
 Releases before 3.0 were unsigned, and every release is a brand-new file the world has never
 seen. That is a *reputation* verdict, not a finding about the code, and the detection names
 say so themselves: Microsoft's `Wacatac.B!ml` ends in `!ml`, its own marker for "a

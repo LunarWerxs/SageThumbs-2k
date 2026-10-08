@@ -2,12 +2,14 @@
 
 ## Short version
 
-**Every binary SageThumbs 2K ships is clean on VirusTotal - 0 detections out of ~69, all three
-of them.** Only the Inno Setup installer that wraps them is flagged, by 2–3 of ~70 engines, and
-every one of those is a heuristic/ML verdict rather than a signature match.
+**Every binary SageThumbs 2K ships is clean on VirusTotal - 0 detections out of ~69, every one
+of them.** Before 3.0 only the Inno Setup installer that wrapped them was flagged, by 2–3 of ~70
+engines, and every one of those was a heuristic/ML verdict rather than a signature match. The
+signed installers read clean too: every 3.7.0 and 3.7.1 file, installers and portable zips, had
+0 detections out of 65-71 the day it shipped ([AV-SUBMISSION.md](AV-SUBMISSION.md)).
 
-The detections are an artifact of wrapping unsigned binaries in a compressed self-extractor.
-They are not a property of the software, and no code change is warranted.
+Those installer detections were an artifact of wrapping unsigned binaries in a compressed
+self-extractor, not a property of the software.
 
 Releases from 1.2.1 to 3.0.4 were scanned **before** publication (see *The gate* below, kept as
 history). Since 3.0.5 every binary is code-signed by LUNARWERX LLC and the pre-publication
