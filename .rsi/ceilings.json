@@ -4,5 +4,11 @@
   "commit": "95d7c4636aa69a4585938c6deb152698b6e0b82d",
   "trial": "20261007-thumbnail-alloc-count-2d3b",
   "value": 41
+ },
+ "thumbnail.alloc.peak": {
+  "at": "2026-10-08T05:13:11+00:00",
+  "commit": "b1e314053bf5b43750b88c8ddf9c7ec5f1f96aed",
+  "trial": "20261008-thumbnail-alloc-peak-20a8",
+  "value": 2655518
  }
 }
