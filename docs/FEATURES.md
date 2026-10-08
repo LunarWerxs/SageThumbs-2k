@@ -91,8 +91,11 @@ limit, 7z reads are buffered to avoid tiny remote round trips, extraction uses o
 and picked images share an 8 MiB total budget. Solid 7z must decode
 front-to-back, so SageThumbs uses the first eligible images in physical order and enforces the
 same small decompression budget; if the first image is buried too deeply, the archive keeps
-its normal icon instead of making Explorer grind through it. Each collage image is reduced
-immediately after decode, so several full-resolution photos are never retained at once.
+its normal icon instead of making Explorer grind through it. A ZIP whose directory says it
+holds more than 262,144 entries also keeps its normal icon and gets no file listing: reading a
+directory that size costs tens of megabytes of memory before the first entry is reached.
+Each collage image is reduced immediately after decode, so several full-resolution photos are
+never retained at once.
 Raster images and SVG/SVGZ can both appear in the collage. The same picker feeds both the
 Explorer thumbnail and the big reading-pane preview. An archive with no images inside, or an
 encrypted one, keeps the normal icon. Toggle it (or drop back to a single cover image) in
