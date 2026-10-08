@@ -315,8 +315,8 @@ fn reconcile_wanted() {
 /// DIFFERENT install. Without that guard, merely opening Settings from a dev/test build
 /// silently repointed logon autostart at a transient build path; when that path later
 /// changed or vanished, the daemon simply never came up at the next boot (hotkeys dead, no
-/// error anywhere) until something opened Settings again. Once the task is in, the old
-/// `…\Run` value (if any) goes: one autostart, never two.
+/// error anywhere) until something opened Settings again. Once a task is in, either one, the
+/// old `…\Run` value (if any) goes: one autostart, never two.
 fn install_autostart_entry() {
     let (Ok(exe), Some(sid)) = (
         std::env::current_exe(),
@@ -325,25 +325,43 @@ fn install_autostart_entry() {
         return;
     };
     let task = format!("{HELPER_TASK}_{sid}");
-    if autostart_points_at_other_install(&task, &exe) {
+    if !autostart_points_at_other_install(&task, &exe) {
+        let xml = st2k_base::tasksched::exec_task_xml(
+            "Starts the SageThumbs 2K helper (hotkeys, Quick preview) when you sign in.",
+            &st2k_base::tasksched::logon_trigger(&sid, "PT5S"),
+            &exe.to_string_lossy(),
+            "--screenshot-daemon",
+            // No time limit: the helper is meant to run for the whole session.
+            "PT0S",
+        );
+        // A failure here leaves hotkeys silently dead at the next logon — this session's
+        // daemon starts fine regardless, so the log (and the tray tooltip) are the only signs.
+        // The `…\Run` value stays: it is then the only autostart there is.
+        if let Err(e) = st2k_base::tasksched::register(&task, &xml) {
+            st2k_base::safety::log(&format!(
+                "screenshot: failed to register the helper's sign-in task: {e}"
+            ));
+            return;
+        }
+    }
+    migrate_legacy_run_value();
+}
+
+/// Retire the pre-task `…\Run` value now that a sign-in task starts the helper. While
+/// `ScreenshotEnabled` was never written, [`is_enabled`] still reads that value as
+/// "screenshots on", so the answer is written down first: deleting the value alone would
+/// switch screenshots off for anyone who has not saved Settings since the DWORD arrived. If
+/// it cannot be written, the value stays.
+fn migrate_legacy_run_value() {
+    if !legacy_run_value_present() {
         return;
     }
-    let xml = st2k_base::tasksched::exec_task_xml(
-        "Starts the SageThumbs 2K helper (hotkeys, Quick preview) when you sign in.",
-        &st2k_base::tasksched::logon_trigger(&sid, "PT5S"),
-        &exe.to_string_lossy(),
-        "--screenshot-daemon",
-        // No time limit: the helper is meant to run for the whole session.
-        "PT0S",
-    );
-    // A failure here leaves hotkeys silently dead at the next logon — this session's daemon
-    // starts fine regardless, so the log (and the tray tooltip) are the only signs.
-    match st2k_base::tasksched::register(&task, &xml) {
-        Ok(()) => remove_legacy_run_value(),
-        Err(e) => st2k_base::safety::log(&format!(
-            "screenshot: failed to register the helper's sign-in task: {e}"
-        )),
+    if st2k_base::settings::get_dword_opt("ScreenshotEnabled").is_none()
+        && st2k_base::settings::set_dword("ScreenshotEnabled", 1).is_err()
+    {
+        return;
     }
+    remove_legacy_run_value();
 }
 
 /// Drop the sign-in task (and any old `…\Run` value), unless autostart isn't allowed at

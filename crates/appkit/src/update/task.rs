@@ -49,7 +49,9 @@ pub(crate) fn install_update_task() -> bool {
 /// A missing task is not an error.
 pub fn remove_update_task() {
     if let Some(name) = st2k_base::tasksched::per_user_name(UPDATE_TASK) {
-        let _ = st2k_base::tasksched::delete(&name);
+        if let Err(e) = st2k_base::tasksched::delete(&name) {
+            st2k_base::safety::log(&format!("update: could not remove the update task: {e}"));
+        }
     }
     st2k_base::tasksched::delete_if_ours(UPDATE_TASK);
 }

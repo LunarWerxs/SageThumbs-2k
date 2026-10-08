@@ -7,6 +7,8 @@
 //! drive paths), and any Explorer has not restored itself a moment after the taskbar returns
 //! is opened again.
 
+use std::time::Duration;
+
 use windows::core::{w, Interface};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, IServiceProvider, CLSCTX_ALL,
@@ -25,42 +27,58 @@ use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 /// PIDL pointer cannot cross to the thread that reopens it.
 pub(super) type Pidl = Vec<u8>;
 
+/// How long reading the open windows may take. Each window answers from its own thread inside
+/// Explorer, so one window that hangs would otherwise hang the restart before it starts.
+const READ_LIMIT: Duration = Duration::from_secs(5);
+/// How long reopening may run past the settle time: opening a folder on a server that is gone
+/// waits on the network.
+const REOPEN_LIMIT: Duration = Duration::from_secs(15);
+
 /// Run `f` on a fresh single-threaded apartment: the shell's window list and `ShellExecuteEx`
 /// want one, and callers arrive on threads in any state (a Settings worker, a toast callback,
-/// a bare `main`). A panic inside is the empty answer.
-fn with_sta<T: Send + Default>(f: impl FnOnce() -> T + Send) -> T {
-    std::thread::scope(|s| {
-        s.spawn(|| unsafe {
-            let initialized = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
-            let out = f();
-            if initialized {
-                CoUninitialize();
-            }
-            out
-        })
-        .join()
-        .unwrap_or_default()
+/// a bare `main`). Waits at most `limit`: past it, or after a panic inside, the answer is the
+/// empty one and the thread is left to finish on its own (a call stuck in a hung Explorer
+/// returns once that Explorer is gone).
+fn with_sta<T: Send + Default + 'static>(
+    limit: Duration,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new().spawn(move || unsafe {
+        let initialized = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+        let out = f();
+        if initialized {
+            CoUninitialize();
+        }
+        let _ = tx.send(out);
+    });
+    if spawned.is_err() {
+        return T::default();
+    }
+    rx.recv_timeout(limit).unwrap_or_else(|_| {
+        crate::safety::log("explorer restart: the folder windows did not answer in time");
+        T::default()
     })
 }
 
 /// The folder each open Explorer window shows. Empty when there are none, or when the shell
 /// will not say: bringing windows back is a courtesy, never a reason to fail the restart.
 pub(super) fn open_folders() -> Vec<Pidl> {
-    with_sta(|| unsafe { folder_windows() })
+    with_sta(READ_LIMIT, || unsafe { folder_windows() })
 }
 
 /// After the restart: give Explorer `settle` to restore its own windows, then open each folder
 /// from `saved` that no window shows, once. Matching is by shell identity (`ILIsEqual`), so a
 /// window Explorer did restore is never opened a second time.
-pub(super) fn reopen_missing(saved: Vec<Pidl>, settle: std::time::Duration) {
+pub(super) fn reopen_missing(saved: Vec<Pidl>, settle: Duration) {
     if saved.is_empty() {
         return;
     }
-    with_sta(move || unsafe {
+    with_sta(settle + REOPEN_LIMIT, move || unsafe {
         let deadline = std::time::Instant::now() + settle;
         let mut missing = still_missing(&saved, &folder_windows());
         while !missing.is_empty() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(250));
+            std::thread::sleep(Duration::from_millis(250));
             missing = still_missing(&missing, &folder_windows());
         }
         for pidl in &missing {
@@ -95,11 +113,15 @@ unsafe fn same_folder(a: &Pidl, b: &Pidl) -> bool {
     }
 }
 
-/// Copy a shell-allocated PIDL into bytes and free it.
-unsafe fn take_pidl(pidl: *mut ITEMIDLIST) -> Pidl {
+/// Copy a shell-allocated PIDL into bytes and free it. `None` for a null one, or one too short
+/// to hold even the terminator.
+unsafe fn take_pidl(pidl: *mut ITEMIDLIST) -> Option<Pidl> {
+    if pidl.is_null() {
+        return None;
+    }
     unsafe {
         let len = ILGetSize(Some(pidl)) as usize;
-        let bytes = std::slice::from_raw_parts(pidl.cast::<u8>(), len).to_vec();
+        let bytes = (len >= 2).then(|| std::slice::from_raw_parts(pidl.cast::<u8>(), len).to_vec());
         CoTaskMemFree(Some(pidl.cast()));
         bytes
     }
@@ -130,7 +152,7 @@ unsafe fn window_folder(windows: &IShellWindows, i: i32) -> Option<Pidl> {
             .ok()?;
         let view: IFolderView = browser.QueryActiveShellView().ok()?.cast().ok()?;
         let folder: IPersistFolder2 = view.GetFolder().ok()?;
-        Some(take_pidl(folder.GetCurFolder().ok()?))
+        take_pidl(folder.GetCurFolder().ok()?)
     }
 }
 
@@ -158,7 +180,7 @@ mod tests {
         unsafe {
             SHParseDisplayName(&HSTRING::from(path), None, &mut pidl, 0, None)
                 .expect("parse a folder every Windows has");
-            take_pidl(pidl)
+            take_pidl(pidl).expect("a parsed folder has a PIDL")
         }
     }
 
@@ -167,7 +189,7 @@ mod tests {
     /// the shell's own comparison on PIDLs parsed separately, as the before and after lists are.
     #[test]
     fn a_restored_folder_is_not_reopened_and_a_lost_one_is_once() {
-        let (restored, lost) = with_sta(|| {
+        let (restored, lost) = with_sta(READ_LIMIT, || {
             let windows = pidl_of(r"C:\Windows");
             let system = pidl_of(r"C:\Windows\System32");
             let saved = vec![

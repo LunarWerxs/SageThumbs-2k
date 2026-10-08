@@ -7,20 +7,32 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 3.7.1
 
-- **Restarting File Explorer brings your folder windows back.** Setup's "Restart File
-  Explorer" box and the **Rebuild thumbnail cache** button now ask Explorer to close and start
-  again, the way installers do, instead of ending it, then reopen the folders you had open. No
-  other program is closed.
+**TL;DR**
+
+- **Less for antivirus to flag while installing** (#14)
+- **The background helper starts from a scheduled task, not the Windows Run list**
+- **Restarting File Explorer brings your folder windows back**
+- **Every Windows account gets its own scheduled tasks**
+
+**Everything in 3.7.1**
+
+- **Less for antivirus to flag while installing** (#14). Setup no longer does the things
+  behaviour scanners, Kaspersky's among them, watch for: it registers its scheduled tasks
+  directly instead of through `schtasks.exe` and a file in the temp folder, it no longer writes
+  itself into the Windows Run list, and restarting Explorer no longer ends it with `taskkill`
+  and deletes the thumbnail cache through `cmd`.
 - **The background helper starts at sign-in from a scheduled task.** The small helper behind
   the screenshot hotkey and Space to preview used to start from the Windows Run list, which
   some security programs treat as suspicious and empty (Kaspersky did, #14). It now starts
   from your own task in Task Scheduler, so it no longer shows under Task Manager's Startup
   apps; switch it off in Settings or with **Quit** on its tray icon. Updating moves it over by
   itself.
-- **Less for antivirus to flag while installing.** SageThumbs registers its scheduled tasks
-  directly, no longer through `schtasks.exe` and a file in the temp folder.
+- **Restarting File Explorer brings your folder windows back.** Setup's "Restart File
+  Explorer" box and the **Rebuild thumbnail cache** button now ask Explorer to close and start
+  again, the way installers do, instead of ending it, then reopen the folders you had open. No
+  other program is closed.
 - **Every Windows account gets its own scheduled tasks**, so on a shared PC a second account no
   longer misses out, and uninstalling removes them for every account, signed in or not.
 

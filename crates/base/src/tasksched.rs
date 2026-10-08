@@ -80,18 +80,28 @@ pub fn delete(name: &str) -> Result<()> {
 /// carried the user's SID), if it runs as THIS user. Another account's is left alone.
 pub fn delete_if_ours(name: &str) {
     if let (Some(sid), Some(xml)) = (current_user_sid(), definition(name)) {
-        if xml.contains(&sid) {
-            let _ = delete(name);
+        if names_user(&xml, &sid) {
+            if let Err(e) = delete(name) {
+                crate::safety::log(&format!("tasks: could not delete the old task {name}: {e}"));
+            }
         }
     }
+}
+
+/// Does the task definition `xml` name `sid` as a whole value (`<UserId>S-1-5-…</UserId>`)?
+/// A bare substring test would also match a longer SID that starts with ours (`…-1001`
+/// inside `…-10012`), and delete another account's task.
+fn names_user(xml: &str, sid: &str) -> bool {
+    xml.contains(&format!(">{sid}<"))
 }
 
 /// Delete every task in the root folder whose name starts with `prefix`, whoever registered
 /// it, and return how many went. For the uninstaller, which runs elevated: every user's
 /// tasks, signed in or not (a per-hive sweep only reaches the profiles loaded right now).
+/// What it cannot list or delete goes to the log: the uninstaller has no one to tell.
 pub fn delete_all_with_prefix(prefix: &str) -> usize {
     let prefix = prefix.to_owned();
-    with_root_folder(move |root| unsafe {
+    let swept = with_root_folder(move |root| unsafe {
         let tasks = root.GetTasks(TASK_ENUM_HIDDEN.0)?;
         let mut ours = Vec::new();
         // The collection is 1-based.
@@ -101,12 +111,19 @@ pub fn delete_all_with_prefix(prefix: &str) -> usize {
                 ours.push(name);
             }
         }
-        Ok(ours
-            .iter()
-            .filter(|name| root.DeleteTask(&BSTR::from(name.as_str()), 0).is_ok())
-            .count())
+        let mut deleted = 0;
+        for name in &ours {
+            match root.DeleteTask(&BSTR::from(name.as_str()), 0) {
+                Ok(()) => deleted += 1,
+                Err(e) => crate::safety::log(&format!("tasks: could not delete {name}: {e}")),
+            }
+        }
+        Ok(deleted)
+    });
+    swept.unwrap_or_else(|e| {
+        crate::safety::log(&format!("tasks: could not list the scheduled tasks: {e}"));
+        0
     })
-    .unwrap_or(0)
 }
 
 /// `base_<user SID>`: a task that belongs to one user, so two accounts on one PC never share
@@ -282,6 +299,11 @@ mod tests {
             back.contains("<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>"),
             "{back}"
         );
+        // `delete_if_ours` reads the stored definition: it must name this user, and a SID
+        // that is only the start of the stored one (`…-100` against `…-1001`) is another
+        // account, whose task stays.
+        assert!(names_user(&back, &sid), "{back}");
+        assert!(!names_user(&back, &sid[..sid.len() - 1]), "{back}");
         assert!(present, "the presence check must see a registered task");
         assert!(definition(&name).is_none(), "deleted task still registered");
         assert!(!file_present(&name));

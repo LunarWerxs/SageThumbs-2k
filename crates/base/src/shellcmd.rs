@@ -134,35 +134,81 @@ fn explorers_holding(
     Vec::new()
 }
 
-/// Close the Explorer processes holding the cache, delete the cache, reopen Explorer, all
-/// through Restart Manager: the API installers use to replace a file in use. It asks Explorer
-/// to close and starts it again (`explorer.exe /LOADSAVEDWINDOWS`; the folder windows come
-/// back through `folders`, not that switch). No `cmd`, no `taskkill`, no `del`: a program force-killing `explorer.exe` and deleting files
-/// through `cmd` is how VirusTotal's sandbox described the old one-liner (sigma "File
-/// Deletion Via Del"), and what behaviour-based antivirus scores. The files are deleted
-/// best-effort either way; one Explorer still holds open simply stays.
-fn cycle_explorer(cache: &[std::path::PathBuf]) {
+/// The Explorer that owns the taskbar, as Restart Manager names a process (its id and start
+/// time, so a recycled id is never mistaken for it). `None` with no taskbar in this session.
+fn shell_process() -> Option<windows::Win32::System::RestartManager::RM_UNIQUE_PROCESS> {
+    use windows::core::w;
+    use windows::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows::Win32::System::RestartManager::RM_UNIQUE_PROCESS;
+    use windows::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowThreadProcessId};
+    unsafe {
+        let tray = FindWindowW(w!("Shell_TrayWnd"), None).ok()?;
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(tray, Some(&mut pid));
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let [mut created, mut exited, mut kernel, mut user] = [FILETIME::default(); 4];
+        let timed = GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user);
+        let _ = CloseHandle(process);
+        timed.ok()?;
+        Some(RM_UNIQUE_PROCESS {
+            dwProcessId: pid,
+            ProcessStartTime: created,
+        })
+    }
+}
+
+/// Close the Explorer processes holding the cache, and the one that owns the taskbar, delete
+/// the cache, reopen Explorer, all through Restart Manager: the API installers use to replace
+/// a file in use. It asks Explorer to close and starts it again (`explorer.exe
+/// /LOADSAVEDWINDOWS`; the folder windows come back through `folders`, not that switch). The
+/// taskbar's Explorer is always in the set, so the restart happens even when no Explorer has
+/// the cache open (no cache files yet, or none mapped right now): the setup box and the
+/// Repair button promise a restart, not only a cache sweep. No `cmd`, no `taskkill`, no
+/// `del`: a program force-killing `explorer.exe` and deleting files through `cmd` is how
+/// VirusTotal's sandbox described the old one-liner (sigma "File Deletion Via Del"), and what
+/// behaviour-based antivirus scores. The files are deleted best-effort either way; one
+/// Explorer still holds open simply stays.
+///
+/// Returns whether Explorer closed when asked. `false` (logged) when it refused or Restart
+/// Manager could not take it: Explorer then simply keeps running, nothing restarted.
+fn cycle_explorer(cache: &[std::path::PathBuf]) -> bool {
     use windows::Win32::Foundation::ERROR_SUCCESS;
     use windows::Win32::System::RestartManager::{RmRegisterResources, RmRestart, RmShutdown};
-    let explorers = explorers_holding(cache);
+    let mut explorers = explorers_holding(cache);
+    if let Some(shell) = shell_process() {
+        if !explorers.iter().any(|p| p.dwProcessId == shell.dwProcessId) {
+            explorers.push(shell);
+        }
+    }
     let session = (!explorers.is_empty()).then(RmSession::start).flatten();
     let registered = session.as_ref().is_some_and(|s| unsafe {
         RmRegisterResources(s.0, None, Some(&explorers), None) == ERROR_SUCCESS
     });
-    if registered {
-        if let Some(s) = &session {
-            // 0: ask, never force. An Explorer that will not close keeps running untouched.
-            let _ = unsafe { RmShutdown(s.0, 0, None) };
-        }
-    }
+    // 0: ask, never force. An Explorer that will not close keeps running untouched.
+    let closed = registered
+        && session.as_ref().is_some_and(|s| {
+            let shut = unsafe { RmShutdown(s.0, 0, None) };
+            if shut != ERROR_SUCCESS {
+                crate::safety::log(&format!(
+                    "explorer restart: Explorer did not close when asked (error {})",
+                    shut.0
+                ));
+            }
+            shut == ERROR_SUCCESS
+        });
     for file in cache {
         let _ = std::fs::remove_file(file);
     }
+    // Even after a refusal: Restart Manager starts again whatever it did close.
     if registered {
         if let Some(s) = &session {
             let _ = unsafe { RmRestart(s.0, None, None) };
         }
     }
+    closed
 }
 
 /// Poll `is_up` every 200 ms for ~15 s, returning `true` as soon as it reports the shell
@@ -191,8 +237,8 @@ fn wait_for_shell(is_up: &impl Fn() -> bool) -> bool {
 /// `AutoRestartShell` is a third net beneath both, but it is a registry value a machine can
 /// have turned off, so it is not something to rely on.
 ///
-/// Returns whether the shell is confirmed back. Callers treat it as best-effort: there is
-/// nothing useful left to do about `false` except not claim success.
+/// Returns whether Explorer restarted and the shell is confirmed back. Callers treat it as
+/// best-effort: there is nothing useful left to do about `false` except not claim success.
 pub fn restart_explorer_clearing_cache() -> bool {
     use windows::core::w;
     use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
@@ -205,10 +251,10 @@ pub fn restart_explorer_clearing_cache() -> bool {
     let open = folders::open_folders();
     let settle = std::time::Duration::from_secs(3);
 
-    cycle_explorer(&thumbcache_files());
+    let cycled = cycle_explorer(&thumbcache_files());
     if wait_for_shell(&shell_is_up) {
         folders::reopen_missing(open, settle);
-        return true;
+        return cycled;
     }
     crate::safety::log("explorer did not return after the cache rebuild - relaunching directly");
     let _ = Command::new("explorer.exe")
@@ -216,7 +262,7 @@ pub fn restart_explorer_clearing_cache() -> bool {
         .spawn();
     if wait_for_shell(&shell_is_up) {
         folders::reopen_missing(open, settle);
-        return true;
+        return cycled;
     }
     crate::safety::log("explorer STILL not back after a direct relaunch");
     false
@@ -244,6 +290,45 @@ mod tests {
             stdout.trim(),
             "\"quoted\"",
             "cmd saw a mangled line: {stdout:?}"
+        );
+    }
+
+    /// The taskbar's Explorer, as `shell_process` names it, is a process Restart Manager
+    /// accepts and knows as Explorer. With a wrong start time it drops the process without a
+    /// word, and the restart silently does not happen. Registers and lists it; shuts nothing
+    /// down. Skipped where there is no taskbar (a CI runner's session).
+    #[test]
+    fn restart_manager_knows_the_taskbar_process_as_explorer() {
+        use windows::Win32::Foundation::ERROR_SUCCESS;
+        use windows::Win32::System::RestartManager::{
+            RmExplorer, RmGetList, RmRegisterResources, RM_PROCESS_INFO,
+        };
+        let Some(shell) = shell_process() else {
+            eprintln!("no taskbar in this session; skipped");
+            return;
+        };
+        let session = RmSession::start().expect("a Restart Manager session");
+        let registered = unsafe { RmRegisterResources(session.0, None, Some(&[shell]), None) };
+        assert_eq!(registered, ERROR_SUCCESS);
+        let mut list = vec![RM_PROCESS_INFO::default(); 4];
+        let (mut needed, mut count, mut reasons) = (0u32, list.len() as u32, 0u32);
+        let got = unsafe {
+            RmGetList(
+                session.0,
+                &mut needed,
+                &mut count,
+                Some(list.as_mut_ptr()),
+                &mut reasons,
+            )
+        };
+        assert_eq!(got, ERROR_SUCCESS, "{needed} processes");
+        list.truncate(count as usize);
+        assert!(
+            list.iter()
+                .any(|p| p.Process.dwProcessId == shell.dwProcessId
+                    && p.ApplicationType == RmExplorer),
+            "Restart Manager did not list pid {} as Explorer",
+            shell.dwProcessId
         );
     }
 }

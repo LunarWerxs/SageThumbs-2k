@@ -178,10 +178,12 @@ if ($Uninstall) {
         $l = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) $f
         if (Test-Path $l) { Remove-Item $l -Force -ErrorAction SilentlyContinue }
     }
-    # Turn the resident helper off: remove its sign-in task (and the Run value older versions
-    # used) + stop the daemon.
-    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    Unregister-ScheduledTask -TaskName "SageThumbs2K_Helper_$sid" -Confirm:$false -ErrorAction SilentlyContinue
+    # Turn the resident helper off: remove every account's scheduled tasks (sign-in helper,
+    # update check, cloud re-link: the installer's own uninstall sweep), the Run value older
+    # versions used, and stop the daemon. Before the files go: the sweep is the app itself.
+    if (Test-Path "$prog\SageThumbs2K.exe") {
+        Start-Process "$prog\SageThumbs2K.exe" -ArgumentList '--remove-tasks' -Wait -WindowStyle Hidden
+    }
     Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'SageThumbs2KScreenshot' -ErrorAction SilentlyContinue
     Get-Process SageThumbs2K -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     if (Test-Path $prog) { Remove-Item $prog -Recurse -Force -ErrorAction SilentlyContinue }
