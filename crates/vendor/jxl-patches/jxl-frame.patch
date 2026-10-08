@@ -1,6 +1,6 @@
 diff -ruN pristine/jxl-frame/src/data/toc.rs patched/jxl-frame/src/data/toc.rs
---- pristine/jxl-frame/src/data/toc.rs	2026-10-02 00:24:55.531668800 -0500
-+++ patched/jxl-frame/src/data/toc.rs	2026-10-02 00:30:13.848250900 -0500
+--- pristine/jxl-frame/src/data/toc.rs	2026-10-07 19:03:41.586376200 -0500
++++ patched/jxl-frame/src/data/toc.rs	2026-10-07 19:03:42.810841500 -0500
 @@ -113,13 +113,19 @@
          self.groups.len() <= 1
      }
@@ -38,9 +38,9 @@ diff -ruN pristine/jxl-frame/src/data/toc.rs patched/jxl-frame/src/data/toc.rs
      }
  
 diff -ruN pristine/jxl-frame/src/lib.rs patched/jxl-frame/src/lib.rs
---- pristine/jxl-frame/src/lib.rs	2026-10-02 00:24:55.537183200 -0500
-+++ patched/jxl-frame/src/lib.rs	2026-10-02 00:30:13.844992300 -0500
-@@ -219,12 +219,42 @@
+--- pristine/jxl-frame/src/lib.rs	2026-10-07 19:03:41.604458300 -0500
++++ patched/jxl-frame/src/lib.rs	2026-10-07 19:03:42.805276200 -0500
+@@ -219,12 +219,45 @@
          let mut pass_shifts = BTreeMap::new();
          let mut maxshift = 3i32;
          for (&downsample, &last_pass) in passes.downsample.iter().zip(&passes.last_pass) {
@@ -71,7 +71,10 @@ diff -ruN pristine/jxl-frame/src/lib.rs patched/jxl-frame/src/lib.rs
 +                .values()
 +                .any(|&(minshift, maxshift)| (minshift..maxshift).contains(&shift))
 +        };
-+        if passes.last_pass.iter().any(|&pass| pass >= passes.num_passes)
++        if passes
++            .last_pass
++            .iter()
++            .any(|&pass| pass >= passes.num_passes)
 +            || !(0..3).all(covered)
 +        {
 +            return Err(jxl_bitstream::Error::ValidationFailed(
@@ -83,3 +86,12 @@ diff -ruN pristine/jxl-frame/src/lib.rs patched/jxl-frame/src/lib.rs
          Ok(Self {
              pool,
              tracker,
+@@ -564,7 +597,7 @@
+         &self,
+         pass_idx: u32,
+         group_idx: u32,
+-    ) -> Option<Result<PassGroupBitstream>> {
++    ) -> Option<Result<PassGroupBitstream<'_>>> {
+         Some(if self.toc.is_single_entry() {
+             if self.all_group_offsets.has_error.load(Ordering::Relaxed) != 0 {
+                 return Some(Err(Error::HadError));
