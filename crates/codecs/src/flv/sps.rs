@@ -4,16 +4,21 @@
 /// not data.
 pub(super) fn strip_emulation_prevention(b: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(b.len());
+    out.extend(rbsp_bytes(b));
+    out
+}
+
+/// [`strip_emulation_prevention`]'s bytes, lazily, for a reader that needs only a prefix.
+fn rbsp_bytes(b: &[u8]) -> impl Iterator<Item = u8> + '_ {
     let mut zeros = 0u32;
-    for &x in b {
+    b.iter().copied().filter(move |&x| {
         if zeros >= 2 && x == 3 {
             zeros = 0;
-            continue;
+            return false;
         }
         zeros = if x == 0 { zeros + 1 } else { 0 };
-        out.push(x);
-    }
-    out
+        true
+    })
 }
 
 /// MSB-first bit reader over a byte slice. Every read is bounds-checked (`None` past the
@@ -123,14 +128,19 @@ pub(super) fn parse_chroma_and_scaling_fields(b: &mut Bits) -> Option<(u32, bool
 }
 
 pub(super) fn parse_chroma_format(b: &mut Bits, profile_idc: u32) -> Option<(u32, bool)> {
-    if matches!(
-        profile_idc,
-        100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135
-    ) {
+    if carries_chroma_format(profile_idc) {
         parse_chroma_and_scaling_fields(b)
     } else {
         Some((1, false)) // 4:2:0 unless the profile carries it explicitly
     }
+}
+
+/// The profiles whose SPS spells out `chroma_format_idc` (§7.3.2.1.1); every other one is 4:2:0.
+fn carries_chroma_format(profile_idc: u32) -> bool {
+    matches!(
+        profile_idc,
+        100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135
+    )
 }
 
 /// The picture-order-count fields (§7.3.2.1.1). Consumed but not returned — only their
@@ -249,14 +259,29 @@ pub(super) fn chroma_crop_units(
 }
 
 /// `chroma_format_idc` of an SPS NAL unit, its one-byte NAL header included. `None` when
-/// the unit is too short or malformed to say.
+/// the unit is not an SPS, or too short or malformed to say.
+///
+/// Allocation-free: it runs on every H.264 thumbnail the out-of-process decoder might take,
+/// and the fields up to `chroma_format_idc` (three bytes, then two Exp-Golomb codes the spec
+/// keeps under 12 bits each) sit well inside the first 16 unescaped bytes.
 pub(crate) fn sps_chroma_format(nal: &[u8]) -> Option<u32> {
-    let rbsp = strip_emulation_prevention(nal.get(1..)?);
-    let mut b = Bits { d: &rbsp, pos: 0 };
+    if nal.first()? & 0x1f != 7 {
+        return None;
+    }
+    let mut head = [0u8; 16];
+    let mut n = 0;
+    for (slot, x) in head.iter_mut().zip(rbsp_bytes(nal.get(1..)?)) {
+        *slot = x;
+        n += 1;
+    }
+    let mut b = Bits::new(head.get(..n)?);
     let profile_idc = b.bits(8)?;
     b.bits(16)?; // constraint_set flags + reserved, level_idc
     b.ue()?; // seq_parameter_set_id
-    parse_chroma_format(&mut b, profile_idc).map(|(chroma, _)| chroma)
+    if !carries_chroma_format(profile_idc) {
+        return Some(1);
+    }
+    b.ue().filter(|&chroma| chroma <= 3)
 }
 
 /// Frame geometry from an SPS RBSP (ITU-T H.264 §7.3.2.1.1): walk every field ahead of

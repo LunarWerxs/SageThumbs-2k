@@ -135,6 +135,10 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **A 32-bit floating-point TIFF with an HDR colour profile is no longer darkened twice.** Its
   brightness was squeezed into the screen's range once by the profile and again afterwards, so
   it came out dull and dark. It is now squeezed once.
+- **H.264 videos in 4:2:2 or 4:4:4 colour are passed over at once.** Neither Windows nor
+  SageThumbs' own video decoder can draw them, yet SageThumbs started that decoder for each one,
+  which on a busy PC held up a thumbnail for seconds. It now reads the colour format from the
+  file first.
 - **Files past one of SageThumbs' size limits show what fits, instead of nothing.** Each limit is
   still there, to keep Explorer fast, but going over it no longer throws the whole picture away:
   - Android app bundles (`.xapk`, `.apks`, `.apkm`) whose `base.apk` is over 256 MB, and apps

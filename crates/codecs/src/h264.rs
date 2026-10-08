@@ -100,23 +100,27 @@ pub(crate) fn h264_frame<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<ima
     Some(img)
 }
 
-/// Whether the decoder configuration record's first SPS names a chroma format other than
+/// Whether the decoder configuration record's one SPS names a chroma format other than
 /// 4:2:0, which the child refuses outright (`rust_h264` decodes 4:2:0 only). Decided here so
 /// a 4:2:2 or 4:4:4 file costs no process spawn, which on a busy machine is seconds per file.
 /// Keyed on the SPS, not the profile: High 4:4:4 Predictive also carries 4:2:0 streams
-/// (lossless encodes), and those the child does decode. Anything unreadable is `false`, so
-/// the child still decides.
+/// (lossless encodes), and those the child does decode.
+///
+/// Only a record holding exactly one SPS is judged: with more, the one in use is whichever
+/// the picture parameter set names, so the child decides. So does anything unreadable. (An
+/// `avc3` track may repeat its SPS inside the keyframe, where it replaces the record's; real
+/// encoders repeat the same one.)
 fn record_names_non_420(config: &[u8]) -> bool {
     // AVCDecoderConfigurationRecord: five header bytes, the SPS count, then each SPS as a
     // big-endian u16 length and the NAL unit.
-    let first_sps = || {
-        if config.get(5)? & 0x1f == 0 {
+    let only_sps = || {
+        if config.get(5)? & 0x1f != 1 {
             return None;
         }
         let len = usize::from(u16::from_be_bytes([*config.get(6)?, *config.get(7)?]));
         config.get(8..8usize.checked_add(len)?)
     };
-    first_sps()
+    only_sps()
         .and_then(crate::flv::sps_chroma_format)
         .is_some_and(|chroma| chroma != 1)
 }
@@ -152,6 +156,23 @@ mod tests {
             let (config, _) = split_child_input(&input).expect("framing");
             assert_eq!(record_names_non_420(config), non_420);
         }
+        // The 4:4:4 record again, made ambiguous: the child must decide when the record
+        // carries a second SPS, or when its one entry is not an SPS at all.
+        let mkv = include_bytes!("../../../tests/fixtures/h264/high444-3366cc.mkv");
+        let input = child_input(&mut Cursor::new(&mkv[..]), 0.30).expect("record and keyframe");
+        let (config, _) = split_child_input(&input).expect("framing");
+        let mut two_sps = config.to_vec();
+        two_sps[5] = (two_sps[5] & !0x1f) | 2;
+        assert!(
+            !record_names_non_420(&two_sps),
+            "a second SPS: the child decides"
+        );
+        let mut not_sps = config.to_vec();
+        not_sps[8] = (not_sps[8] & !0x1f) | 8; // the entry's NAL type becomes a PPS
+        assert!(
+            !record_names_non_420(&not_sps),
+            "not an SPS: the child decides"
+        );
     }
 
     /// The framing round-trips, and a truncated or empty half is refused rather than handed

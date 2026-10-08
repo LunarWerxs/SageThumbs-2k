@@ -1504,3 +1504,21 @@ the pane (the 72x48 `color=#3366cc` H.264 fixtures under `tests/fixtures/h264` a
 while the colour it names is the picture, decoded correctly. Smoke the pane with patterned
 samples instead, e.g. `ffmpeg -f lavfi -i testsrc=size=320x240:rate=5 -frames:v 10 -c:v libx264
 -profile:v high10 -pix_fmt yuv420p10le x.mkv`, passed through `PREVHOST_FILES`.
+
+## A header's declared count can be an allocation the crate makes for you (2026-10-07)
+
+`zip` 8.6.0 reserves `Vec::with_capacity(number_of_files)` before it reads one entry, and for a
+ZIP64 archive that count is a u64 the file chooses. The crate's own consistency check holds it to
+about `file_len / 46`, so the cost is roughly 5x the input; a size budget that counts bytes READ
+(Quick preview's `DirBudget`) never sees a reservation that happens before the first read. Every
+`ZipArchive::new` on a shell input therefore goes through `container::zipguard::open`, which
+refuses an over-declared ZIP64 first. A pre-check like this must trigger exactly where the crate
+does, or it is bypassed: all three `may_be_zip64` sentinels (entries, CD size, CD offset), not just
+the entry count; every EOCD candidate in the tail, not just the last (a junk EOCD after the real
+one hides it); and saturating offset arithmetic (a `u64::MAX` locator offset overflowed the first
+version). Each of those holes was found by review and is now a test in `zipguard.rs`. The guard
+reads the tail in 4 KiB stack chunks and judges each candidate from bytes it already holds: one
+heap buffer per open showed up in the allocation ceilings of every zip-based format, and one read
+per candidate let a tail packed with signatures cost thousands of reads. A new
+`ZipArchive::new` call site on untrusted bytes goes through `zipguard::open`; the fuzz targets
+are the exception, since their seeds deliberately skip the zip layer.

@@ -100,7 +100,7 @@ fn zip64_declares_over_ceiling<R: Read + Seek>(reader: &mut R) -> bool {
             return false;
         };
         for i in signature_offsets(chunk) {
-            if candidate_over_ceiling(reader, start + i as u64, len) {
+            if candidate_over_ceiling(reader, chunk, i, start, len) {
                 return true;
             }
         }
@@ -119,18 +119,29 @@ fn signature_offsets(chunk: &[u8]) -> impl Iterator<Item = usize> + '_ {
         .filter(|&i| chunk.get(i..i + 4) == Some(&EOCD_SIG[..]))
 }
 
-/// Whether the EOCD at absolute offset `eocd` resolves through its ZIP64 locator to an
-/// EOCD64 declaring more than [`MAX_ZIP_DECLARED_ENTRIES`].
-fn candidate_over_ceiling<R: Read + Seek>(reader: &mut R, eocd: u64, len: u64) -> bool {
-    // The locator's 20 bytes, then the EOCD's 22.
-    let mut rec = [0u8; 42];
-    let Some(loc) = eocd.checked_sub(20) else {
+/// Whether the EOCD at `chunk[i]` (absolute offset `start + i`) resolves through its ZIP64
+/// locator to an EOCD64 declaring more than [`MAX_ZIP_DECLARED_ENTRIES`]. Its 42 bytes (the
+/// locator's 20, then the EOCD's 22) come from the chunk when it holds them all, so a tail
+/// packed with signatures costs no read per candidate; only one at a chunk edge is read
+/// again. The locator may lie just before the scan window, which is where the crate reads it.
+fn candidate_over_ceiling<R: Read + Seek>(
+    reader: &mut R,
+    chunk: &[u8],
+    i: usize,
+    start: u64,
+    len: u64,
+) -> bool {
+    let mut buf = [0u8; 42];
+    let in_chunk = i.checked_sub(20).and_then(|loc| chunk.get(loc..i + 22));
+    let Some(rec) =
+        in_chunk.or_else(|| read_at(reader, (start + i as u64).checked_sub(20)?, &mut buf))
+    else {
         return false;
     };
-    if read_at(reader, loc, &mut rec).is_none() || !eocd_claims_zip64(&rec, 20) {
+    if !eocd_claims_zip64(rec, 20) {
         return false;
     }
-    locator_eocd64_offset(&rec, 20, len)
+    locator_eocd64_offset(rec, 20, len)
         .and_then(|off| eocd64_total_entries(reader, off))
         .is_some_and(|n| n > MAX_ZIP_DECLARED_ENTRIES)
 }
@@ -362,6 +373,25 @@ mod tests {
                 "wrong rejection: {msg}"
             ),
             other => panic!("expected the guard's rejection, got {other:?}"),
+        }
+    }
+
+    /// The tail is read in 4 KiB chunks that overlap by 3 bytes, and an over-declared EOCD
+    /// must be found wherever it falls: `trailing` bytes after it put it at the first chunk's
+    /// lowest offset (4092), straddling the overlap into the second chunk (4093 to 4095),
+    /// just past it (4096), deep in the second chunk (4200) and at the window's floor
+    /// (65535). Red on a chunk walk that drops the overlap or stops a chunk early.
+    #[test]
+    fn an_overdeclared_eocd_is_found_at_every_chunk_edge() {
+        let declared = MAX_ZIP_DECLARED_ENTRIES + 1;
+        let archive = zip64_declaring(declared as usize + 4096, declared);
+        for trailing in [4092, 4093, 4094, 4095, 4096, 4200, 65_535] {
+            let mut bytes = archive.clone();
+            bytes.resize(bytes.len() + trailing, 0);
+            assert!(
+                zip64_declares_over_ceiling(&mut Cursor::new(bytes)),
+                "missed with {trailing} bytes after the EOCD"
+            );
         }
     }
 
