@@ -1750,6 +1750,24 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
 
 ## 2.5.0
 
+**TL;DR**
+
+**New**
+
+- **A sign-in suggestion in Settings**
+
+**Changed**
+
+- **Choose what goes in a thumbnail's corner**
+
+**Fixed**
+
+- **More EPS files show a thumbnail**
+- **Quick preview tooltips now match their buttons**
+- **Plain-text email lines no longer become headings**
+
+**Everything in 2.5.0**
+
 ### Added
 
 - **A sign-in suggestion in Settings.** If you have had SageThumbs a week and used it a few times,
@@ -1800,6 +1818,14 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
 
 ## 2.4.1
 
+**TL;DR**
+
+**Fixed**
+
+- **Emails copied by other tools still preview as emails**
+
+**Everything in 2.4.1**
+
 ### Fixed
 
 - **An email that has been copied around now still previews as an email.** Some tools rewrite
@@ -1809,6 +1835,27 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
   either form.
 
 ## 2.4.0
+
+**TL;DR**
+
+**New**
+
+- **Email files (EML and Outlook MSG) now preview**
+- **3D-print model thumbnails and preview (STL, OBJ, PLY)**
+- **Click a window to capture it**
+- **Add a delay before a screenshot is captured**
+- **The colour picker learned formats and memory**
+- **Screenshot OCR keeps table columns**
+- **Quick preview gains a light/dark toggle**
+- **A settings button on the Quick preview window**
+
+**Fixed**
+
+- **Quick preview tooltips no longer point at the wrong button**
+- **Quick preview toolbar icons are now a consistent size**
+- **Toolbar icons no longer have soft colour fringes**
+
+**Everything in 2.4.0**
 
 ### Added
 
@@ -1883,6 +1930,26 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
 
 ## 2.3.2
 
+**TL;DR**
+
+**New**
+
+- **Ctrl+F searches inside multi-page PDFs in Quick preview**
+- **A page-thumbnail strip beside multi-page PDFs**
+- **SageThumbs now has its own light or dark Theme setting**
+
+**Changed**
+
+- **Faster install at the modern context menu step**
+
+**Fixed**
+
+- **Mouse wheel now scrolls PDFs in the Quick preview**
+- **Zoomed PDFs are redrawn sharp instead of stretched**
+- **RAW convert and resize now use the full-size photo**
+
+**Everything in 2.3.2**
+
 ### Added
 
 - **Ctrl+F now searches inside a multi-page PDF in the Quick preview.** Type a word and the
@@ -1948,6 +2015,27 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
   failure left you with no modern menu at all.
 
 ## 2.3.1
+
+**TL;DR**
+
+**New**
+
+- **Quick preview scrolls continuously through multi-page PDFs**
+
+**Fixed**
+
+- **Wide CSV files are readable and much faster in preview**
+- **Large CSV or database files no longer hang the preview**
+- **Hasselblad RAW photos now thumbnail much faster**
+- **Arrow keys always move between files in Quick preview**
+- **Scanned DjVu pages no longer lose their photographs**
+- **Tiny built-in DjVu previews no longer stretch to big tiles**
+- **Large layered GIMP files thumbnail faster and reliably**
+- **Music files now show their real album art**
+- **Some camera RAW files no longer thumbnail black or tiny**
+- **InDesign documents no longer thumbnail as a torn strip**
+
+**Everything in 2.3.1**
 
 ### Added
 
@@ -2072,6 +2160,27 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
 
 ## 2.3.0
 
+**TL;DR**
+
+**Changed**
+
+- **Large JPEG XL images thumbnail about 70x faster**
+- **DDS and DXT game textures thumbnail about 5x faster**
+- **Command line, AI tools and right-click preview match thumbnail quality**
+- **AVIF thumbnails are dramatically faster across every variant**
+- **Large AVIF and BMP images thumbnail much faster**
+- **JPEG photos thumbnail up to 20x faster**
+- **Every large image thumbnails several times faster**
+- **HDR images thumbnail about 4x faster**
+- **Big GIFs thumbnail several times faster**
+- **WebP thumbnails are about 4x faster with the Windows codec**
+
+**Fixed**
+
+- **Wide-gamut JPEG photos no longer thumbnail in wrong colours**
+
+**Everything in 2.3.0**
+
 ### Fixed
 
 - **Wide-gamut JPEG photos could thumbnail in the wrong colours.** A photo saved in AdobeRGB or
@@ -2160,6 +2269,16 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
 
 ## 2.2.0
 
+**TL;DR**
+
+**Fixed**
+
+- **Seven obscure image formats finally show thumbnails**
+- **Large layered GIMP files no longer lose their top layers**
+- **GIMP files over 256 MB now get a thumbnail**
+
+**Everything in 2.2.0**
+
 ### Fixed
 
 - **A handful of registered formats could never show a thumbnail, on any version.**
@@ -2225,6 +2344,14 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
 
 ## 2.1.2
 
+**TL;DR**
+
+**Fixed**
+
+- **Build thumbnails here now pre-builds the right icon size**
+
+**Everything in 2.1.2**
+
 ### Fixed
 
 - **"Build thumbnails here" only ever pre-built the smallest icon size.** It prepares three
@@ -2249,6 +2376,17 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
   file. There was only ever one render per file. It was just happening at the wrong size.
 
 ## 2.1.1
+
+**TL;DR**
+
+**Fixed**
+
+- **Some AVI videos no longer get a black thumbnail**
+- **Build thumbnails here no longer finishes with thumbnails missing**
+- **About no longer checks for updates when automatic checking is off**
+- **Settings headings no longer cut off the bottom of letters**
+
+**Everything in 2.1.1**
 
 ### Fixed
 
@@ -2281,6 +2419,17 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
   running under the search box.
 
 ## 2.1.0
+
+**TL;DR**
+
+**New**
+
+- **Press Space to preview works in Everything 1.4 too**
+- **A hotkey now previews files in administrator windows**
+- **SageThumbs now tells you when Space cannot work**
+- **The doctor report also flags when Space cannot work**
+
+**Everything in 2.1.0**
 
 ### Added
 
@@ -2324,6 +2473,37 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
   and it also tells you when Quick preview is simply switched off, which is its default.
 
 ## 2.0.0
+
+**TL;DR**
+
+**New**
+
+- **Flash video files now get thumbnails** (#26)
+- **HDR 10-bit and 12-bit VP9 videos now get thumbnails** (#26)
+- **Android app packages show their real launcher icon** (#24)
+- **Choose which video frame the thumbnail is taken from** (#26)
+- **Thumbnails can now be sized up to 2560 pixels** (#26)
+- **Very large images now get thumbnails**
+
+**Changed**
+
+- **Settings no longer freezes defaults when you press Save**
+
+**Fixed**
+
+- **Some transparent AVIF images now get thumbnails**
+- **Canon raw photos thumbnail about thirteen times faster**
+- **Large photographs thumbnail much faster**
+- **Build thumbnails here now works on drive roots** (fixes #26)
+- **Build thumbnails here menu label no longer shows a question mark** (fixes #26)
+- **File Types columns can be resized again** (fixes #26)
+- **Quick preview no longer closes when selecting in an empty pane**
+- **Thumbnails no longer draw smaller than their neighbours** (fixes #25)
+- **Malformed MP4 files can no longer read past their end**
+- **Rotated photos no longer thumbnail sideways**
+- **264 issues found by nine code reviews are fixed**
+
+**Everything in 2.0.0**
 
 ### Added
 
@@ -2434,6 +2614,20 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
 
 ## 1.12.0
 
+**TL;DR**
+
+**New**
+
+- **Build a whole folder's thumbnails up front from the command line** (#23)
+- **Build thumbnails here on the right-click menu**
+- **Welcome screen offers the format badge option** (#22)
+
+**Changed**
+
+- **Toolbar icons now look the same on every Windows version**
+
+**Everything in 1.12.0**
+
 ### Added
 
 - **Build thumbnails for a whole folder up front, instead of waiting for Explorer to catch up.**
@@ -2473,6 +2667,14 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
 
 ## 1.11.1
 
+**TL;DR**
+
+**Fixed**
+
+- **Toolbar buttons no longer show as empty boxes on Windows 10** (fixes #21)
+
+**Everything in 1.11.1**
+
 ### Fixed
 
 - **Every toolbar button showed as an empty box on Windows 10.** The Quick preview's buttons,
@@ -2483,6 +2685,32 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
   than assuming. Thanks to @MuntasirTonmoy for the report (#21).
 
 ## 1.11.0
+
+**TL;DR**
+
+**New**
+
+- **Photoshop files look sharp in Quick preview**
+- **Stepping through a folder with arrow keys is much faster** (#20)
+
+**Changed**
+
+- **One installer for everyone, no Full or Compact choice**
+
+**Fixed**
+
+- **Zip, RAR, 7z and G-code files now get thumbnails in Explorer**
+- **Setup no longer asks you to close your file manager** (fixes #15)
+- **Arrow-keying through photos is about five times quicker**
+- **Large PNG images no longer decode twice**
+- **Big pictures appear faster in Quick preview**
+- **Install no longer takes thumbnails away from other programs for good**
+- **Formats Windows decodes preview noticeably faster**
+- **Very large photos, scans and panoramas get thumbnails**
+- **Fewer big files silently lose their thumbnail**
+- **Doctor report names every file type SageThumbs took over**
+
+**Everything in 1.11.0**
 
 ### Changed
 
@@ -2580,6 +2808,14 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
 
 ## 1.10.1
 
+**TL;DR**
+
+**Fixed**
+
+- **One-click updates work again**
+
+**Everything in 1.10.1**
+
 ### Fixed
 
 - **One-click updates work again.** Since 1.3.3, clicking "Update" downloaded the new
@@ -2592,6 +2828,17 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
   every release before it is published, so it cannot silently break like this again.
 
 ## 1.10.0
+
+**TL;DR**
+
+**New**
+
+- **Press Space to preview inside Everything**
+- **Press Space to preview inside any app's Open dialog**
+- **Choose which tool the screenshot editor starts in**
+- **A FAQ now answers common thumbnail and install questions**
+
+**Everything in 1.10.0**
 
 ### Added
 
@@ -2627,6 +2874,31 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
   General) and use its service instead. The FAQ has the full steps.
 
 ## 1.9.0
+
+**TL;DR**
+
+**New**
+
+- **A search box that finds any setting, on any page**
+- **An Appearance page for how thumbnails look**
+- **A dot marks pages where you changed a setting**
+
+**Changed**
+
+- **Right-click menu items get their own editing window**
+- **Welcome screen asks about film cover art and comic credit pages**
+- **Every settings page opens with a clear heading**
+
+**Fixed**
+
+- **Pop-up windows open centred on your mouse's monitor**
+- **Settings search boxes are shorter, with centred text**
+- **Rounded corners on search and format lists no longer cut off**
+- **Settings sync, tray menu and update prompt now translate**
+- **Page descriptions no longer cut off in most languages**
+- **File types table columns can no longer be dragged**
+
+**Everything in 1.9.0**
 
 ### Added
 
@@ -2700,6 +2972,24 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
 
 ## 1.8.5
 
+**TL;DR**
+
+**New**
+
+- **Doctor report names a video's codec and whether Windows decodes it**
+- **Videos with cover art use it when no frame decodes**
+
+**Fixed**
+
+- **MP4 and MOV files no longer wrongly report no video track**
+- **Explorer Details pane no longer goes blank until restart**
+- **Office documents no longer show the wrong thumbnail picture**
+- **Comic archives no longer lose their cover page**
+- **Doctor report no longer states false causes or limits**
+- **Some Matroska files no longer read with wrong sizes**
+
+**Everything in 1.8.5**
+
 ### Added
 
 - **`st2k doctor` now tells you which video codec a file uses, and whether Windows can actually
@@ -2748,6 +3038,21 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
 
 ## 1.8.4
 
+**TL;DR**
+
+**New**
+
+- **Format badge can be a colour-coded file mark**
+- **Checkerboard behind transparent thumbnails, if you want one**
+- **Switch off Windows' file-type icon on thumbnails**
+- **Doctor report now asks the shell for the real thumbnail**
+
+**Changed**
+
+- **Playback bar uses the system's own icon set**
+
+**Everything in 1.8.4**
+
 ### Added
 
 - **The format badge can now be a coloured mark instead of plain letters.** Reading three small
@@ -2782,6 +3087,37 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
   finally look like one family. Muting also swaps the speaker for the proper crossed-out glyph.
 
 ## 1.8.3
+
+**TL;DR**
+
+**New**
+
+- **Keyboard controls for seeking, volume, mute and pause**
+- **Previous and next buttons on the playback bar**
+- **Repeat and playback speed buttons on the playback bar**
+- **Switch Left and Right between seeking and changing files**
+- **Playback bar buttons show names on hover**
+- **Load web images button appears in the preview itself**
+- **Find text in previews with Ctrl+F**
+- **Links in previewed web pages open in your browser**
+
+**Changed**
+
+- **Videos open at their real shape and rotation**
+- **Transparent images sit on a checkerboard and resize better**
+- **Files without an extension are recognised by content**
+- **CSV previews show 10,000 rows and row numbers**
+
+**Fixed**
+
+- **Videos that cannot decode fall back to a still frame**
+- **Archive names from older tools no longer show garbled text**
+- **Preview hotkey no longer opens a file picker by mistake**
+- **Markdown YAML headers show as a tidy block, not scrambled**
+- **UTF-32 text files decode correctly instead of gibberish**
+- **Zoom lands exactly on fit-to-window and 100%**
+
+**Everything in 1.8.3**
 
 ### Added
 
@@ -2861,6 +3197,22 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
 
 ## 1.8.2
 
+**TL;DR**
+
+**New**
+
+- **Quick preview shows the tables in SQLite database files**
+- **Portable copy offers to switch on thumbnails at first run**
+
+**Fixed**
+
+- **Wide tables in Quick preview no longer overlap or overflow**
+- **HEIC and AVIF photo thumbnail colours were wrong since 1.3.6**
+- **Red and blue swapped in HEIC, AVIF and JPEG XR thumbnails** (fixes #9)
+- **AVIF thumbnail colours no longer shift on a busy PC** (fixes #9)
+
+**Everything in 1.8.2**
+
 ### Added
 
 - **Press Space on a database file and you can see what's in it.** SQLite files (`.db`,
@@ -2925,6 +3277,14 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
 
 ## 1.8.1
 
+**TL;DR**
+
+**New**
+
+- **Portable version can now show Explorer thumbnails** (#13)
+
+**Everything in 1.8.1**
+
 ### Added
 
 - **The portable version can now do Explorer thumbnails after all.** 1.8.0 said it couldn't.
@@ -2938,6 +3298,25 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
   the whole machine. (issue #13)
 
 ## 1.8.0
+
+**TL;DR**
+
+**New**
+
+- **Optional format badge on thumbnails showing the real file type**
+- **A portable version that needs no installer or admin rights** (#13)
+- **A Check for problems button in Settings under Advanced**
+- **Doctor now catches four more causes of missing thumbnails**
+- **Setup can restart File Explorer for you at the end**
+- **Restart hotkey service button moved to the Screenshots page**
+- **Screenshot hotkey repairs itself if its startup entry is deleted**
+
+**Changed**
+
+- **PDF page-margin option moved to the Ebook/comic tab**
+- **Feedback reply field must be an email address if filled in**
+
+**Everything in 1.8.0**
 
 ### Added
 
@@ -3000,6 +3379,19 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
 
 ## 1.7.5
 
+**TL;DR**
+
+**New**
+
+- **Built-in JPEG 2000 decoder that reads only the size shown**
+
+**Fixed**
+
+- **Black-and-white JPEG 2000 scans no longer render as solid black** (fixes #11)
+- **Preview pane stops showing stale pictures after sitting idle** (fixes #11)
+
+**Everything in 1.7.5**
+
 ### Fixed
 
 - **Black-and-white scanned pages could render as a solid black square.** Some JPEG 2000
@@ -3031,6 +3423,19 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
 
 ## 1.7.4
 
+**TL;DR**
+
+**Changed**
+
+- **Game textures with mipmaps thumbnail about 17 times faster**
+
+**Fixed**
+
+- **Image info now shows the real size of large JPEG 2000 files**
+- **Very large JPEG 2000 scans thumbnail faster and stop timing out** (fixes #11)
+
+**Everything in 1.7.4**
+
 ### Changed
 
 - **Game textures with mipmaps thumbnail about 17x faster.** A `.dds` file usually already
@@ -3059,6 +3464,19 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
   decoder itself. (issue #11)
 
 ## 1.7.3
+
+**TL;DR**
+
+**Fixed**
+
+- **AVIF thumbnails no longer have shifted colours from Windows' codec** (fixes #9)
+- **Wide-gamut 10-bit AVIF and HEIC keep their colour profile**
+- **Preview pane no longer keeps the previous file's picture** (fixes #11)
+- **Doctor no longer reports thumbnails disabled by cache settings**
+- **Modern DDS game textures (BC7, BC6H, BC4, BC5) now thumbnail**
+- **Image info shows correct values for DDS game textures**
+
+**Everything in 1.7.3**
 
 ### Fixed
 
@@ -3118,6 +3536,14 @@ For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that s
 
 ## 1.7.2
 
+**TL;DR**
+
+**Fixed**
+
+- **Blender thumbnails are no longer upside down** (fixes #10)
+
+**Everything in 1.7.2**
+
 ### Fixed
 
 - **Blender `.blend` thumbnails were upside down**
@@ -3135,6 +3561,22 @@ More usefully: the automatic update check only ever ran if you had switched on t
 helper, which almost nobody had. For most people it was never checking at all, which isn't
 "quiet", it's broken. That's fixed here. If your copy still never mentions a new version,
 please tell me through **Send feedback** in the About box. I can't fix what I can't see.
+
+**TL;DR**
+
+**New**
+
+- **A one-time welcome screen for Quick preview and screenshots**
+
+**Fixed**
+
+- **JPEG XL thumbnails now use the file's colour profile** (fixes #9)
+- **Updates that cannot replace their files now say so**
+- **Automatic update check now runs on every install**
+- **A blocked update now says it was blocked**
+- **Update permission prompt no longer hides behind the download window**
+
+**Everything in 1.7.1**
 
 ### Added
 
@@ -3175,6 +3617,15 @@ please tell me through **Send feedback** in the About box. I can't fix what I ca
 
 ## 1.7.0
 
+**TL;DR**
+
+**New**
+
+- **Quick preview remembers the size you drag it to**
+- **Quick preview remembers the volume between tracks**
+
+**Everything in 1.7.0**
+
 ### Added
 
 - **Quick preview remembers the size you drag it to.** Previously every file reopened at the
@@ -3187,6 +3638,24 @@ please tell me through **Send feedback** in the About box. I can't fix what I ca
   next video or audio track, instead of every file starting at full volume again.
 
 ## 1.6.0
+
+**TL;DR**
+
+**New**
+
+- **Windows on Arm gets its own native installer**
+- **EPS files now get thumbnails without rendering PostScript**
+- **Paint.NET files now get thumbnails from their built-in preview**
+
+**Fixed**
+
+- **Submenu previews now appear reliably in the right-click menu**
+- **General settings page no longer crowds its footer**
+- **Screenshot selections measured on the right screen with mixed DPI**
+- **Strip metadata now refreshes the thumbnail immediately**
+- **HEIC and AVIF edge-case transparency is preserved**
+
+**Everything in 1.6.0**
 
 ### Added
 
@@ -3220,6 +3689,30 @@ please tell me through **Send feedback** in the About box. I can't fix what I ca
   route affected HEIC files around the Windows decoder that flattens their auxiliary alpha.
 
 ## 1.5.0
+
+**TL;DR**
+
+**New**
+
+- **HDR screenshots no longer look washed out**
+- **Strip metadata now removes Content Credentials (C2PA)**
+- **Strip metadata covers WebP, SVG and HEIC/AVIF**
+- **Converting keeps camera, date, GPS and caption details**
+- **Convert writes every preset size at once and can pad to fit**
+- **Comic archives get an index comic readers understand**
+- **Combine into PDF can add margins and fit A4 or Letter**
+- **Web fonts and subtitle files now preview**
+- **Image info reveals gain maps, AI tags and texture details**
+- **Colour picker can collect a set of colours**
+
+**Fixed**
+
+- **Esc now cancels a screenshot and menus open in front**
+- **Camera names no longer appear in quote marks**
+- **Deeply nested and OneDrive files get thumbnails again**
+- **Bundled ImageMagick updated to 7.1.2-29**
+
+**Everything in 1.5.0**
 
 ### Added
 
@@ -3275,6 +3768,15 @@ please tell me through **Send feedback** in the About box. I can't fix what I ca
 
 ## 1.4.1
 
+**TL;DR**
+
+**Fixed**
+
+- **Huge OpenEXR files now get thumbnails**
+- **Widening the Quick preview window re-wraps the text**
+
+**Everything in 1.4.1**
+
 ### Fixed
 
 - **Huge OpenEXR files now get thumbnails.** A 12K VFX render pass, the kind that lands
@@ -3289,6 +3791,23 @@ please tell me through **Send feedback** in the About box. I can't fix what I ca
   follows the window, so making it wider really does fit more words per line.
 
 ## 1.4.0
+
+**TL;DR**
+
+**New**
+
+- **Send feedback without leaving the app**
+- **Read the text off your screen with OCR**
+- **One-key OCR copies text straight to the clipboard**
+- **OCR now reads small on-screen text**
+- **Quick preview gains a Copy text (OCR) button**
+
+**Fixed**
+
+- **Chinese, Japanese and Korean text files are readable again**
+- **Chinese, Japanese and Thai text now wraps correctly**
+
+**Everything in 1.4.0**
 
 ### Added
 
@@ -3338,6 +3857,14 @@ please tell me through **Send feedback** in the About box. I can't fix what I ca
 
 ## 1.3.8
 
+**TL;DR**
+
+**Fixed**
+
+- **HEIC and AVIF thumbnails keep their declared colours**
+
+**Everything in 1.3.8**
+
 ### Fixed
 
 - **HEIC and AVIF thumbnails keep their declared colors.** Files that pair Display-P3
@@ -3346,6 +3873,18 @@ please tell me through **Send feedback** in the About box. I can't fix what I ca
   standard iPhone Display-P3 images continue through the normal color-managed path.
 
 ## 1.3.7
+
+**TL;DR**
+
+**New**
+
+- **Music files show their album art**
+
+**Fixed**
+
+- **Right-click preview shows the picture again on menu-skin PCs**
+
+**Everything in 1.3.7**
 
 ### Fixed
 
@@ -3363,6 +3902,30 @@ please tell me through **Send feedback** in the About box. I can't fix what I ca
   art stored in the file. Tracks without any keep the plain dark background.
 
 ## 1.3.6
+
+**TL;DR**
+
+**New**
+
+- **Feedback notes can include your contact details for a reply**
+
+**Changed**
+
+- **Explorer stays responsive when menus and metadata appear**
+- **Large camera RAW and OS-codec thumbnails use bounded memory**
+- **Broken Windows metafiles fail quickly instead of hanging**
+- **Settings sync is safer across devices and accounts**
+- **Release packages are self-contained and icon-verified**
+- **Screenshots and Quick preview use one resident helper**
+- **Release builds now fail closed when checks fail**
+
+**Fixed**
+
+- **Huge archives return immediately instead of tying up Explorer**
+- **Conversions are exact, atomic and memory-bounded**
+- **AVIF and JPEG XL export now include their real writers**
+
+**Everything in 1.3.6**
 
 - **Explorer stays responsive when menus and metadata appear.** Right-click construction no longer
   decodes the selected file just to prepare a preview; the image is generated only if the
@@ -3408,6 +3971,21 @@ please tell me through **Send feedback** in the About box. I can't fix what I ca
 
 ## 1.3.5
 
+**TL;DR**
+
+**Changed**
+
+- **Screenshot lines and arrows snap cleanly while Shift is held**
+- **Full-screen screenshot editor can be tested end to end**
+- **Archive contact sheets use bounded memory**
+- **Screenshot hotkeys and Quick preview use one helper process**
+
+**Fixed**
+
+- **Large 7z files no longer stall Explorer, even on network shares**
+
+**Everything in 1.3.5**
+
 - **Screenshot lines and arrows now snap cleanly while Shift is held.** The live
   preview and saved annotation use the same nearest-45° endpoint, even when Shift is
   pressed or released midway through a drag. The editor also has clearer contextual
@@ -3433,6 +4011,19 @@ please tell me through **Send feedback** in the About box. I can't fix what I ca
 
 ## 1.3.4
 
+**TL;DR**
+
+**Changed**
+
+- **Quick preview opens common images with less disk I/O**
+- **Release and performance tooling is more trustworthy**
+
+**Fixed**
+
+- **Folder navigation follows Explorer's natural filename order**
+
+**Everything in 1.3.4**
+
 - **Quick preview opens common images with less disk I/O.** Static GIF, PNG and WebP files now
   reuse the bytes already read while checking for animation instead of reading the file twice.
   Large project and archive formats also use the same bounded, preview-aware reader as Explorer
@@ -3445,6 +4036,20 @@ please tell me through **Send feedback** in the About box. I can't fix what I ca
   performance runs isolate every output and report failed decodes plus percentile timings.
 
 ## 1.3.3
+
+**TL;DR**
+
+**Changed**
+
+- **Updates are verified more defensively before Windows runs them**
+- **More malformed input and network cases fail safely**
+- **Maintenance and build reproducibility improved**
+
+**Fixed**
+
+- **The Quick preview scrollbar now works like a real scrollbar**
+
+**Everything in 1.3.3**
 
 - **The Quick preview scrollbar now works like a real scrollbar.** In long text, code and
   rendered Markdown previews, you can grab the thumb and drag it to any point in the document.
@@ -3463,6 +4068,22 @@ please tell me through **Send feedback** in the About box. I can't fix what I ca
   minimum is checked in CI, and third-party GitHub Actions are pinned to immutable revisions.
 
 ## 1.3.2
+
+**TL;DR**
+
+**Changed**
+
+- **Settings buttons now read Save and Close**
+
+**Fixed**
+
+- **Large archives no longer peg your CPU and disk**
+- **Archives full of SVG images now get a preview**
+- **Right-click menu is readable again in dark mode**
+- **Settings is fully translated again in all 35 languages**
+- **Thanks to Bruno for the dark-mode menu and Settings reports**
+
+**Everything in 1.3.2**
 
 - **Clicking a large archive no longer pegs your CPU and disk.** A big `.7z` could send
   SageThumbs off decompressing a large chunk of the file just to build a thumbnail, because
@@ -3490,6 +4111,30 @@ please tell me through **Send feedback** in the About box. I can't fix what I ca
 - Thanks to **Bruno** for reporting the dark-mode menu and the confusing Settings buttons.
 
 ## 1.3.1
+
+**TL;DR**
+
+**New**
+
+- **Task-list checkboxes render in the Quick preview**
+- **Thumbnails for modern GIMP XCF files**
+- **Explorer thumbnails for ZIP, RAR and 7z archives**
+- **st2k doctor can now probe one specific file**
+
+**Changed**
+
+- **Menu changes take effect right away**
+- **Big files and folders thumbnail much faster**
+- **Hardened archive reading against malformed files**
+
+**Fixed**
+
+- **Show quick actions in the menu works again**
+- **Big EPUB books now show their real cover**
+- **Copied Markdown keeps headings, lists and formatting**
+- **Silent installs no longer hang on a fresh machine**
+
+**Everything in 1.3.1**
 
 - **"Show quick actions in the menu" works again.** Turning it on is meant to put Convert into,
   Convert…, Resize and Rotate straight on the right-click menu instead of one level deep in the
@@ -3551,6 +4196,25 @@ please tell me through **Send feedback** in the About box. I can't fix what I ca
 
 ## 1.2.2
 
+**TL;DR**
+
+**New**
+
+- **New st2k doctor checks your whole setup**
+
+**Changed**
+
+- **Setup tells you if registering with Windows fails**
+
+**Fixed**
+
+- **Works on Windows editions without Media Foundation**
+- **Repair file associations and rebuild cache now work**
+- **Windows 10 shortcuts back on the right-click menu**
+- **Repair file associations no longer claims false success**
+
+**Everything in 1.2.2**
+
 - **Works on Windows editions without Media Foundation.** On "N" and "KN" editions of Windows
   (sold in the EU and Korea without media playback components) the shell extension could not
   load at all, so *nothing* worked: no thumbnails for any format, no right-click menu, no
@@ -3582,6 +4246,14 @@ please tell me through **Send feedback** in the About box. I can't fix what I ca
 
 ## 1.2.1 (2026-07-18)
 
+**TL;DR**
+
+**Fixed**
+
+- **Paint Shop Pro brushes get thumbnails, and tubes look sharper**
+
+**Everything in 1.2.1**
+
 - **Paint Shop Pro brushes now actually get thumbnails, and tubes get much sharper ones.**
   1.2.0 registered the Paint Shop Pro file family but could only read previews stored as JPEG.
   It turns out `.PspBrush` files never store one that way, so brushes showed no thumbnail at
@@ -3592,6 +4264,15 @@ please tell me through **Send feedback** in the About box. I can't fix what I ca
   (Thanks again to the community member who reported this and supplied test files.)
 
 ## 1.2.0 (2026-07-18)
+
+**TL;DR**
+
+**New**
+
+- **Thumbnails for the rest of the Paint Shop Pro family**
+- **See the source behind a rendered preview**
+
+**Everything in 1.2.0**
 
 - **The rest of the Paint Shop Pro family now gets thumbnails.** Brushes, picture frames,
   picture tubes, preset shapes, selections and masks (`.PspBrush`, `.PspFrame`, `.PspTube`,
@@ -3609,10 +4290,30 @@ please tell me through **Send feedback** in the About box. I can't fix what I ca
 
 ## 1.1.1 (2026-07-17)
 
+**TL;DR**
+
+**Fixed**
+
+- **Uninstall no longer stops with a Resource error**
+
+**Everything in 1.1.1**
+
 - **Fixed:** on some Windows 11 systems, uninstalling could stop with a **"Resource TSetupForm
   not found"** error and refuse to continue. The uninstaller now completes cleanly.
 
 ## 1.1.0 (2026-07-17)
+
+**TL;DR**
+
+**New**
+
+- **Select and copy text in the Quick preview**
+
+**Fixed**
+
+- **A Markdown file with an empty heading no longer closes the preview**
+
+**Everything in 1.1.0**
 
 - **You can now select and copy text in the Quick preview.** Drag to select in text, code, log
   **and rendered Markdown** previews - double-click grabs a word, **Shift+arrows** (with
@@ -3627,6 +4328,14 @@ please tell me through **Send feedback** in the About box. I can't fix what I ca
 
 ## 1.0.1 (2026-07-14)
 
+**TL;DR**
+
+**Fixed**
+
+- **Small vector graphics convert to a usable size**
+
+**Everything in 1.0.1**
+
 - **Small vector graphics now convert to a usable size.** Right-click **Convert into PNG** on a
   small SVG icon (or a small `.emf` clip art) used to hand back a tiny image at the file's built-in
   size (as small as 24 pixels). Since these are vectors with no fixed resolution, SageThumbs now
@@ -3637,6 +4346,21 @@ please tell me through **Send feedback** in the About box. I can't fix what I ca
 
 **SageThumbs 2K is out of beta.** This release refines the Quick preview and Settings that arrived
 in 0.10 and smooths out the rough edges found in real-world use.
+
+**TL;DR**
+
+**New**
+
+- **Local HTML files render as real pages**
+
+**Changed**
+
+- **Preview opens in front, then stays out of your way**
+- **Smoother scrolling for text, code and log files**
+- **Smoother scrolling for large Markdown documents**
+- **A crisper, smoother Settings window**
+
+**Everything in 1.0.0**
 
 - **The preview opens in front, then stays out of your way.** Press Space and the preview jumps to
   the front of your other windows, then behaves like a normal window you can click past or cover.
@@ -3653,6 +4377,30 @@ in 0.10 and smooths out the rough edges found in real-world use.
   instead of looking jagged.
 
 ## 0.10.0 (2026-07-13)
+
+**TL;DR**
+
+**New**
+
+- **Press Space to preview any file, QuickLook-style**
+- **Markdown preview adds a collapsible outline sidebar**
+- **CSV and TSV files preview as real tables**
+- **Jupyter notebooks preview rendered, no install needed**
+- **Optional: download web images in Markdown previews**
+- **Bare URLs in Markdown are now clickable**
+- **Optional: render local HTML files, locked down**
+
+**Changed**
+
+- **Outline sidebar polish and smoother animation**
+- **Markdown renders the way GitHub shows it**
+
+**Fixed**
+
+- **Animated CSS SVGs no longer show up blank**
+- **SVG images now show in the right-click preview**
+
+**Everything in 0.10.0**
 
 - **New: press Space to preview a file, QuickLook-style.** Select a file in Explorer (or on the
   Desktop) and tap **Space** for an instant full-size popup, then Space or Esc to close. It shows
@@ -3714,6 +4462,23 @@ in 0.10 and smooths out the rough edges found in real-world use.
 
 ## 0.9.0 (2026-07-09)
 
+**TL;DR**
+
+**Changed**
+
+- **Format counts reconciled, and Convert and Resize write files atomically**
+- **Updated DjVu decoder with upstream fixes**
+
+**Fixed**
+
+- **Preview pane handles big files without reading them whole**
+- **DICOM .dcm medical scans now show real thumbnails**
+- **Apple .icns icons now actually show a thumbnail**
+- **Synced settings now show your name, not an email address**
+- **The app's own documentation screenshots lose a stray border**
+
+**Everything in 0.9.0**
+
 - **The preview pane now handles big files like thumbnails do.** Explorer's reading/preview pane
   used to read a file whole before showing it, so a multi-gigabyte video, a long audiobook, or an
   oversized comic/`.blend`/Photoshop file would either bog down the preview host or just show a
@@ -3739,6 +4504,29 @@ in 0.10 and smooths out the rough edges found in real-world use.
   (no user-facing behavior change).
 
 ## 0.8.0
+
+**TL;DR**
+
+**New**
+
+- **Sync your settings across your PCs, off by default**
+
+**Changed**
+
+- **Removed .jbig from the supported formats list**
+- **Your sign-in token is stored securely on your PC**
+
+**Fixed**
+
+- **Compressed Blender files now show thumbnails**
+- **Big Blender and Photoshop files now show thumbnails** (fixes #1)
+- **Large Clip Studio Paint files now show thumbnails**
+- **EXR render passes with an empty alpha channel now render** (fixes #2)
+- **Old 32-bit TGA files no longer show up invisible**
+- **Huge Krita, OpenRaster, 3MF and FreeCAD files show the right preview**
+- **Amiga IFF/ILBM images with a mask now render correctly**
+
+**Everything in 0.8.0**
 
 - **Compressed `.blend` files now show thumbnails at all.** Files saved with Blender's
   "Compress" option (gzip or zstd) previously never got a preview; now they do, at any size.
@@ -3783,6 +4571,29 @@ in 0.10 and smooths out the rough edges found in real-world use.
 
 ## 0.7.2
 
+**TL;DR**
+
+**New**
+
+- **Bind OCR text copying to your own hotkey**
+- **Quick-save hotkey now shows a flash when it worked**
+- **Settings now warns when a hotkey is taken by another app**
+- **Uploads now show an Uploading progress indicator**
+
+**Changed**
+
+- **Sort by image size is now much faster on big selections**
+
+**Fixed**
+
+- **Hotkeys now survive sleep, lock and app updates**
+- **Tray icon comes back after an Explorer restart**
+- **Copying a screenshot now retries if the clipboard is busy**
+- **Screenshot hotkey no longer stacks a second overlay**
+- **Command line: batch fails properly and PDF honours JPEG quality**
+
+**Everything in 0.7.2**
+
 - **Hotkeys now survive sleep, lock, and updates.** Windows silently un-registers global hotkeys
   after sleep/resume, locking your PC, or a remote-desktop reconnect; the background helper now
   re-registers them the moment those happen (plus a once-a-minute safety net), so your screenshot
@@ -3818,6 +4629,24 @@ in 0.10 and smooths out the rough edges found in real-world use.
 
 ## 0.7.1
 
+**TL;DR**
+
+**New**
+
+- **See the exact pixel size while dragging a screenshot**
+- **Right-click any image to upload it and copy a link**
+
+**Changed**
+
+- **Hide tray icon setting moved to Advanced**
+
+**Fixed**
+
+- **Hotkey helper restarts itself so hotkeys keep working**
+- **About box now opens centered with the real GitHub logo**
+
+**Everything in 0.7.1**
+
 - **See a screenshot's exact size while you drag it.** When you drag out a region to capture, a small
   `width × height` readout now sits at the corner of the selection, so you can size things precisely (in
   real pixels).
@@ -3834,6 +4663,34 @@ in 0.10 and smooths out the rough edges found in real-world use.
   service", next to the Restart button.
 
 ## 0.7.0
+
+**TL;DR**
+
+**New**
+
+- **Assign your own hotkey to any tool**
+- **Quality slider added for AVIF and JPEG XL output**
+- **DSD audio thumbnails, now 316 supported file types**
+- **More file info in Explorer: date taken, GPS, audio tags**
+- **Dimensions, Date taken and more are now selectable columns**
+
+**Changed**
+
+- **Redesigned Settings with a Windows 11-style category rail**
+- **Music files get a cleaner right-click menu**
+- **WMA audio details, cleaner uninstall and safer updater**
+
+**Fixed**
+
+- **Transparent Photoshop files now preview with their transparency**
+- **Dimensions now show in Explorer's details pane**
+- **Show menu on all file types now works in Windows 11**
+- **MPEG transport stream and Ogg video now show thumbnails**
+- **Keep original file date now works in the Convert dialog**
+- **Searching by dimensions, camera or artist now works**
+- **Move to folder now tells you when it fails**
+
+**Everything in 0.7.0**
 
 - **Redesigned Settings window.** The old single long scroll is gone. Settings now opens with a
   Windows 11-style **category rail** down the left (General · File types · Ebook/comic · Right-click
@@ -3897,6 +4754,14 @@ in 0.10 and smooths out the rough edges found in real-world use.
 
 ## 0.6.3
 
+**TL;DR**
+
+**New**
+
+- **One-click updates from Settings**
+
+**Everything in 0.6.3**
+
 - **One-click updates.** When a new version is available, **Settings ▸ Check for updates** can now
   download and install it for you: a progress bar shows the download, Windows asks once for
   permission, and the update installs in the background and confirms when it's done. No more hunting
@@ -3905,6 +4770,20 @@ in 0.10 and smooths out the rough edges found in real-world use.
 ## 0.6.2
 
 A bug-fix release centered on a serious file-dialog problem, plus a sweep for anything like it.
+
+**TL;DR**
+
+**Changed**
+
+- **Preview pane now follows your Windows theme**
+
+**Fixed**
+
+- **File dialogs no longer hang for up to two minutes**
+- **Corrupt files can no longer stall File Explorer**
+- **No more rare crash when closing a file dialog**
+
+**Everything in 0.6.2**
 
 - **Fixed: file dialogs could hang for up to ~2 minutes.** Opening a file picker (for example,
   attaching or uploading a file in your browser) could freeze for a long time as the dialog closed,
@@ -3923,6 +4802,19 @@ A bug-fix release centered on a serious file-dialog problem, plus a sweep for an
 
 ## 0.6.1
 
+**TL;DR**
+
+**New**
+
+- **Audio waveform thumbnails for WAV and AIFF files**
+- **AIFF-C audio files now supported, 315 formats total**
+
+**Changed**
+
+- **Crisp thumbnails at large and Hi-DPI icon sizes**
+
+**Everything in 0.6.1**
+
 - **Crisp thumbnails at large/Hi-DPI icon sizes.** Raised the maximum generated thumbnail
   edge from 256 px to 1024 px. On 4K displays and the larger ("jumbo") icon views, Explorer
   asks for thumbnails bigger than 256 px; we used to hand back an undersized 256 px image,
@@ -3937,6 +4829,23 @@ A bug-fix release centered on a serious file-dialog problem, plus a sweep for an
   total to **315** supported file types.
 
 ## 0.6.0
+
+**TL;DR**
+
+**New**
+
+- **Details in Explorer for 300+ formats Windows can't read**
+- **Proper color management for wide-gamut and CMYK images**
+- **Autodesk Fusion 360 files now show thumbnails, 314 formats**
+- **Repair file associations button in Settings diagnostics**
+- **MCP view and compress tools for AI agents**
+
+**Changed**
+
+- **Removed unused ImageMagick text shaping from the build**
+- **Hardening: fuzzing, COM tests and cleanup across all formats**
+
+**Everything in 0.6.0**
 
 - **Details in Explorer for 300+ formats Windows can't read.** A new property handler
   surfaces image dimensions, EXIF camera info, and audio tags in Explorer's Details pane,
@@ -3965,6 +4874,19 @@ A bug-fix release centered on a serious file-dialog problem, plus a sweep for an
 
 ## 0.5.0
 
+**TL;DR**
+
+**New**
+
+- **Video thumbnails now show a representative frame, not the intro**
+
+**Changed**
+
+- **Video thumbnails are fast even on huge 4K files**
+- **MPEG and Flash videos keep the normal file icon**
+
+**Everything in 0.5.0**
+
 - **Video thumbnails, done properly.** Explorer now reliably shows a thumbnail for your
   videos, and it's a *representative* frame from about a third of the way in, not the black
   intro, fade-in, or studio logo you'd get from the opening frame. Covers **MP4, MOV, M4V,
@@ -3977,6 +4899,21 @@ A bug-fix release centered on a serious file-dialog problem, plus a sweep for an
   normal file icon; nothing can produce a thumbnail for them without an installed codec.
 
 ## 0.4.9
+
+**TL;DR**
+
+**New**
+
+- **st2k command can compress to a target file size**
+- **Apple Live Photos show their still image, 313 formats total**
+
+**Fixed**
+
+- **Correct colors for wide-gamut phone and camera photos**
+- **Crisp pixel art and small icons instead of a blur**
+- **No more stuck blank thumbnails for files that decode empty**
+
+**Everything in 0.4.9**
 
 - **Correct colors for wide-gamut photos.** Thumbnails of Display-P3 / Adobe RGB images
   (most modern phone and camera photos) are now color-managed to sRGB, so they match what
@@ -3991,6 +4928,24 @@ A bug-fix release centered on a serious file-dialog problem, plus a sweep for an
 - **Apple Live Photos (.livp)** now show their still image, bringing the total to **313**.
 
 ## 0.4.8
+
+**TL;DR**
+
+**New**
+
+- **GeoGebra worksheets and .phz comics supported, 312 formats total**
+
+**Changed**
+
+- **DjVu hardening verified against scanned documents that used to crash**
+
+**Fixed**
+
+- **Thumbnails now work on a clean Windows install**
+- **More EPUB covers show up, including Standard Ebooks**
+- **Very large comic archives thumbnail again**
+
+**Everything in 0.4.8**
 
 - **Thumbnails now work on a clean Windows install.** The shell extension no longer
   depends on the Visual C++ runtime, so it registers and shows thumbnails even on a fresh
@@ -4010,6 +4965,24 @@ A bug-fix release centered on a serious file-dialog problem, plus a sweep for an
 
 ## 0.4.7
 
+**TL;DR**
+
+**New**
+
+- **Automatic quiet update check when opening Settings**
+
+**Changed**
+
+- **Video previews and thumbnails are now time-bounded**
+- **Right-click actions now run in the background**
+
+**Fixed**
+
+- **Preview pane no longer hangs in file dialogs and Explorer**
+- **Right-clicking an exotic file no longer freezes Explorer**
+
+**Everything in 0.4.7**
+
 - **Fixed preview-pane hangs.** Selecting an image in a file dialog or the Explorer reading/
   preview pane could freeze and sometimes need the preview host killed (or a reboot). Previews
   now decode off the host's UI thread, and an internal concurrency lock that could leak when a
@@ -4027,6 +5000,21 @@ A bug-fix release centered on a serious file-dialog problem, plus a sweep for an
 
 ## 0.4.6
 
+**TL;DR**
+
+**New**
+
+- **Video thumbnails using the OS's own codecs**
+- **Settings import and export as a readable JSON file**
+- **Check for updates button in Settings diagnostics**
+- **Rebuild thumbnail cache button clears stale cache**
+
+**Fixed**
+
+- **More reliable camera-RAW thumbnails, even with no extra codecs**
+
+**Everything in 0.4.6**
+
 - **Video thumbnails**: Explorer now shows a representative frame for video files
   (Matroska **.mkv**, **.webm**, **.mp4**, **.mov**, **.avi**, and more) using the OS's own
   codecs, so it bundles **zero** extra bytes and streams the file instead of loading it.
@@ -4041,10 +5029,33 @@ A bug-fix release centered on a serious file-dialog problem, plus a sweep for an
 
 ## 0.4.5
 
+**TL;DR**
+
+**New**
+
+- **Screenshot tool gains Ctrl+C to copy and Ctrl+S to save**
+
+**Everything in 0.4.5**
+
 - **Screenshot capture tool:** explicit **Ctrl+C** (copy) / **Ctrl+S** (save) keys, plus an
   optional fixed save folder for Ctrl+S (otherwise it prompts each time).
 
 ## 0.4.4
+
+**TL;DR**
+
+**New**
+
+- **Fully customizable right-click menu with drag-to-reorder entries**
+- **Diagnostics section with user-sendable log and crash capture**
+
+**Changed**
+
+- **Tools submenu flattened, and menu can show on all file types**
+- **Image info is now a verbose, copyable dialog with every EXIF tag**
+- **Settings window is vertically resizable with flicker-free scrolling**
+
+**Everything in 0.4.4**
 
 - **Fully customizable right-click menu**: drag to reorder entries *and* their dividers
   (WYSIWYG), and show/hide any item; the menu mirrors your layout exactly.
@@ -4055,6 +5066,19 @@ A bug-fix release centered on a serious file-dialog problem, plus a sweep for an
 - **Diagnostics** section: a user-sendable log with crash capture (Settings → Diagnostics).
 
 ## Earlier (0.4.x)
+
+**TL;DR**
+
+**New**
+
+- **288 file formats, from camera RAW to ebooks and comics**
+- **Right-click toolkit: convert, resize, rotate, PDF and more**
+- **Native Windows 11 UI with dark mode and 36 languages**
+- **Searchable per-format on/off list with tunable thumbnail quality**
+- **Built-in screenshot capture with a configurable global hotkey**
+- **Crash-isolated: corrupt files can't take down File Explorer**
+
+**Everything in the earlier 0.4 releases**
 
 - **288 file formats**: camera RAW, Photoshop (PSD/PSB), HEIC/AVIF, JPEG XR, JPEG XL,
   MS Office, DjVu, ebooks & comics, 3D-print files, and the obscure long tail.

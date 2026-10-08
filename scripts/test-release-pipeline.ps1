@@ -242,16 +242,25 @@ It continues on a second line.
             throw 'release.ps1 no longer runs the TL;DR gate'
         }
     }
-    # The gate runs on the version being released; this holds every 3.x section to it too, as
-    # rewritten on 2026-10-08, so an edit to an old section cannot drop a headline unseen.
-    Assert-Passes 'every 3.x changelog section has a complete, grouped TL;DR' {
-        $changelog = Join-Path $root 'docs\CHANGELOG.md'
-        $versions = @([regex]::Matches((Get-Content -LiteralPath $changelog -Raw), '(?m)^##[ ]+(3\.\d+\.\d+)[ ]*\r?$') |
-            ForEach-Object { $_.Groups[1].Value })
-        if ($versions.Count -lt 16) { throw "only $($versions.Count) 3.x sections found" }
-        foreach ($v in $versions) {
-            Assert-ReleaseNotesTldr -Section (Get-ReleaseChangelogSection -ChangelogPath $changelog -Version $v) -Version $v
+    # The gate runs on the version being released; this holds every published section to it too,
+    # as rewritten on 2026-10-08 (all of 3.x, then every release back to 0.4), so an edit to an
+    # old section cannot drop a headline unseen. Sections are split here rather than read with
+    # Get-ReleaseChangelogSection: old headings carry dates (`1.2.1 (2026-07-18)`) or a label
+    # (`Earlier (0.4.x)`), and that reader's release-day checks are not this test's subject.
+    # `## Unreleased` is the release gate's to judge.
+    Assert-Passes 'every published changelog section has a complete, grouped TL;DR' {
+        $text = Get-Content -LiteralPath (Join-Path $root 'docs\CHANGELOG.md') -Raw
+        $heads = @([regex]::Matches($text, '(?m)^##[ ]+(.+?)[ ]*\r?$'))
+        $checked = 0
+        for ($i = 0; $i -lt $heads.Count; $i++) {
+            $title = $heads[$i].Groups[1].Value
+            if ($title -eq 'Unreleased') { continue }
+            $start = $heads[$i].Index + $heads[$i].Length
+            $end = if ($i + 1 -lt $heads.Count) { $heads[$i + 1].Index } else { $text.Length }
+            Assert-ReleaseNotesTldr -Section $text.Substring($start, $end - $start).Trim() -Version $title
+            $checked++
         }
+        if ($checked -lt 82) { throw "only $checked published changelog sections found" }
     }
     Assert-Passes 'a section with no intro paragraph gets no intro block' {
         $body = Format-ReleaseNotesBody -Section "### Fixed`n`n- **Only a fix.** Detail." -Version '9.8.7'

@@ -1099,13 +1099,15 @@ function Split-ReleaseNotesTldr {
 }
 
 # The changes a section's detail lists: its top-level bullets, continuations folded, up to a
-# `###` heading other than New, Changed or Fixed (3.0.1's "What 3.0 brought" recaps an older
-# release, and none of it is a 3.0.1 change).
+# `###` heading that does not name a kind of change (3.0.1's "What 3.0 brought" recaps an older
+# release, and none of it is a 3.0.1 change; 1.10.0's "Known limitation" is a note). Sections
+# before 3.0 head their changes Added, Improved and Security as well as New, Changed and Fixed.
 function Get-ReleaseNotesChanges {
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Rest)
+    $kinds = @('New', 'Added', 'Changed', 'Improved', 'Fixed', 'Security')
     $changes = New-Object System.Collections.Generic.List[string]
     foreach ($line in @($Rest -split "\r?\n")) {
-        if ($line -match '^###[ ]+(.+?)\s*$' -and $Matches[1] -notin @('New', 'Changed', 'Fixed')) { break }
+        if ($line -match '^###[ ]+(.+?)\s*$' -and $Matches[1] -notin $kinds) { break }
         if ($line -match '^-[ ]+\S') { $changes.Add($line.Trim()) }
         elseif ($line -match '^\s+\S' -and $line -notmatch '^\s*[-*+][ ]' -and $changes.Count) {
             $changes[$changes.Count - 1] += ' ' + $line.Trim()
