@@ -248,6 +248,17 @@ pub(super) fn chroma_crop_units(
     Some((unit_x, unit_y))
 }
 
+/// `chroma_format_idc` of an SPS NAL unit, its one-byte NAL header included. `None` when
+/// the unit is too short or malformed to say.
+pub(crate) fn sps_chroma_format(nal: &[u8]) -> Option<u32> {
+    let rbsp = strip_emulation_prevention(nal.get(1..)?);
+    let mut b = Bits { d: &rbsp, pos: 0 };
+    let profile_idc = b.bits(8)?;
+    b.bits(16)?; // constraint_set flags + reserved, level_idc
+    b.ue()?; // seq_parameter_set_id
+    parse_chroma_format(&mut b, profile_idc).map(|(chroma, _)| chroma)
+}
+
 /// Frame geometry from an SPS RBSP (ITU-T H.264 §7.3.2.1.1): walk every field ahead of
 /// `pic_width_in_mbs_minus1`, apply the frame-cropping rectangle in chroma-scaled units.
 pub(super) fn parse_sps(rbsp: &[u8]) -> Option<(u16, u16)> {

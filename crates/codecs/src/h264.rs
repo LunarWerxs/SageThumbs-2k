@@ -77,6 +77,10 @@ pub fn split_child_input(input: &[u8]) -> Option<(&[u8], &[u8])> {
 /// the behaviour before this tier existed.
 pub(crate) fn h264_frame<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<image::DynamicImage> {
     let input = child_input(r, fraction)?;
+    if record_names_non_420(split_child_input(&input)?.0) {
+        st2k_base::safety::log_debug("h264 decode: not 4:2:0, declined without a spawn");
+        return None;
+    }
     let png = crate::flv::child_frame_png(
         "h264-frame",
         &input,
@@ -96,6 +100,27 @@ pub(crate) fn h264_frame<R: Read + Seek>(r: &mut R, fraction: f64) -> Option<ima
     Some(img)
 }
 
+/// Whether the decoder configuration record's first SPS names a chroma format other than
+/// 4:2:0, which the child refuses outright (`rust_h264` decodes 4:2:0 only). Decided here so
+/// a 4:2:2 or 4:4:4 file costs no process spawn, which on a busy machine is seconds per file.
+/// Keyed on the SPS, not the profile: High 4:4:4 Predictive also carries 4:2:0 streams
+/// (lossless encodes), and those the child does decode. Anything unreadable is `false`, so
+/// the child still decides.
+fn record_names_non_420(config: &[u8]) -> bool {
+    // AVCDecoderConfigurationRecord: five header bytes, the SPS count, then each SPS as a
+    // big-endian u16 length and the NAL unit.
+    let first_sps = || {
+        if config.get(5)? & 0x1f == 0 {
+            return None;
+        }
+        let len = usize::from(u16::from_be_bytes([*config.get(6)?, *config.get(7)?]));
+        config.get(8..8usize.checked_add(len)?)
+    };
+    first_sps()
+        .and_then(crate::flv::sps_chroma_format)
+        .is_some_and(|chroma| chroma != 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,6 +132,26 @@ mod tests {
     fn h264_frame_declines_junk_without_spawning() {
         assert!(child_input(&mut Cursor::new(&b"junk"[..]), 0.30).is_none());
         assert!(h264_frame(&mut Cursor::new(&[0u8; 256][..]), 0.30).is_none());
+    }
+
+    /// The spawn-free gate declines exactly what the child refuses: the 4:4:4 record is
+    /// declined, the High 10 (4:2:0) one still goes to the child (issue #52).
+    #[test]
+    fn only_a_non_420_record_is_declined_before_the_spawn() {
+        for (mkv, non_420) in [
+            (
+                &include_bytes!("../../../tests/fixtures/h264/high444-3366cc.mkv")[..],
+                true,
+            ),
+            (
+                &include_bytes!("../../../tests/fixtures/h264/high10-3366cc.mkv")[..],
+                false,
+            ),
+        ] {
+            let input = child_input(&mut Cursor::new(mkv), 0.30).expect("record and keyframe");
+            let (config, _) = split_child_input(&input).expect("framing");
+            assert_eq!(record_names_non_420(config), non_420);
+        }
     }
 
     /// The framing round-trips, and a truncated or empty half is refused rather than handed

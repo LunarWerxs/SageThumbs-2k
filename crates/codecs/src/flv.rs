@@ -25,6 +25,7 @@ use std::os::windows::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 mod sps;
+pub(crate) use sps::sps_chroma_format;
 pub use sps::Bits;
 use sps::*;
 
