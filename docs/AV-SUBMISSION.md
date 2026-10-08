@@ -68,7 +68,7 @@ release:
 
 | file | engines flagging it | Kaspersky |
 |---|---|---|
-| `SageThumbs2K-Setup-3.7.1.exe` | 0/70 | clean |
+| `SageThumbs2K-Setup-3.7.1.exe` | 0/70, 0/71 on a rescan | clean |
 | `SageThumbs2K-Setup-3.7.1-arm64.exe` | 0/68 | clean |
 | `SageThumbs2K-Portable-3.7.1.zip` | 0/65 | clean |
 | `SageThumbs2K-Portable-3.7.1-arm64.zip` | 0/65 | clean |
@@ -76,6 +76,11 @@ release:
 Skyhigh's `BehavesLike.Win32.Dropper` mark on the unsigned test build is gone on the signed
 installer, as the signature predicted. The sandbox (Zenbox) ran the x64 portable zip and
 called it CLEAN.
+
+VirusTotal does not sandbox every upload. The signed 3.7.1 installer still had no sandbox
+report two and a half hours after its upload, a rescan request included, while the unsigned
+test build and the 3.7.1 zip each got one within the hour. So a sigma count is there to read
+only when the sandbox picks the file; the engine scan is the measurement every upload gets.
 
 ## 2026-08-31: the count was MEASURED end to end, and the payload is not the cause (issue #30)
 
