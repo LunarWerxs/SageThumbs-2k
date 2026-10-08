@@ -368,11 +368,49 @@ pub(crate) fn try_pdf_tier(
         }
     }
     let png = crate::pdf::render_first_page(bytes, edge)?;
+    // A page drawn larger than the tile is about to be reduced to it, so it is read as RGB:
+    // three bytes a pixel instead of four, a quarter off the full-size frame that is the
+    // decode's peak. A page drawn AT the tile's size keeps the four-byte decode, which the tile
+    // takes over without a copy.
+    if wic_thumbnail_cx.is_some_and(|cx| cx < edge) {
+        if let Some(page) = solid_page_as_rgb(&png) {
+            return Some(Ok(page));
+        }
+    }
     Some(decode_image_with_raw_order(
         &png,
         raw_preview,
         wic_thumbnail_cx,
     ))
+}
+
+/// The page `Windows.Data.Pdf` drew, as RGB. It paints the page on white, so its PNG is 8-bit
+/// RGBA with every alpha at 255: the alpha says nothing. Read a row at a time, so the four-byte
+/// frame never exists. `None` for any other PNG (an alpha below 255, interlaced, another depth
+/// or colour type, a broken one), which the general decode then reads as before.
+fn solid_page_as_rgb(png: &[u8]) -> Option<DynamicImage> {
+    let mut reader = png::Decoder::new(std::io::Cursor::new(png))
+        .read_info()
+        .ok()?;
+    let info = reader.info();
+    let (w, h, interlaced) = (info.width, info.height, info.interlaced);
+    if interlaced || reader.output_color_type() != (png::ColorType::Rgba, png::BitDepth::Eight) {
+        return None;
+    }
+    let len = u64::from(w) * u64::from(h) * 3;
+    if len > limits::MAX_ALLOC {
+        return None;
+    }
+    let mut rgb = Vec::with_capacity(usize::try_from(len).ok()?);
+    while let Some(row) = reader.next_row().ok()? {
+        for px in row.data().as_chunks::<4>().0 {
+            if px[3] != u8::MAX {
+                return None;
+            }
+            rgb.extend_from_slice(&px[..3]);
+        }
+    }
+    image::RgbImage::from_raw(w, h, rgb).map(DynamicImage::ImageRgb8)
 }
 
 /// Pages of an Illustrator file laid out as a contact sheet: up to this many artboards.
@@ -621,5 +659,32 @@ mod illustrator_tests {
             rgba.pixels().all(|p| p[0] > p[1] && p[0] > p[2]),
             "every pixel is page one's red"
         );
+    }
+}
+
+#[cfg(test)]
+mod page_png_tests {
+    use super::*;
+
+    fn rgba_png(second_alpha: u8) -> Vec<u8> {
+        let px = vec![10, 20, 30, 255, 40, 50, 60, second_alpha];
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_raw(2, 1, px)
+            .expect("2x1")
+            .write_to(&mut out, image::ImageFormat::Png)
+            .expect("encode");
+        out.into_inner()
+    }
+
+    /// A solid page comes back as exactly its colours; one pixel of transparency sends the page
+    /// to the general decode, so a page that does carry alpha never loses it.
+    #[test]
+    fn only_a_page_with_solid_alpha_is_read_as_rgb() {
+        let solid = solid_page_as_rgb(&rgba_png(255)).expect("solid page");
+        assert_eq!(
+            solid.as_rgb8().map(|img| img.as_raw().as_slice()),
+            Some(&[10u8, 20, 30, 40, 50, 60][..])
+        );
+        assert!(solid_page_as_rgb(&rgba_png(254)).is_none());
     }
 }

@@ -42,6 +42,9 @@ kamadak-exif = "0.6"
 exr = { version = "=1.74.2", default-features = false }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 image = { workspace = true }
+# The PNG reader `image` already uses (same 0.18, no new crate), named directly for one job:
+# reading a rendered PDF page row by row (`decode::pdf_tier::solid_page_as_rgb`).
+png = "0.18"
 # Lossless metadata strip (rewrite JPEG segments / PNG chunks, no pixel re-encode).
 # Pure-Rust, MIT OR Apache-2.0. Adds `bytes` as the only new transitive crate.
 img-parts = "0.4"
