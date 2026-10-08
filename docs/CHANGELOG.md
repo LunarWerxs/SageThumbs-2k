@@ -9,6 +9,20 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## 3.7.0
 
+**TL;DR**
+
+- **The right-click menu is in groups again, most-used first**
+- **The screenshot editor can blur and crop**
+- **Screenshots save as PNG, JPEG or WebP, under a name you choose**
+- **The right-click preview fits its box on a scaled display** (fixes #61)
+- **Updating from inside the app installs, even while other programs use SageThumbs files**
+  (fixes #60)
+- **Big scanned-book PDFs get their covers** (fixes #59)
+- **Photoshop files saved without a preview image get thumbnails** (fixes #55)
+- **CMYK Photoshop files and CMYK JPEGs show their true colours**
+
+**Everything in 3.7.0**
+
 - **The right-click menu is in groups again, most-used first.** Since 2.0.0 the SageThumbs
   submenu had lost every divider and read as one long list. Its groups show again, in a new
   order:
