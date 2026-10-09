@@ -76,10 +76,7 @@ pub(super) unsafe fn run_shot(
     apply_drag(hwnd, env_arg("--drag").as_deref().and_then(parse_drag));
     apply_press(hwnd, env_arg("--press").as_deref());
     bench_repaint_if_requested(hwnd);
-    let flag = |f: &str| std::env::args().any(|a| a == f);
-    let ok = apply_close_while_busy(hwnd, flag("--close-while-busy"))
-        && apply_space_while_minimized(hwnd, flag("--space-while-minimized"))
-        && st2k_appkit::win::capture_and_destroy(hwnd, out);
+    let ok = drive_lifecycle_then_capture(hwnd, out);
     if let Some(t) = &tmp {
         let _ = std::fs::remove_file(t);
     }
@@ -425,6 +422,15 @@ unsafe fn apply_press(hwnd: HWND, press: Option<&str>) {
         }
         st2k_appkit::win::pump_msgs(8);
     }
+}
+
+/// The lifecycle drives (read off argv like `--click`), then the capture. A drive that fails
+/// has already ended the window, so there is nothing left to capture and no PNG is written.
+unsafe fn drive_lifecycle_then_capture(hwnd: HWND, out: &str) -> bool {
+    let flag = |f: &str| std::env::args().any(|a| a == f);
+    apply_close_while_busy(hwnd, flag("--close-while-busy"))
+        && apply_space_while_minimized(hwnd, flag("--space-while-minimized"))
+        && st2k_appkit::win::capture_and_destroy(hwnd, out)
 }
 
 /// `--close-while-busy`: send the real `WM_CLOSE` that the taskbar button's "Close window" and
