@@ -1223,11 +1223,13 @@ if (Test-Path $decoyGen) {
         'sample-decoy-multipage.pdf', 'sample-decoy-multipage.tif',
         'sample-decoy-frames.gif', 'sample-decoy-frames.webp',
         'sample-decoy-sizes.ico',
+        'sample-decoy-comic-covers.cbz', 'sample-decoy-comic-word.cbz',
+        'sample-decoy-comic-named.cbz', 'sample-decoy-comic-covers.cb7',
         'sample-big-canvas.psd', 'sample-big-canvas.png',
         'sample-big-canvas.jpg', 'sample-big-canvas.bmp'
     ) | Where-Object { Test-Path (Join-Path $OutDir $_) }
     if ($decoyBlue) {
-        $expectedColors += @('', '# First page / first frame / largest icon is blue; every decoy behind it is red.')
+        $expectedColors += @('', '# First page / first frame / largest icon / front comic cover is blue; every decoy behind it is red.')
         $expectedColors += ($decoyBlue | ForEach-Object { "$_`t30,60,210" })
     }
 }

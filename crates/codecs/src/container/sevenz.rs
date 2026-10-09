@@ -11,7 +11,7 @@ use std::io::{BufReader, Cursor, Read, Seek};
 
 use sevenz_rust2::{Archive, ArchiveReader, BlockDecoder, Password};
 
-use super::select::{cover_candidates, dedupe_by_name, pick_covers, CoverPrefs, Entry};
+use super::select::{cover_candidates, cover_rank, dedupe_by_name, pick_covers, CoverPrefs, Entry};
 
 /// Coalesce sevenz-rust2's many small reads before they reach a shell `IStream`.
 ///
@@ -459,38 +459,22 @@ fn non_solid_pick<R: Read + Seek>(
     Some((spent, captured.filter(|_| decoded.is_ok())))
 }
 
-/// Does this entry's filename (lowercased, last path component) look like an
-/// explicit cover name? Mirrors `select::pick_covers`'s "cover"-named preference
-/// grouping — that helper's own `filename()` is private to its module, so this
-/// repeats the same lowercase-final-component check rather than widening its
-/// visibility for one caller.
-fn is_cover_named(name: &str) -> bool {
-    name.rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(name)
-        .to_ascii_lowercase()
-        .contains("cover")
-}
-
 /// The `want`-sized target list for a solid cover scan, in the order the scan
 /// should try to capture them: cover-eligible entries (the junk / scanlation /
-/// exotic-vs-native rules `pick_covers` applies), cover-named ones first when
-/// `prefs.prefer_cover` is set, archive/physical order preserved WITHIN each group —
-/// mirrors `pick_covers`'s grouping without natural-sorting either group, since a
-/// solid block's decode cost depends on physical order, not name order. Pure and
-/// archive-decode-free so it can be pinned directly against synthetic entries.
+/// exotic-vs-native rules `pick_covers` applies), in `pick_covers`'s
+/// [`cover_rank`] groups when `prefs.prefer_cover` is set (front cover, pages,
+/// other covers), archive/physical order preserved WITHIN each group — no natural
+/// sort, since a solid block's decode cost depends on physical order, not name
+/// order. Pure and archive-decode-free so it can be pinned directly against
+/// synthetic entries.
 fn solid_targets(entries: &[Entry], want: usize, prefs: &CoverPrefs) -> Vec<usize> {
-    let eligible_idx = cover_candidates(entries, prefs);
-    let ordered: Vec<usize> = if prefs.prefer_cover {
-        let (mut covers, rest): (Vec<usize>, Vec<usize>) = eligible_idx
-            .into_iter()
-            .partition(|&i| is_cover_named(&entries[i].name));
-        covers.extend(rest);
-        covers
-    } else {
-        eligible_idx
-    };
-    ordered.into_iter().take(want).collect()
+    let mut ordered = cover_candidates(entries, prefs);
+    if prefs.prefer_cover {
+        // Stable, so physical order survives within each group.
+        ordered.sort_by_cached_key(|&i| cover_rank(&entries[i].name));
+    }
+    ordered.truncate(want);
+    ordered
 }
 
 /// Cover images from a SOLID archive, cost-bounded. A solid block decodes only
@@ -998,12 +982,23 @@ mod tests {
         );
     }
 
+    /// A solid comic whose back cover is stored FIRST must still lead with its first
+    /// page: the solid path orders by its own physical-order rule, not `pick_covers`,
+    /// so it needs its own proof that a back cover trails instead of winning.
     #[test]
-    fn cover_named_detection_is_case_insensitive_and_path_aware() {
-        assert!(is_cover_named("COVER.jpg"));
-        assert!(is_cover_named("scans/Cover.png"));
-        assert!(is_cover_named("front-cover.png"));
-        assert!(!is_cover_named("page01.png"));
+    fn solid_targets_puts_a_back_cover_stored_first_behind_the_pages() {
+        let entries: Vec<Entry> = ["Back Cover.jpg", "page01.png", "page02.png"]
+            .into_iter()
+            .map(|name| Entry {
+                name: name.into(),
+                is_dir: false,
+                size: 100,
+            })
+            .collect();
+        assert_eq!(
+            solid_targets(&entries, 3, &prefs_with_cover(true)),
+            vec![1, 2, 0]
+        );
     }
 
     /// A solid block streams in archive order. A small page stored ahead of a 12 MiB

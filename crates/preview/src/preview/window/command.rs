@@ -44,8 +44,9 @@ pub(in crate::preview) unsafe fn on_command(hwnd: HWND, lparam: LPARAM) {
     }
 }
 
-/// Apply the `CMD_TOGGLE` arm: switch to the named file, or close the window (a re-click
-/// during the settle grace window is ignored).
+/// Apply the `CMD_TOGGLE` arm: switch to the named file, bring back a preview hidden behind
+/// the window Space was pressed in, or close the window (a re-click during the settle grace
+/// window is ignored).
 unsafe fn toggle_or_close(hwnd: HWND, st: &ViewerState, path: Option<String>, in_grace: bool) {
     if in_grace {
         return;
@@ -53,8 +54,49 @@ unsafe fn toggle_or_close(hwnd: HWND, st: &ViewerState, path: Option<String>, in
     let same = same_file(path.as_deref(), st.path.borrow().as_deref());
     match path {
         Some(p) if !same => request_load(hwnd, &p),
+        // Space closes a preview you can see. One you cannot (a click in Explorer raised it
+        // over the preview) comes back instead: closing it unseen just loses it.
+        _ if hidden_behind_foreground(hwnd) => raise_without_focus(hwnd, st.pinned.get()),
         _ => request_close(hwnd),
     }
+}
+
+/// True when the foreground window (the Explorer window Space was pressed in) sits above the
+/// viewer in the z-order and hides enough of it that the user cannot be looking at it.
+unsafe fn hidden_behind_foreground(hwnd: HWND) -> bool {
+    let fg = GetForegroundWindow();
+    if fg.0.is_null() || fg == hwnd || !is_above(fg, hwnd) {
+        return false;
+    }
+    let (mut mine, mut theirs) = (RECT::default(), RECT::default());
+    GetWindowRect(hwnd, &mut mine).is_ok()
+        && GetWindowRect(fg, &mut theirs).is_ok()
+        && hides_enough(mine, theirs)
+}
+
+/// True when `upper` comes before `lower` in the top-level z-order. Bounded, so a z-order
+/// that changes under the walk cannot keep it going.
+unsafe fn is_above(upper: HWND, lower: HWND) -> bool {
+    let mut w = upper;
+    for _ in 0..4096 {
+        match GetWindow(w, GW_HWNDNEXT) {
+            Ok(next) if next == lower => return true,
+            Ok(next) if !next.0.is_null() => w = next,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// True when `cover` hides at least a quarter of `viewer`. Under that, the preview is
+/// plainly in view and Space keeps meaning "close"; the few pixels of invisible resize
+/// border two neighbouring windows overlap by never count.
+fn hides_enough(viewer: RECT, cover: RECT) -> bool {
+    let span = |lo: i32, hi: i32| (i64::from(hi) - i64::from(lo)).max(0);
+    let w = span(viewer.left.max(cover.left), viewer.right.min(cover.right));
+    let h = span(viewer.top.max(cover.top), viewer.bottom.min(cover.bottom));
+    let area = span(viewer.left, viewer.right) * span(viewer.top, viewer.bottom);
+    area > 0 && w * h * 4 >= area
 }
 
 /// Run a toolbar button's action. `pub(super)` so the headless shot harness can drive a real
@@ -460,6 +502,46 @@ mod tests {
     fn is_unc_path_accepts_the_extended_local_prefix() {
         // `\\?\C:\...` is a local extended-length path, not a UNC share — must not be rejected.
         assert!(!is_unc_path(r"\\?\C:\Users\me\photo.jpg"));
+    }
+
+    fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
+        RECT {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    /// Space on a preview that Explorer has risen over brings it back; on one that is
+    /// plainly in view it still closes it.
+    #[test]
+    fn space_brings_back_a_preview_explorer_covers_and_closes_one_in_view() {
+        let viewer = rect(100, 100, 900, 700);
+        assert!(
+            hides_enough(viewer, rect(0, 0, 1920, 1080)),
+            "fully covered"
+        );
+        assert!(
+            hides_enough(viewer, rect(500, 0, 1920, 1080)),
+            "half covered"
+        );
+        assert!(
+            !hides_enough(viewer, rect(900, 100, 1700, 700)),
+            "side by side"
+        );
+        assert!(
+            !hides_enough(viewer, rect(893, 0, 1920, 1080)),
+            "resize-border overlap"
+        );
+        assert!(
+            !hides_enough(viewer, rect(767, 0, 1920, 1080)),
+            "a sixth covered"
+        );
+        assert!(
+            !hides_enough(rect(5, 5, 5, 5), rect(0, 0, 10, 10)),
+            "empty viewer"
+        );
     }
 
     #[test]

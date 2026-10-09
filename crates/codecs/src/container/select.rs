@@ -1,7 +1,8 @@
 //! The shared "which entry is the cover" algorithm for archive containers
 //! (CBZ / CB7 / CBR). Ported from CBXShell: skip non-images / junk, prefer an
-//! entry named "cover", else take the natural-sorted first page (so page2 sorts
-//! before page10, matching Explorer, via Win32 `StrCmpLogicalW`).
+//! entry named as the cover, else take the natural-sorted first page (so page2 sorts
+//! before page10, matching Explorer, via Win32 `StrCmpLogicalW`). A back, variant
+//! or gallery cover goes to the END rather than the front: see [`cover_rank`].
 
 use windows::core::PCWSTR;
 use windows::Win32::UI::Shell::StrCmpLogicalW;
@@ -18,7 +19,8 @@ pub struct Entry {
 /// archive.
 #[derive(Clone, Copy, Debug)]
 pub struct CoverPrefs {
-    /// `ContainerPreferCover`: an image whose name contains "cover" leads.
+    /// `ContainerPreferCover`: an image named as the front cover leads, and one named as
+    /// any other cover trails (see [`cover_rank`]).
     pub prefer_cover: bool,
     /// `ContainerSort`: natural-sort the pages (else archive order).
     pub sort: bool,
@@ -53,36 +55,103 @@ pub fn pick_cover(entries: &[Entry], prefs: &CoverPrefs) -> Option<usize> {
 }
 
 /// Up to `want` cover entries, best-first — the same filter pipeline as the single
-/// cover: "cover"-named images lead (when that preference is on), the remaining
-/// pages follow, each group in natural-sort order (when sorting is on, else archive
-/// order). `want = 1` reproduces [`pick_cover`] exactly; the contact-sheet thumbnail
-/// asks for 4. Empty when nothing qualifies. The preferences come from the caller —
-/// read once per request and passed down, never read from the registry here.
+/// cover: with the preference on, the [`cover_rank`] groups in order (front cover,
+/// pages, other covers), each group in natural-sort order (when sorting is on, else
+/// archive order). `want = 1` reproduces [`pick_cover`] exactly; the contact-sheet
+/// thumbnail asks for 4. Empty when nothing qualifies. The preferences come from the
+/// caller — read once per request and passed down, never read from the registry here.
 pub fn pick_covers(entries: &[Entry], want: usize, prefs: &CoverPrefs) -> Vec<usize> {
-    let candidates = cover_candidates(entries, prefs);
-    if candidates.is_empty() {
-        return Vec::new();
-    }
-
-    // Split off images whose filename contains "cover" (default on) — they lead the
-    // result. With `want = 1` a non-empty cover group IS the pool, so behavior
-    // matches the historical single-cover pick; the rest only matter for `want > 1`.
-    let (mut covers, mut rest): (Vec<usize>, Vec<usize>) = if prefs.prefer_cover {
-        candidates
-            .into_iter()
-            .partition(|&i| filename(&entries[i].name).contains("cover"))
-    } else {
-        (Vec::new(), candidates)
-    };
-
-    // Natural sort (default on) each group; else keep archive order.
+    let mut picks = cover_candidates(entries, prefs);
+    // Natural sort (default on); else keep archive order.
     if prefs.sort {
-        natural_sort(&mut covers, entries);
-        natural_sort(&mut rest, entries);
+        natural_sort(&mut picks, entries);
     }
-    covers.extend(rest);
-    covers.truncate(want);
-    covers
+    // Then the rank groups, by a STABLE sort, so each group keeps the order above.
+    if prefs.prefer_cover {
+        picks.sort_by_cached_key(|&i| cover_rank(&entries[i].name));
+    }
+    picks.truncate(want);
+    picks
+}
+
+/// Where an entry's NAME puts it in the pick when `ContainerPreferCover` is on, best first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CoverRank {
+    /// Named as THE cover: `cover.jpg`, `Front Cover.png`, `00_cover.jpg`, `FrontCover.jpg`.
+    Front,
+    /// An ordinary page, including a name that only contains the letters (`Discovery.jpg`).
+    Page,
+    /// Named as some OTHER cover: back, inside or variant, or a covers gallery. Scans put
+    /// these at the end of the book. Until 2026-10-09 any name containing "cover" led the
+    /// pick, so a `Back Cover.jpg` or `Variant Cover B.jpg` beat the real first page, and
+    /// turning the preference off to escape that lost the books whose cover IS `cover.jpg`.
+    Other,
+}
+
+/// Words that, beside "cover", name a cover other than the front one. Matched as whole
+/// words within two words of "cover", so a series title ("Back to the Future 001 - Cover")
+/// does not demote its own cover.
+const NOT_FRONT: &[&str] = &[
+    "back",
+    "rear",
+    "inside",
+    "inner",
+    "interior",
+    "variant",
+    "variants",
+    "var",
+    "alt",
+    "alternate",
+    "alternative",
+    "textless",
+    "virgin",
+    "incentive",
+    "sketch",
+    "exclusive",
+    "gallery",
+];
+
+/// Rank an archive entry by its file name: see [`CoverRank`]. Case-insensitive, and only
+/// the final path component counts.
+pub fn cover_rank(name: &str) -> CoverRank {
+    let file = filename(name);
+    let stem = file.rsplit_once('.').map_or(file.as_str(), |(s, _)| s);
+    let words: Vec<&str> = stem
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let mut rank = CoverRank::Page;
+    for (i, word) in words.iter().enumerate() {
+        let near = &words[i.saturating_sub(2)..(i + 3).min(words.len())];
+        match cover_word(word) {
+            Some(CoverRank::Front) if !near.iter().any(|w| NOT_FRONT.contains(w)) => {
+                rank = rank.min(CoverRank::Front);
+            }
+            Some(_) => return CoverRank::Other,
+            None => {}
+        }
+    }
+    rank
+}
+
+/// One word's cover meaning on its own: `cover` (and `frontcover`, `coverart`) is
+/// [`CoverRank::Front`], `covers` (a gallery) and `backcover`-style compounds are
+/// [`CoverRank::Other`], and every other word, `discover` included, is `None`.
+fn cover_word(word: &str) -> Option<CoverRank> {
+    let qualifier = match word {
+        "cover" => return Some(CoverRank::Front),
+        "covers" => return Some(CoverRank::Other),
+        w => w
+            .strip_suffix("cover")
+            .or_else(|| w.strip_prefix("cover"))?,
+    };
+    if NOT_FRONT.contains(&qualifier) {
+        Some(CoverRank::Other)
+    } else if qualifier == "front" || qualifier == "art" {
+        Some(CoverRank::Front)
+    } else {
+        None
+    }
 }
 
 /// Cover-eligible entry indices in PHYSICAL/archive order, after the same junk,
@@ -241,5 +310,131 @@ mod tests {
         assert!(!is_exotic_cover("Page 01.jpg"));
         assert!(!is_exotic_cover("cover.png"));
         assert!(!is_exotic_cover("art.webp"));
+    }
+
+    fn entries(names: &[&str]) -> Vec<Entry> {
+        names
+            .iter()
+            .map(|n| Entry {
+                name: (*n).to_string(),
+                is_dir: false,
+                size: 100,
+            })
+            .collect()
+    }
+
+    fn picked(names: &[&str], prefer_cover: bool) -> String {
+        let prefs = CoverPrefs {
+            prefer_cover,
+            sort: true,
+            skip_scanlation: true,
+        };
+        let e = entries(names);
+        pick_cover(&e, &prefs).map_or_else(String::new, |i| e[i].name.clone())
+    }
+
+    /// The comic shapes behind a 2026-10-09 report: with "Prefer a cover image" on, any
+    /// name containing "cover" led, so the back cover, a variant cover, a covers gallery or
+    /// a page called "Discovery" became the thumbnail. Each row's answer is the front cover.
+    #[test]
+    fn the_front_cover_wins_over_back_variant_and_gallery_covers() {
+        let rows: [(&[&str], &str); 6] = [
+            (
+                &[
+                    "Saga 001 (2012) - p000.jpg",
+                    "Saga 001 (2012) - p001.jpg",
+                    "Saga 001 (2012) - Back Cover.jpg",
+                    "Saga 001 (2012) - Variant Cover B.jpg",
+                ],
+                "Saga 001 (2012) - p000.jpg",
+            ),
+            (&["001.jpg", "002.jpg", "zz_backcover.jpg"], "001.jpg"),
+            (
+                &["01 - Discovery.jpg", "00 - Intro.jpg", "02.jpg"],
+                "00 - Intro.jpg",
+            ),
+            (
+                &[
+                    "Comic 05 - 000.jpg",
+                    "Comic 05 - covers 01.jpg",
+                    "Comic 05 - 001.jpg",
+                ],
+                "Comic 05 - 000.jpg",
+            ),
+            // What the preference is FOR: digits sort before letters, so without it the
+            // cover named as such would lose to page 01.
+            (&["01.jpg", "02.jpg", "cover.jpg"], "cover.jpg"),
+            (
+                &["01.jpg", "back cover.jpg", "front cover.jpg"],
+                "front cover.jpg",
+            ),
+        ];
+        for (names, want) in rows {
+            assert_eq!(picked(names, true), want, "{names:?}");
+        }
+    }
+
+    /// Off means the first page by name, whatever the names say.
+    #[test]
+    fn with_the_preference_off_names_do_not_reorder_anything() {
+        assert_eq!(picked(&["01.jpg", "02.jpg", "cover.jpg"], false), "01.jpg");
+        assert_eq!(
+            picked(&["b.jpg", "a back cover.jpg"], false),
+            "a back cover.jpg"
+        );
+    }
+
+    /// A contact sheet still gets every page: other covers trail rather than vanish.
+    #[test]
+    fn other_covers_trail_the_pages_on_a_contact_sheet() {
+        let prefs = CoverPrefs {
+            prefer_cover: true,
+            sort: true,
+            skip_scanlation: true,
+        };
+        let e = entries(&["Back Cover.jpg", "02.jpg", "cover.jpg", "01.jpg"]);
+        let names: Vec<&str> = pick_covers(&e, 4, &prefs)
+            .into_iter()
+            .map(|i| e[i].name.as_str())
+            .collect();
+        assert_eq!(names, ["cover.jpg", "01.jpg", "02.jpg", "Back Cover.jpg"]);
+    }
+
+    #[test]
+    fn cover_rank_reads_whole_words_in_the_file_name_only() {
+        for name in [
+            "COVER.jpg",
+            "scans/Cover.png",
+            "front-cover.png",
+            "FrontCover.jpg",
+            "00_cover.jpg",
+            "Cover A.jpg",
+            "cover art.png",
+            // "Back" is part of the title, three words away from "cover".
+            "Back to the Future 001 - Cover.jpg",
+        ] {
+            assert_eq!(cover_rank(name), CoverRank::Front, "{name}");
+        }
+        for name in [
+            "page01.png",
+            "Discovery.jpg",
+            "recovered.jpg",
+            "coverage.png",
+            "cover/page01.png",
+        ] {
+            assert_eq!(cover_rank(name), CoverRank::Page, "{name}");
+        }
+        for name in [
+            "Back Cover.jpg",
+            "backcover.jpg",
+            "Cover (back).jpg",
+            "Inside Front Cover.jpg",
+            "Variant Cover B.jpg",
+            "Cover B variant.jpg",
+            "covers 01.jpg",
+            "cover gallery 2.png",
+        ] {
+            assert_eq!(cover_rank(name), CoverRank::Other, "{name}");
+        }
     }
 }

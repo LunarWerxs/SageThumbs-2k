@@ -11,8 +11,8 @@
   a multi-page/multi-frame/multi-size file is a CHOICE, and a choice can be made wrongly
   while still producing a perfectly good picture.
 
-  THE TRICK. Each file's first page / first frame / largest icon is BLUE, and every decoy
-  behind it is RED. The correct thumbnail is therefore blue, always, for every format here.
+  THE TRICK. Each file's first page / first frame / largest icon / front comic cover is
+  BLUE, and every decoy behind it is RED. The correct thumbnail is therefore blue, always, for every format here.
   Pick the wrong page, the wrong frame, the last frame instead of the first, or the 16px icon
   instead of the 256px one, and the centre pixel comes out red and the gate fails. Recorded in
   <corpus>\_expected-colors.txt and checked by regression.ps1 (see compare-renders.py).
@@ -120,6 +120,56 @@ Emit 'sample-big-canvas.png'       { param($p) & $magick -size $BigSize "xc:$OkC
 Emit 'sample-big-canvas.jpg'       { param($p) & $magick -size $BigSize "xc:$OkColour" -quality 92 $p }
 Emit 'sample-big-canvas.bmp'       { param($p) & $magick -size $BigSize "xc:$OkColour" $p }
 
+# Comic archives. The thumbnail is the FRONT cover, and scans ship other covers that are named
+# as covers: the back cover, a variant, a covers gallery. Each of those is a decoy, and so is a
+# page whose name merely contains the letters ("Discovery"). Until 2026-10-09 any name with
+# "cover" in it won the pick, so all of these thumbnailed red. `-comic-named` is the other half
+# of that bargain: its cover IS named cover.png and sorts last, so a fix that simply stopped
+# preferring cover names would turn it red. Small pages: the axis here is the choice, not size.
+$comicOk    = Join-Path $tmp 'comic-ok.png'
+$comicDecoy = Join-Path $tmp 'comic-decoy.png'
+& $magick -size 600x900 "xc:$OkColour" $comicOk
+& $magick -size 600x900 "xc:$DecoyColour" $comicDecoy
+$comicCovers = [ordered]@{
+    'Book 01 - 000.png'             = $comicOk
+    'Book 01 - 001.png'             = $comicDecoy
+    'Book 01 - Back Cover.png'      = $comicDecoy
+    'Book 01 - Variant Cover B.png' = $comicDecoy
+    'Book 01 - covers 01.png'       = $comicDecoy
+}
+function New-ComicZip([string]$path, $pages) {
+    Remove-Item $path -Force -EA SilentlyContinue
+    $zip = [System.IO.Compression.ZipFile]::Open($path, 'Create')
+    try {
+        foreach ($name in $pages.Keys) {
+            [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $pages[$name], $name, 'NoCompression')
+        }
+    } finally { $zip.Dispose() }
+}
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+Emit 'sample-decoy-comic-covers.cbz' { param($p) New-ComicZip $p $comicCovers }
+Emit 'sample-decoy-comic-word.cbz'   { param($p) New-ComicZip $p ([ordered]@{
+            '00.png' = $comicOk; '01 Discovery.png' = $comicDecoy; '02.png' = $comicDecoy }) }
+Emit 'sample-decoy-comic-named.cbz'  { param($p) New-ComicZip $p ([ordered]@{
+            '01.png' = $comicDecoy; '02.png' = $comicDecoy; 'cover.png' = $comicOk }) }
+# A SOLID 7z takes its own physical-order path (`sevenz::solid_targets`), so it gets its own
+# fixture. One plain page only: within the pages a solid archive keeps physical order, which
+# 7-Zip chooses, and the question here is only whether a named back/variant cover jumps it.
+$7z = @('C:\Program Files\7-Zip\7z.exe', 'C:\Program Files (x86)\7-Zip\7z.exe') | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($7z) {
+    Emit 'sample-decoy-comic-covers.cb7' { param($p)
+        Remove-Item $p -Force -EA SilentlyContinue
+        $stage = Join-Path $tmp 'cb7'
+        New-Item -ItemType Directory -Force $stage | Out-Null
+        foreach ($name in @('Book 01 - 000.png', 'Book 01 - Back Cover.png', 'Book 01 - Variant Cover B.png', 'Book 01 - covers 01.png')) {
+            Copy-Item $comicCovers[$name] (Join-Path $stage $name)
+        }
+        & $7z a -t7z -ms=on $p (Join-Path $stage '*') *>$null
+    }
+} else {
+    Write-Host '  sample-decoy-comic-covers.cb7 SKIPPED (7-Zip not installed)' -ForegroundColor Yellow
+}
+
 # --- Does each decoy fixture actually CONTAIN a wrong answer? -----------------
 # A multi-page fixture that magick quietly wrote as one page is a test that cannot fail: it
 # would pass forever while asserting nothing, which is the same trap as a fuzz seed its own
@@ -137,9 +187,32 @@ function Test-IsDecoyColour([string]$pixel) {
     return $true
 }
 
+$okHash    = (Get-FileHash $comicOk).Hash
+$decoyHash = (Get-FileHash $comicDecoy).Hash
 $decoyNames = @($made | Where-Object { $_ -like 'sample-decoy-*' })
 foreach ($name in $decoyNames) {
     $path = Join-Path $OutDir $name
+
+    # A comic is checked by unpacking it: magick cannot read the archive, and the two page
+    # colours compress to the same size, so only the bytes tell the right page from a decoy.
+    if ($name -match '\.(cbz|cb7)$') {
+        $unpacked = Join-Path $tmp ('unpack-' + $name)
+        New-Item -ItemType Directory -Force $unpacked | Out-Null
+        # ZipFile, not Expand-Archive: that cmdlet refuses any extension but .zip.
+        if ($name -like '*.cbz') { [System.IO.Compression.ZipFile]::ExtractToDirectory($path, $unpacked) }
+        else { & $7z x -y "-o$unpacked" $path *>$null }
+        $hashes = @(Get-ChildItem $unpacked -File | ForEach-Object { (Get-FileHash $_.FullName).Hash })
+        $okCount = @($hashes | Where-Object { $_ -eq $okHash }).Count
+        $decoyCount = @($hashes | Where-Object { $_ -eq $decoyHash }).Count
+        if ($okCount -ne 1 -or $decoyCount -lt 1) {
+            Write-Host ("  {0,-42} NO USABLE DECOY ({1} right page(s), {2} decoy(s)) - DELETED" -f $name, $okCount, $decoyCount) -ForegroundColor Red
+            Remove-Item $path -Force -EA SilentlyContinue
+            $made = $made | Where-Object { $_ -ne $name }
+        } else {
+            Write-Host ("  {0,-42} ok: 1 right page, {1} decoy(s)" -f $name, $decoyCount) -ForegroundColor DarkGray
+        }
+        continue
+    }
 
     # PDF is counted from its own bytes, not with `magick identify`: enumerating PDF pages
     # needs Ghostscript, this project deliberately does not ship or require it, and without

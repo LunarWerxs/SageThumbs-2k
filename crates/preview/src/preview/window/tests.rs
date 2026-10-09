@@ -10,6 +10,23 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_DOWN, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RIGHT, VK_UP,
 };
 
+/// A live preview has a taskbar button and an Alt+Tab entry (an app window), so one that
+/// slips behind Explorer can be found again; the off-screen `--shot` window never does.
+#[test]
+fn a_live_preview_is_in_the_taskbar_and_a_shot_window_is_not() {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    };
+    for pinned in [false, true] {
+        let live = super::viewer_ex_style(pinned, false);
+        assert!(live.contains(WS_EX_APPWINDOW) && !live.contains(WS_EX_TOOLWINDOW));
+        let shot = super::viewer_ex_style(pinned, true);
+        assert!(shot.contains(WS_EX_TOOLWINDOW) && !shot.contains(WS_EX_APPWINDOW));
+        assert_eq!(live.contains(WS_EX_TOPMOST), pinned);
+        assert_eq!(shot.contains(WS_EX_TOPMOST), pinned);
+    }
+}
+
 /// `Btn::SavePage` gains a THIRD way to show, on top of the pre-existing PDF/animation
 /// cases: a live video player. Without this arm the button stayed hidden for every video,
 /// which is the whole defect this queue item exists to fix.

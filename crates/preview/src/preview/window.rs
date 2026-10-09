@@ -507,11 +507,32 @@ unsafe fn ensure_class(hinst: HINSTANCE) {
             hInstance: hinst,
             lpszClassName: VIEWER_CLASS,
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+            // The taskbar button and Alt+Tab draw this (see `viewer_ex_style`).
+            hIcon: st2k_appkit::win::app_icon().unwrap_or_default(),
             style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS, // CS_DBLCLKS: double-click for full screen / a word
             ..Default::default()
         };
         RegisterClassW(&wc);
     });
+}
+
+/// The viewer's extended style. A live preview is an APP window: it has a taskbar button and
+/// an Alt+Tab entry, so one that ends up behind Explorer (a click there raises Explorer over
+/// it) can always be found again. It was a tool window until 2026-10-09, which has neither,
+/// and a preview lost that way, a video still playing in it, could only be ended by pressing
+/// Space blind. The headless `--shot` window stays a tool window: it lives off-screen for one
+/// capture and must never flash a taskbar button.
+pub(super) fn viewer_ex_style(pinned: bool, shot: bool) -> WINDOW_EX_STYLE {
+    let ex = if shot {
+        WS_EX_TOOLWINDOW
+    } else {
+        WS_EX_APPWINDOW
+    };
+    if pinned {
+        ex | WS_EX_TOPMOST
+    } else {
+        ex
+    }
 }
 
 /// Create the viewer window (hidden). For `shot`, decode synchronously and place off-screen
@@ -535,15 +556,10 @@ pub(super) unsafe fn create_viewer(
     // focus, always coverable). Not applicable to the off-screen shot window.
     let open_front = shot.is_none() && st2k_base::settings::preview_open_front();
     let manual = shot.is_none() && !st2k_base::settings::preview_enabled();
-    let ex = if pinned {
-        WS_EX_TOOLWINDOW | WS_EX_TOPMOST
-    } else {
-        WS_EX_TOOLWINDOW
-    };
     let style = WS_POPUP | WS_THICKFRAME | WS_CLIPCHILDREN;
 
     let hwnd = CreateWindowExW(
-        ex,
+        viewer_ex_style(pinned, shot.is_some()),
         VIEWER_CLASS,
         w!("SageThumbs 2K"),
         style,

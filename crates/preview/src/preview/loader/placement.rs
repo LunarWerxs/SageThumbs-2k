@@ -38,35 +38,12 @@ pub(in super::super) unsafe fn ensure_shown(hwnd: HWND) {
         let _ = KillTimer(Some(hwnd), SHOW_TIMER_ID);
         place_initial(hwnd, cw, ch);
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE); // never steals focus (plan §3)
-                                                     // Bring the window to the front of the z-order WITHOUT activating it — Explorer stays the
-                                                     // foreground window so its arrow-key selection keeps driving the follow-poll.
+                                                     // Where it lands in the z-order:
                                                      //   * pinned (toolbar pin): genuinely always-on-top.
-                                                     //   * open-front (default): a plain HWND_TOP from this *background* process does NOT reliably
-                                                     //     beat Explorer's foreground window (it opened BEHIND it), so "bounce" through TOPMOST —
-                                                     //     which forces us above everything even from the background — then immediately drop back
-                                                     //     to non-topmost so the window can still be covered when you click elsewhere.
+                                                     //   * open-front (default): in front, see `raise_without_focus`.
                                                      //   * both off: leave it wherever it naturally landed.
         if st.pinned.get() || st.open_front.get() {
-            let _ = SetWindowPos(
-                hwnd,
-                Some(HWND_TOPMOST),
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-            );
-            if !st.pinned.get() {
-                let _ = SetWindowPos(
-                    hwnd,
-                    Some(HWND_NOTOPMOST),
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                );
-            }
+            raise_without_focus(hwnd, st.pinned.get());
         }
         st.shown.set(true);
         // Follow the Explorer selection (arrows / clicks) — daemon mode only. A manual
@@ -77,6 +54,35 @@ pub(in super::super) unsafe fn ensure_shown(hwnd: HWND) {
         }
     }
     let _ = InvalidateRect(Some(hwnd), None, false);
+}
+
+/// Bring the window to the front of the z-order WITHOUT activating it: Explorer stays the
+/// foreground window, so its arrow-key selection keeps driving the follow-poll. A plain
+/// `HWND_TOP` from this *background* process does NOT reliably beat Explorer's foreground
+/// window (it opened BEHIND it), so "bounce" through TOPMOST, which forces us above everything
+/// even from the background, then drop straight back to non-topmost unless `pinned`, so the
+/// window can still be covered when you click elsewhere.
+pub(in super::super) unsafe fn raise_without_focus(hwnd: HWND, pinned: bool) {
+    let _ = SetWindowPos(
+        hwnd,
+        Some(HWND_TOPMOST),
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+    );
+    if !pinned {
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_NOTOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
 }
 
 /// The follow-selection poll: a dedicated thread (NEVER a `WM_TIMER` on the UI thread — the
