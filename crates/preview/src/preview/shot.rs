@@ -473,6 +473,10 @@ unsafe fn apply_space_while_minimized(hwnd: HWND, on: bool) -> bool {
         Some(WPARAM(SC_MINIMIZE as usize)),
         None,
     );
+    // Losing activation can close the viewer (close-on-focus-loss), which frees the state.
+    if !IsWindow(Some(hwnd)).as_bool() {
+        return false;
+    }
     let minimized = IsIconic(hwnd).as_bool();
     let born = (*super::window::state(hwnd)).born.get();
     while GetTickCount64().saturating_sub(born) < super::window::SETTLE_CLOSE_MS {
