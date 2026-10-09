@@ -870,6 +870,7 @@ jobs:
           tool: cargo-deny@0.20.2
       # Checks the committed Cargo.lock (advisories + licenses) against deny.toml's
       # allowlist over the full (now fully-permissive) graph. deny.toml lives at the repo
-      # root (cargo-deny's default location), so no --config flag is needed.
+      # root (cargo-deny's default location), so no --config flag is needed. `--locked` is
+      # a global flag in cargo-deny 0.20, so it goes BEFORE `check`.
       - name: cargo-deny
-        run: cargo deny check --locked
+        run: cargo deny --locked check
