@@ -858,16 +858,18 @@ jobs:
       # rust-toolchain.toml pins stable-x86_64-pc-windows-msvc, which rustup can't
       # use on this Linux runner ("target triple in channel name"). cargo-deny only
       # needs `cargo metadata` (toolchain-agnostic; the windows-msvc *target* is set
-      # in deny.toml), so drop the pin here and let the action's Linux toolchain run.
+      # in deny.toml), so drop the pin here and let the runner's Linux toolchain run.
       - name: Drop windows-only toolchain pin (Linux runner)
         run: rm -f rust-toolchain.toml
-      - name: cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+      # The prebuilt binary from GitHub releases, not EmbarkStudios/cargo-deny-action: that
+      # action builds a Docker image FROM Docker Hub on every run, and Docker Hub's anonymous
+      # pull limit (429) failed this job twice in a row on 2026-10-09 with nothing checked.
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
-          # Checks the committed Cargo.lock (advisories + licenses) against
-          # deny.toml's allowlist over the full (now fully-permissive) graph.
-          # deny.toml lives at the repo root (cargo-deny's default location), so
-          # no --config flag is needed — robust across cargo-deny versions
-          # (newer cargo-deny moved --config to a global flag before `check`).
-          command: check
-          arguments: --locked
+          tool: cargo-deny@0.20.2
+      # Checks the committed Cargo.lock (advisories + licenses) against deny.toml's
+      # allowlist over the full (now fully-permissive) graph. deny.toml lives at the repo
+      # root (cargo-deny's default location), so no --config flag is needed.
+      - name: cargo-deny
+        run: cargo deny check --locked
