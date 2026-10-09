@@ -44,8 +44,8 @@ pub(in crate::preview) unsafe fn on_command(hwnd: HWND, lparam: LPARAM) {
     }
 }
 
-/// Apply the `CMD_TOGGLE` arm: switch to the named file, bring back a preview hidden behind
-/// the window Space was pressed in, or close the window (a re-click during the settle grace
+/// Apply the `CMD_TOGGLE` arm: switch to the named file, bring back a preview that is minimized
+/// or hidden behind the window Space was pressed in, or close the window (a re-click during the settle grace
 /// window is ignored).
 unsafe fn toggle_or_close(hwnd: HWND, st: &ViewerState, path: Option<String>, in_grace: bool) {
     if in_grace {
@@ -54,18 +54,58 @@ unsafe fn toggle_or_close(hwnd: HWND, st: &ViewerState, path: Option<String>, in
     let same = same_file(path.as_deref(), st.path.borrow().as_deref());
     match path {
         Some(p) if !same => request_load(hwnd, &p),
-        // Space closes a preview you can see. One you cannot (a click in Explorer raised it
-        // over the preview) comes back instead: closing it unseen just loses it.
-        _ if hidden_behind_foreground(hwnd) => raise_without_focus(hwnd, st.pinned.get()),
+        // Space closes a preview you can see. One you cannot (minimized from its taskbar button,
+        // or a click in Explorer raised it over the preview) comes back instead: closing it
+        // unseen just loses it.
+        _ if can_bring_back(hwnd) => bring_back(hwnd, st.pinned.get()),
         _ => request_close(hwnd),
     }
 }
 
+/// True when the user cannot see the preview (minimized, or hidden behind the window Space was
+/// pressed in) and bringing it back will show it. One left on another virtual desktop stays out
+/// of sight however it is raised, so Space closes that one as it always did.
+unsafe fn can_bring_back(hwnd: HWND) -> bool {
+    !is_cloaked(hwnd) && (IsIconic(hwnd).as_bool() || hidden_behind_foreground(hwnd))
+}
+
+/// True when DWM is hiding the window, as it hides one left on another virtual desktop.
+unsafe fn is_cloaked(hwnd: HWND) -> bool {
+    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+    let mut cloaked: u32 = 0;
+    DwmGetWindowAttribute(
+        hwnd,
+        DWMWA_CLOAKED,
+        &mut cloaked as *mut u32 as *mut core::ffi::c_void,
+        core::mem::size_of::<u32>() as u32,
+    )
+    .is_ok()
+        && cloaked != 0
+}
+
+/// True when `w` is always-on-top.
+unsafe fn is_topmost(w: HWND) -> bool {
+    GetWindowLongPtrW(w, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST.0 != 0
+}
+
+/// Show a preview the user cannot see again without taking focus from Explorer: restore it
+/// if minimized, then raise it.
+unsafe fn bring_back(hwnd: HWND, pinned: bool) {
+    if IsIconic(hwnd).as_bool() {
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    }
+    raise_without_focus(hwnd, pinned);
+}
+
 /// True when the foreground window (the Explorer window Space was pressed in) sits above the
-/// viewer in the z-order and hides enough of it that the user cannot be looking at it.
+/// viewer in the z-order and hides enough of it that the user cannot be looking at it. An
+/// always-on-top foreground over an unpinned viewer does not count: a raise stops below it.
 unsafe fn hidden_behind_foreground(hwnd: HWND) -> bool {
     let fg = GetForegroundWindow();
     if fg.0.is_null() || fg == hwnd || !is_above(fg, hwnd) {
+        return false;
+    }
+    if is_topmost(fg) && !is_topmost(hwnd) {
         return false;
     }
     let (mut mine, mut theirs) = (RECT::default(), RECT::default());

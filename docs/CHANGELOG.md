@@ -9,10 +9,22 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 ## Unreleased
 
+**TL;DR**
+
+**New**
+
+- **Quick preview has a taskbar button**
+
+**Fixed**
+
+- **Comic thumbnails no longer pick the back cover or a variant cover**
+
+**Everything in 3.7.2**
+
 - **Quick preview has a taskbar button.** The Space-bar preview now shows on the taskbar and in
   Alt+Tab, so a preview that ends up behind another window, a playing video included, can be
   brought back with one click. Pressing Space in Explorer while the preview is hidden behind
-  it brings the preview back instead of closing it unseen.
+  it, or minimized, brings the preview back instead of closing it unseen.
 - **Comic covers: the back cover and variant covers no longer win.** With "Prefer a cover
   image" on (the default), a CBZ, CBR or CB7 whose pages included a back cover, a variant
   cover, a covers gallery or even a page named "Discovery" could show that page as its

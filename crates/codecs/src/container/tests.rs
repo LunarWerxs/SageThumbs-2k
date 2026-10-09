@@ -260,7 +260,7 @@ fn streamed_zip_path_prefers_project_preview_over_layers() {
 /// so the two answers are visibly different: `Images/aaa-illustration.png`
 /// natural-sorts FIRST, while the OPF declares `Images/zzz-frontispiece.png`.
 /// NEITHER name contains "cover" on purpose — `select::pick_covers` promotes
-/// any "cover"-named file, which would let the generic pick land on the right
+/// a file named as the cover, which would let the generic pick land on the right
 /// image by accident and make this test pass without the EPUB arm.
 #[test]
 fn epub_cover_cascade_runs_on_the_streamed_path_too() {

@@ -292,6 +292,36 @@ fn resize_reflows_the_document_through_a_real_wm_size() {
     cleanup(case);
 }
 
+/// The preview has a taskbar button, so "Close window" there (and Alt+F4) sends a real
+/// `WM_CLOSE`. Left to `DefWindowProc` it destroys the window at once, freeing the viewer's state
+/// under a WebView2 create that is still pumping. `--close-while-busy` sends it with `busy` set:
+/// the shot only writes its PNG if the window survived with the close recorded for later.
+#[test]
+fn a_taskbar_close_during_a_web_create_is_deferred_not_immediate() {
+    let case = "close_busy";
+    let dir = scratch(case);
+    let doc = dir.join("note.txt");
+    std::fs::write(&doc, "close me later\n").expect("write sample");
+
+    shot(&dir, &doc, "close-busy", &["--close-while-busy"]);
+    cleanup(case);
+}
+
+/// The taskbar button can minimize the preview, and a minimized preview is one the user cannot
+/// see: Space in Explorer must bring it back rather than close it unseen. Minimized through the
+/// real `WM_SYSCOMMAND`, then the daemon's own `CMD_TOGGLE`; the shot only writes its PNG if the
+/// window came back.
+#[test]
+fn space_brings_back_a_minimized_preview_instead_of_closing_it() {
+    let case = "space_minimized";
+    let dir = scratch(case);
+    let doc = dir.join("note.txt");
+    std::fs::write(&doc, "bring me back\n").expect("write sample");
+
+    shot(&dir, &doc, "space-minimized", &["--space-while-minimized"]);
+    cleanup(case);
+}
+
 // ===== Live cross-process: navigation keys + Escape, through the real OS message loop =====
 
 /// Quick preview viewer's window class (`preview/mod.rs::VIEWER_CLASS`).

@@ -76,7 +76,10 @@ pub(super) unsafe fn run_shot(
     apply_drag(hwnd, env_arg("--drag").as_deref().and_then(parse_drag));
     apply_press(hwnd, env_arg("--press").as_deref());
     bench_repaint_if_requested(hwnd);
-    let ok = st2k_appkit::win::capture_and_destroy(hwnd, out);
+    let flag = |f: &str| std::env::args().any(|a| a == f);
+    let ok = apply_close_while_busy(hwnd, flag("--close-while-busy"))
+        && apply_space_while_minimized(hwnd, flag("--space-while-minimized"))
+        && st2k_appkit::win::capture_and_destroy(hwnd, out);
     if let Some(t) = &tmp {
         let _ = std::fs::remove_file(t);
     }
@@ -422,6 +425,61 @@ unsafe fn apply_press(hwnd: HWND, press: Option<&str>) {
         }
         st2k_appkit::win::pump_msgs(8);
     }
+}
+
+/// `--close-while-busy`: send the real `WM_CLOSE` that the taskbar button's "Close window" and
+/// Alt+F4 deliver while `busy` is set, as it is while a WebView2 create pumps the loop. That
+/// close must be deferred: the window survives with the close recorded for when the create
+/// returns. Returns false, with the window gone, when it was destroyed outright or the close
+/// was dropped, so the harness writes no PNG.
+unsafe fn apply_close_while_busy(hwnd: HWND, on: bool) -> bool {
+    if !on {
+        return true;
+    }
+    (*super::window::state(hwnd)).busy.set(true);
+    let _ = SendMessageW(hwnd, WM_CLOSE, None, None);
+    // Re-read the state: an immediate destroy has freed it.
+    if !IsWindow(Some(hwnd)).as_bool() {
+        return false;
+    }
+    let st = &*super::window::state(hwnd);
+    st.busy.set(false);
+    let deferred = st.pending_close.replace(false);
+    if !deferred {
+        let _ = DestroyWindow(hwnd);
+    }
+    deferred
+}
+
+/// `--space-while-minimized`: minimize the viewer with the real `WM_SYSCOMMAND` its taskbar
+/// button sends, then deliver the daemon's Space (`CMD_TOGGLE`, no path) once the open grace
+/// is over. A preview the user cannot see must come back, not close. Returns false, with the
+/// window gone, when it never minimized, or Space closed it or left it minimized.
+unsafe fn apply_space_while_minimized(hwnd: HWND, on: bool) -> bool {
+    use windows::Win32::Foundation::WPARAM;
+    use windows::Win32::System::SystemInformation::GetTickCount64;
+    if !on {
+        return true;
+    }
+    let _ = SendMessageW(
+        hwnd,
+        WM_SYSCOMMAND,
+        Some(WPARAM(SC_MINIMIZE as usize)),
+        None,
+    );
+    let minimized = IsIconic(hwnd).as_bool();
+    let born = (*super::window::state(hwnd)).born.get();
+    while GetTickCount64().saturating_sub(born) < super::window::SETTLE_CLOSE_MS {
+        st2k_appkit::win::pump_msgs(1);
+    }
+    super::send_command(hwnd, super::CMD_TOGGLE, None);
+    st2k_appkit::win::pump_msgs(8);
+    let alive = IsWindow(Some(hwnd)).as_bool();
+    let back = minimized && alive && !IsIconic(hwnd).as_bool();
+    if alive && !back {
+        let _ = DestroyWindow(hwnd);
+    }
+    back
 }
 
 /// `ST2K_MD_BENCH`: repaint several times so the Markdown layout cache's cold(1st)-vs-

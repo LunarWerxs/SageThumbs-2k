@@ -158,6 +158,13 @@ pub(super) unsafe fn on_key_and_lifecycle_msg(
             on_command(hwnd, lparam);
             LRESULT(1)
         }
+        // The taskbar button's "Close window" and Alt+F4 arrive here. Left to DefWindowProc they
+        // destroy the window at once, even while a WebView2 create is pumping; `request_close`
+        // defers that like every other close.
+        WM_CLOSE => {
+            request_close(hwnd);
+            LRESULT(0)
+        }
         WM_DESTROY => on_destroy(hwnd),
         _ => return None,
     })

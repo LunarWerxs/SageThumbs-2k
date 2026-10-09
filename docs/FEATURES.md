@@ -79,7 +79,7 @@ the various bit-depth and compression variants GIMP writes.
 **Archives get a peek inside:** plain `.zip`, `.rar`, and `.7z` files thumbnail too, drawing
 either a single cover image or (the default) a contact-sheet collage of up to four images
 pulled from inside, using the same smart pick as comic covers: natural filename sort, an
-image named "cover" preferred, junk like `__MACOSX` and `Thumbs.db` skipped. The file list
+the front cover preferred (back and variant covers go last), junk like `__MACOSX` and `Thumbs.db` skipped. The file list
 comes straight from archive metadata. ZIP/RAR and non-solid 7z read only the handful of
 images actually shown. Generic archives identified by filename honor **Max file size** before
 the directory is parsed; an oversized 7z is also refused when the shell supplies a name-less
@@ -338,6 +338,9 @@ Tap **Space** in Explorer (or on the Desktop) and a borderless, dark/DPI-aware p
 selected file at full size, without stealing focus from Explorer; tap Space again (or Esc) to
 close, or hold Space and release to "peek". While it's open, arrow-clicking a different file in
 Explorer follows the selection. A selected **`.lnk` shortcut** resolves to its target.
+The preview has its own **taskbar button and Alt+Tab entry**, so one that ends up behind another
+window or minimized is one click away; and tapping Space in Explorer while the preview is hidden
+behind it, or minimized, brings it back instead of closing it unseen.
 
 **It works in [Everything](https://www.voidtools.com/) search results too** (voidtools' file
 finder, v1.4 and v1.5, installed or portable, under any instance name). Click a result and tap
@@ -637,7 +640,7 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   Only an order you actually arranged is kept: if you leave the default, the menu follows
   the default in later versions too. In an arranged order, an entry a later version adds
   joins its own group instead of the bottom.
-- **Ebook & comic covers:** sort archive pages naturally, prefer a "cover" image,
+- **Ebook & comic covers:** sort archive pages naturally, prefer the front-cover image (back and variant covers go last),
   skip scanlation filler (credits/logos; on by default). **Contact-sheet thumbnails for ZIP/RAR/7z**:
   on by default, showing a collage of up to four images pulled from a plain archive;
   switch it off for a single first-image thumbnail, classic CBXShell-style.

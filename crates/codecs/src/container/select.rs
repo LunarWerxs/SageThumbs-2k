@@ -91,7 +91,7 @@ pub enum CoverRank {
 /// Words that, beside "cover", name a cover other than the front one. Matched as whole
 /// words NEXT TO "cover", looking past only a variant letter or "front" (see
 /// [`qualifies_cover`]), so a series title ("Back 2 School 001 - Cover") does not demote
-/// its own cover.
+/// its own cover. The second half are the kinds of variant cover comics are sold with.
 const NOT_FRONT: &[&str] = &[
     "back",
     "rear",
@@ -110,6 +110,14 @@ const NOT_FRONT: &[&str] = &[
     "sketch",
     "exclusive",
     "gallery",
+    "wraparound",
+    "wrap",
+    "gatefold",
+    "foil",
+    "ratio",
+    "blank",
+    "diecut",
+    "retailer",
 ];
 
 /// Rank an archive entry by its file name: see [`CoverRank`]. Case-insensitive, and only
@@ -134,17 +142,25 @@ pub fn cover_rank(name: &str) -> CoverRank {
     rank
 }
 
-/// True when the nearest real word on either side of a cover word is a [`NOT_FRONT`] one.
-/// A variant letter and "front" are looked past, so "Inside Front Cover" and "Cover B
-/// variant" still read as other covers.
+/// True when the cover word is followed by a variant letter, or the nearest real word on
+/// either side of it is a [`NOT_FRONT`] one. "front" and a letter are looked past for the
+/// latter, so "Inside Front Cover" and "Cover A variant" still read as other covers.
 fn qualifies_cover(before: &[&str], after: &[&str]) -> bool {
     let real = |w: &&&str| w.len() > 1 && **w != "front";
     let other = |w: Option<&&str>| w.is_some_and(|w| NOT_FRONT.contains(w));
-    other(before.iter().rfind(real)) || other(after.iter().find(real))
+    after.first().is_some_and(|w| is_variant_letter(w))
+        || other(before.iter().rfind(real))
+        || other(after.iter().find(real))
 }
 
-/// One word's cover meaning on its own: `cover` (and `frontcover`, `coverart`, `coverb`) is
-/// [`CoverRank::Front`], `covers` (a gallery) and `backcover`-style compounds are
+/// A cover letter past A: comics sell the regular cover as "Cover A" and the variants as
+/// "Cover B", "Cover C" and on.
+fn is_variant_letter(word: &str) -> bool {
+    word.len() == 1 && word != "a"
+}
+
+/// One word's cover meaning on its own: `cover` (and `frontcover`, `coverart`, `covera`) is
+/// [`CoverRank::Front`], `covers` (a gallery), `coverb` and `backcover`-style compounds are
 /// [`CoverRank::Other`], and every other word, `discover` included, is `None`.
 fn cover_word(word: &str) -> Option<CoverRank> {
     let qualifier = match word {
@@ -154,9 +170,9 @@ fn cover_word(word: &str) -> Option<CoverRank> {
             .strip_suffix("cover")
             .or_else(|| w.strip_prefix("cover"))?,
     };
-    if NOT_FRONT.contains(&qualifier) {
+    if NOT_FRONT.contains(&qualifier) || is_variant_letter(qualifier) {
         Some(CoverRank::Other)
-    } else if qualifier == "front" || qualifier == "art" || qualifier.len() == 1 {
+    } else if qualifier == "front" || qualifier == "art" || qualifier == "a" {
         Some(CoverRank::Front)
     } else {
         None
@@ -418,7 +434,7 @@ mod tests {
             "FrontCover.jpg",
             "00_cover.jpg",
             "Cover A.jpg",
-            "CoverB.jpg",
+            "CoverA.jpg",
             "cover art.png",
             // "Back" and "Inside" belong to the title, not to "cover".
             "Back to the Future 001 - Cover.jpg",
@@ -443,6 +459,11 @@ mod tests {
             "Inside Front Cover.jpg",
             "Variant Cover B.jpg",
             "Cover B variant.jpg",
+            // Cover A is the regular cover; B onward are variants.
+            "Cover B.jpg",
+            "CoverB.jpg",
+            "Wraparound Cover.jpg",
+            "1-25 Ratio Cover.jpg",
             "covers 01.jpg",
             "cover gallery 2.png",
         ] {
