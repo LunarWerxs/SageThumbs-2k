@@ -479,12 +479,13 @@ fn solid_targets(entries: &[Entry], want: usize, prefs: &CoverPrefs) -> Vec<usiz
 
 /// Cover images from a SOLID archive, cost-bounded. A solid block decodes only
 /// front-to-back, so covers are picked by PHYSICAL (archive) order among the
-/// eligible entries — the earliest images are the cheapest to reach — except that
-/// an explicit "cover"-named entry (the same preference [`pick_covers`] applies
-/// non-solid, when the caller's `CoverPrefs::prefer_cover` is on) still leads
-/// the pick even when a plainer page sits physically ahead of it: reaching it may
-/// cost more to decode, but showing a random early page instead of the comic's own
-/// declared cover is the wrong trade for a thumbnail. The scan never skips past
+/// eligible entries — the earliest images are the cheapest to reach — except that,
+/// when the caller's `CoverPrefs::prefer_cover` is on, the same name ranking
+/// [`pick_covers`] applies non-solid reorders them: a front-cover entry leads even
+/// when a plainer page sits physically ahead of it (reaching it may cost more to
+/// decode, but a random early page instead of the comic's own declared cover is the
+/// wrong trade for a thumbnail), and a back or variant cover trails the pages even
+/// when it is stored first. The scan never skips past
 /// [`SOLID_SCAN_BUDGET`] decompressed bytes either way, and never keeps more than
 /// [`super::CoverBudget`] allows.
 ///
@@ -525,7 +526,7 @@ fn solid_covers<R: Read + Seek>(
         return Vec::new();
     }
     // Target name -> its position in `targets`, so the physical-order walk can stamp
-    // every capture with the rank `solid_targets` gave it (cover-named first).
+    // every capture with the rank `solid_targets` gave it (front cover first).
     let mut target_ranks: HashMap<&str, usize> = HashMap::new();
     for (rank, &i) in targets.iter().enumerate() {
         target_ranks.entry(entries[i].name.as_str()).or_insert(rank);
@@ -572,9 +573,9 @@ fn solid_covers<R: Read + Seek>(
             Ok(false) | Err(_) => break,
         }
     }
-    // The walk captured in PHYSICAL order; return the images in `targets` order so a
-    // cover-named entry leads the result exactly as `solid_targets` (and the doc above)
-    // promises. Rank is unique per name, so this sort is a stable reordering.
+    // The walk captured in PHYSICAL order; return the images in `targets` order so the
+    // front cover leads, and a back or variant cover trails, exactly as `solid_targets`
+    // (and the doc above) promises. Rank is unique per name, so this sort is a stable reordering.
     let mut found = walk.found;
     found.sort_by_key(|&(rank, _)| rank);
     found.into_iter().map(|(_, buf)| buf).collect()

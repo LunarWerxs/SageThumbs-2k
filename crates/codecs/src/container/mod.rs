@@ -577,8 +577,8 @@ pub fn archive_needs_buffer(head: &[u8]) -> bool {
 }
 
 /// Up to `want` cover images from a GENERIC archive buffer (.zip/.rar/.7z), for
-/// the contact-sheet thumbnail — cover-named images first, then natural-sorted
-/// pages ([`select::pick_covers`]). Listing is header/central-directory only;
+/// the contact-sheet thumbnail — the front cover first, then natural-sorted pages,
+/// then any back or variant covers ([`select::pick_covers`]). Listing is header/central-directory only;
 /// extraction is bounded per entry ([`MAX_COVER`]) and, for solid archives, one
 /// budgeted sequential pass. `None` when the archive holds no readable image —
 /// the caller fails the thumbnail and Explorer shows the stock icon.

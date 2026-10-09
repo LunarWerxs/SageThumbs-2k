@@ -130,7 +130,7 @@ pub(crate) fn cover_image_only<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Optio
     covers_image_only(zip, 1, &prefs).and_then(|mut v| (!v.is_empty()).then(|| v.swap_remove(0)))
 }
 
-/// Up to `want` natural-first images (cover-named first), one bounded entry read
+/// Up to `want` natural-first images (front cover first), one bounded entry read
 /// each. An entry that fails to read (corrupt / encrypted / unsupported method)
 /// is skipped rather than failing the set — the sheet degrades gracefully.
 ///

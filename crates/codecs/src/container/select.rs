@@ -89,8 +89,9 @@ pub enum CoverRank {
 }
 
 /// Words that, beside "cover", name a cover other than the front one. Matched as whole
-/// words within two words of "cover", so a series title ("Back to the Future 001 - Cover")
-/// does not demote its own cover.
+/// words NEXT TO "cover", looking past only a variant letter or "front" (see
+/// [`qualifies_cover`]), so a series title ("Back 2 School 001 - Cover") does not demote
+/// its own cover.
 const NOT_FRONT: &[&str] = &[
     "back",
     "rear",
@@ -122,9 +123,8 @@ pub fn cover_rank(name: &str) -> CoverRank {
         .collect();
     let mut rank = CoverRank::Page;
     for (i, word) in words.iter().enumerate() {
-        let near = &words[i.saturating_sub(2)..(i + 3).min(words.len())];
         match cover_word(word) {
-            Some(CoverRank::Front) if !near.iter().any(|w| NOT_FRONT.contains(w)) => {
+            Some(CoverRank::Front) if !qualifies_cover(&words[..i], &words[i + 1..]) => {
                 rank = rank.min(CoverRank::Front);
             }
             Some(_) => return CoverRank::Other,
@@ -134,7 +134,16 @@ pub fn cover_rank(name: &str) -> CoverRank {
     rank
 }
 
-/// One word's cover meaning on its own: `cover` (and `frontcover`, `coverart`) is
+/// True when the nearest real word on either side of a cover word is a [`NOT_FRONT`] one.
+/// A variant letter and "front" are looked past, so "Inside Front Cover" and "Cover B
+/// variant" still read as other covers.
+fn qualifies_cover(before: &[&str], after: &[&str]) -> bool {
+    let real = |w: &&&str| w.len() > 1 && **w != "front";
+    let other = |w: Option<&&str>| w.is_some_and(|w| NOT_FRONT.contains(w));
+    other(before.iter().rfind(real)) || other(after.iter().find(real))
+}
+
+/// One word's cover meaning on its own: `cover` (and `frontcover`, `coverart`, `coverb`) is
 /// [`CoverRank::Front`], `covers` (a gallery) and `backcover`-style compounds are
 /// [`CoverRank::Other`], and every other word, `discover` included, is `None`.
 fn cover_word(word: &str) -> Option<CoverRank> {
@@ -147,7 +156,7 @@ fn cover_word(word: &str) -> Option<CoverRank> {
     };
     if NOT_FRONT.contains(&qualifier) {
         Some(CoverRank::Other)
-    } else if qualifier == "front" || qualifier == "art" {
+    } else if qualifier == "front" || qualifier == "art" || qualifier.len() == 1 {
         Some(CoverRank::Front)
     } else {
         None
@@ -409,9 +418,12 @@ mod tests {
             "FrontCover.jpg",
             "00_cover.jpg",
             "Cover A.jpg",
+            "CoverB.jpg",
             "cover art.png",
-            // "Back" is part of the title, three words away from "cover".
+            // "Back" and "Inside" belong to the title, not to "cover".
             "Back to the Future 001 - Cover.jpg",
+            "Back 2 School 001 - Cover.jpg",
+            "Inside Out 002 - Cover.jpg",
         ] {
             assert_eq!(cover_rank(name), CoverRank::Front, "{name}");
         }
