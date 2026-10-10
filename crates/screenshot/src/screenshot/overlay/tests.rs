@@ -18,11 +18,17 @@ fn automation_state() -> AutomationState {
 /// directly (with a private test-only mutex name, so it can't collide with a real
 /// overlay or with another test in this same process) rather than driving the full
 /// GDI/window-message `run_capture_inner`/`capture_instant` paths, which need a live
-/// desktop session this unit test does not assume.
+/// desktop session this unit test does not assume. The name carries the process id: a
+/// named mutex is session-wide, so a second test run on the box at the same moment
+/// held it and failed this one's first claim (a push preflight, 2026-10-09).
 #[test]
 fn single_overlay_guard_blocks_a_second_concurrent_claim() {
     unsafe {
-        let name = w!("SageThumbs2K.ShotOverlay.Single.UnitTest");
+        let owned = windows::core::HSTRING::from(format!(
+            "SageThumbs2K.ShotOverlay.Single.UnitTest.{}",
+            std::process::id()
+        ));
+        let name = PCWSTR(owned.as_ptr());
         let first = claim_single_overlay_slot(name);
         assert!(first.is_ok(), "first claim must succeed");
         let second = claim_single_overlay_slot(name);
