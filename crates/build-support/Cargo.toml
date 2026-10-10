@@ -10,6 +10,6 @@ description = "Shared Windows resource-compilation helpers for this workspace's 
 [lib]
 
 [dependencies]
-# Build-time only: parse locales/*.toml into a static table (the same version the
-# root crate pins in [build-dependencies]). No runtime TOML parser ships.
+# Build-time only: parse locales/*.toml into a static table. No runtime TOML
+# parser ships.
 toml = "1"

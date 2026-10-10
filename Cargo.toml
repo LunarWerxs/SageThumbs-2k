@@ -362,21 +362,14 @@ st2k_appkit = { package = "sagethumbs2k-appkit", path = "crates/appkit", feature
 # The SDK-rc lookup + VERSIONINFO .rc template shared with crates/dll and crates/dlghook's
 # build scripts (build-dependency only; never reaches the shipped binary).
 build-support = { path = "crates/build-support" }
-# Embeds the app manifest (Common-Controls v6 + DPI awareness) into the EXE so
-# the Options dialog renders with the native Win11 control theme.
-embed-manifest = "1.4"
-# Build-time only: parse locales/*.toml into a static table. No runtime TOML
-# parser ships in the DLL — translations are baked in as &'static str.
-toml = "1"
 # VERSIONINFO (FileVersion/ProductVersion = pkg version, ProductName "SageThumbs
-# 2K") is embedded by build.rs's own windres pass — folded into the existing
-# manifest+icon .rc for the EXEs, and a separate `rustc-link-arg-cdylib` object
-# for the DLL. We deliberately do NOT pull `winresource`/`embed-resource`: under
-# the pinned MSVC toolchain they need `vswhom` + `winreg 0.52` (to locate
-# rc.exe), neither of which is in this machine's offline cargo cache, and they'd
-# double-embed VERSIONINFO on the bins that already carry the windres object.
-# windres is already a build requirement here (the file icon), with a graceful
-# cargo:warning fallback if it's missing.
+# 2K") is embedded by build.rs's own resource pass, folded into the manifest+icon
+# .rc for the EXEs (crates/dll and crates/dlghook build their own). We deliberately
+# do NOT pull `winresource`/`embed-resource`: under the pinned MSVC toolchain they
+# need `vswhom` + `winreg 0.52` (to locate rc.exe), neither of which is in this
+# machine's offline cargo cache, and they'd double-embed VERSIONINFO on the bins
+# that already carry our resource object. windres or the SDK rc.exe is a build
+# requirement here: build.rs refuses an EXE without its icon and version.
 
 [workspace.dependencies.windows]
 version = "0.62"

@@ -5,30 +5,26 @@
 //! The Options EXE needs Common-Controls **v6** (otherwise its BUTTON/EDIT/
 //! ListView render in the dated, unthemed Win9x style instead of the modern
 //! Win11 look), plus per-monitor DPI awareness so it's crisp on HiDPI displays.
-//! `embed-manifest` emits link args scoped to binaries (`-bins`), so the cdylib
-//! (the shell-extension DLL) is unaffected — it has no UI and inherits the
-//! host's manifest.
-
-use embed_manifest::{embed_manifest, new_manifest};
+//! The resource object is linked per bin (`-arg-bin`), so the cdylib (the
+//! shell-extension DLL) is unaffected — it has no UI and inherits the host's
+//! manifest.
 
 fn main() {
     delay_load_media_foundation();
     if std::env::var_os("CARGO_CFG_WINDOWS").is_some() {
-        // Embed the manifest, the icon AND the VERSIONINFO in ONE windres-built
-        // resource object for the EXEs. (Two separate resource objects — e.g.
-        // embed-manifest's + a windres icon — make GNU ld concatenate .rsrc
-        // sections without merging the resource directory, producing a malformed
-        // manifest that crashes at launch; folding VERSIONINFO into the same .rc
-        // keeps it to one object.) If windres is unavailable, fall back to
-        // embed-manifest (no file icon, no version).
+        // Embed the manifest, the icon AND the VERSIONINFO in ONE resource object
+        // for the EXEs. (Two separate resource objects make GNU ld concatenate
+        // .rsrc sections without merging the resource directory, producing a
+        // malformed manifest that crashes at launch; folding VERSIONINFO into the
+        // same .rc keeps it to one object.) No resource compiler is no build, as
+        // for the hook DLL: the old manifest-only fallback shipped an x64 exe with
+        // no icon and no version (2026-09-11), and the SDK rc.exe it lacked comes
+        // with the SDK any MSVC link needs anyway.
         if !embed_manifest_and_icon() {
-            if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") {
-                panic!(
-                    "ARM64 resource compilation requires Windows SDK rc.exe; refusing an \
-                     icon/version/manifest-free binary"
-                );
-            }
-            let _ = embed_manifest(new_manifest("SageThumbs2K.Options"));
+            panic!(
+                "cannot compile the EXE resources (manifest, icon, VERSIONINFO) with windres \
+                 or the Windows SDK rc.exe; refusing an icon/version/manifest-free binary"
+            );
         }
         // The shell-extension DLL's VERSIONINFO is now emitted by the separate
         // `sagethumbs2k-dll` cdylib crate (crates/dll/build.rs) — THIS crate is rlib-only and
@@ -47,8 +43,8 @@ fn main() {
 }
 
 /// App manifest: Common-Controls v6 (modern themed controls) + per-monitor DPI
-/// awareness — the same settings `embed-manifest` emits, written here so windres
-/// can bundle it with the icon in one resource object.
+/// awareness, written here so the resource compiler bundles it with the icon in
+/// one resource object.
 ///
 /// Also `longPathAware`. Without it every Win32 path API in these processes is
 /// capped at MAX_PATH (260) regardless of the machine's LongPathsEnabled policy,
@@ -81,10 +77,9 @@ const APP_MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="y
 /// sharing one (st2k.exe used to inherit `SageThumbs2K.exe`); the cdylib (no bin) is
 /// untouched. Everything happens inside OUT_DIR — which `.cargo/config.toml` redirects
 /// to a space-free path — so windres doesn't trip over this project's spaced directory.
-/// ALL-OR-NOTHING: if windres is unavailable (or a write fails) it emits NO link args
-/// and returns false, so the caller's manifest-only fallback runs cleanly — a partial
-/// build must never leave one bin with a windres manifest AND get a second from the
-/// fallback (double-embedding is the malformed-`.rsrc` crash the APP_MANIFEST note warns of).
+/// ALL-OR-NOTHING: if no resource compiler runs (or a write fails) it emits NO link
+/// args and returns false, and the caller refuses the build: no bin links with
+/// half its resources.
 fn embed_manifest_and_icon() -> bool {
     let out = match std::env::var("OUT_DIR") {
         Ok(o) => o,
