@@ -90,7 +90,7 @@ pub enum CoverRank {
 
 /// Words that, beside "cover", name a cover other than the front one. Matched as whole
 /// words NEXT TO "cover", looking past only a variant letter or "front" (see
-/// [`qualifies_cover`]), so a series title ("Back 2 School 001 - Cover") does not demote
+/// [`qualifies_cover`]), so a series title ("Welcome Back 001 - Cover") does not demote
 /// its own cover. The second half are the kinds of variant cover comics are sold with.
 const NOT_FRONT: &[&str] = &[
     "back",
@@ -125,10 +125,7 @@ const NOT_FRONT: &[&str] = &[
 pub fn cover_rank(name: &str) -> CoverRank {
     let file = filename(name);
     let stem = file.rsplit_once('.').map_or(file.as_str(), |(s, _)| s);
-    let words: Vec<&str> = stem
-        .split(|c: char| !c.is_ascii_alphabetic())
-        .filter(|w| !w.is_empty())
-        .collect();
+    let words = stem_words(stem);
     let mut rank = CoverRank::Page;
     for (i, word) in words.iter().enumerate() {
         match cover_word(word) {
@@ -142,21 +139,60 @@ pub fn cover_rank(name: &str) -> CoverRank {
     rank
 }
 
+/// The words of a lower-case file stem: runs of letters and runs of digits. A number is a word,
+/// so an issue number keeps a title's last word away from "cover" ("Welcome Back 001 - Cover");
+/// a lone letter glued to a number ("v02", "p1") is a volume or page tag, never a cover letter,
+/// so it is left out.
+fn stem_words(stem: &str) -> Vec<&str> {
+    let mut words = Vec::new();
+    for token in stem.split(|c: char| !c.is_ascii_alphanumeric()) {
+        let runs = digit_runs(token);
+        let glued = runs.len() > 1;
+        words.extend(
+            runs.into_iter()
+                .filter(|r| !glued || r.len() > 1 || is_number(r)),
+        );
+    }
+    words
+}
+
+/// `token` cut where letters meet digits: "v02" is `["v", "02"]`, "cover" is `["cover"]`.
+fn digit_runs(token: &str) -> Vec<&str> {
+    let mut runs = Vec::new();
+    let mut rest = token;
+    while let Some(first) = rest.chars().next() {
+        let digit = first.is_ascii_digit();
+        let end = rest
+            .find(|c: char| c.is_ascii_digit() != digit)
+            .unwrap_or(rest.len());
+        let (run, tail) = rest.split_at(end);
+        runs.push(run);
+        rest = tail;
+    }
+    runs
+}
+
+fn is_number(word: &str) -> bool {
+    word.bytes().all(|b| b.is_ascii_digit())
+}
+
 /// True when the cover word is followed by a variant letter, or the nearest real word on
 /// either side of it is a [`NOT_FRONT`] one. "front" and a letter are looked past for the
-/// latter, so "Inside Front Cover" and "Cover A variant" still read as other covers.
+/// latter, so "Inside Front Cover" and "Cover A variant" still read as other covers. Before
+/// the cover a number ends the look (the words before it are a title: "Welcome Back 001 -
+/// Cover"); after it a number is looked past ("Cover 1-25 Ratio").
 fn qualifies_cover(before: &[&str], after: &[&str]) -> bool {
-    let real = |w: &&&str| w.len() > 1 && **w != "front";
+    let word = |w: &str| w.len() > 1 && w != "front" && !is_number(w);
     let other = |w: Option<&&str>| w.is_some_and(|w| NOT_FRONT.contains(w));
     after.first().is_some_and(|w| is_variant_letter(w))
-        || other(before.iter().rfind(real))
-        || other(after.iter().find(real))
+        || other(before.iter().rfind(|w| word(w) || is_number(w)))
+        || other(after.iter().find(|w| word(w)))
 }
 
 /// A cover letter past A: comics sell the regular cover as "Cover A" and the variants as
 /// "Cover B", "Cover C" and on.
 fn is_variant_letter(word: &str) -> bool {
-    word.len() == 1 && word != "a"
+    word.len() == 1 && word != "a" && !is_number(word)
 }
 
 /// One word's cover meaning on its own: `cover` (and `frontcover`, `coverart`, `covera`) is
@@ -440,6 +476,12 @@ mod tests {
             "Back to the Future 001 - Cover.jpg",
             "Back 2 School 001 - Cover.jpg",
             "Inside Out 002 - Cover.jpg",
+            // A title ending in one of the other-cover words, its issue number between.
+            "Welcome Back 001 - Cover.jpg",
+            "Rogues Gallery 001 - Cover.jpg",
+            // A volume tag or a number after "cover" is not a variant letter.
+            "Cover v02.jpg",
+            "Cover 2.jpg",
         ] {
             assert_eq!(cover_rank(name), CoverRank::Front, "{name}");
         }
@@ -464,6 +506,7 @@ mod tests {
             "CoverB.jpg",
             "Wraparound Cover.jpg",
             "1-25 Ratio Cover.jpg",
+            "Spawn 300 Cover 1-25 Ratio.jpg",
             "covers 01.jpg",
             "cover gallery 2.png",
         ] {

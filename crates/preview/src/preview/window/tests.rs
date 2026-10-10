@@ -206,3 +206,118 @@ fn a_double_click_is_full_screen_over_media_a_word_in_text_and_nothing_on_a_cont
         );
     }
 }
+
+/// Run `f` on a fresh thread attached to a private desktop nobody sees, so a real viewer can be
+/// shown, minimized and restored without reaching the screen or the taskbar.
+fn on_private_desktop(case: &str, f: impl FnOnce() + Send + 'static) {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::GENERIC_ALL;
+    use windows::Win32::System::StationsAndDesktops::{
+        CloseDesktop, CreateDesktopW, SetThreadDesktop, DESKTOP_CONTROL_FLAGS, HDESK,
+    };
+    let name: Vec<u16> = format!("st2k-preview-{case}-{}", std::process::id())
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let flags = DESKTOP_CONTROL_FLAGS(0);
+    let desk = unsafe {
+        CreateDesktopW(
+            PCWSTR(name.as_ptr()),
+            None,
+            None,
+            flags,
+            GENERIC_ALL.0,
+            None,
+        )
+    }
+    .unwrap();
+    let raw = desk.0 as isize;
+    let run = std::thread::spawn(move || {
+        // A fresh thread owns no window yet, which SetThreadDesktop requires.
+        unsafe { SetThreadDesktop(HDESK(raw as *mut core::ffi::c_void)) }.unwrap();
+        f();
+    })
+    .join();
+    let _ = unsafe { CloseDesktop(desk) };
+    if let Err(panic) = run {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+/// A live (not `--shot`) viewer with no file, shown on the calling thread's desktop.
+unsafe fn live_viewer() -> windows::Win32::Foundation::HWND {
+    use windows::Win32::Foundation::HINSTANCE;
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
+    let hinst = HINSTANCE(GetModuleHandleW(None).unwrap().0);
+    let hwnd = super::create_viewer(hinst, false, None, None).unwrap();
+    let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    hwnd
+}
+
+/// Destroy a test viewer without its `WM_DESTROY` cancelling decodes: that publishes a new
+/// process-wide decode generation, which the generation tests in `content::cache` assert on.
+unsafe fn close_quietly(hwnd: windows::Win32::Foundation::HWND) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DestroyWindow, SetWindowLongPtrW, GWLP_USERDATA,
+    };
+    let st = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) as *mut super::ViewerState;
+    let _ = DestroyWindow(hwnd);
+    drop(Box::from_raw(st));
+}
+
+unsafe fn window_rect(hwnd: windows::Win32::Foundation::HWND) -> (i32, i32, i32, i32) {
+    let mut r = windows::Win32::Foundation::RECT::default();
+    windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut r).unwrap();
+    (r.left, r.top, r.right, r.bottom)
+}
+
+/// Content that arrives while the preview is minimized from its taskbar button (the
+/// follow-selection poll, a video's metadata) leaves the parked window where it is, and the
+/// window fits that content once it is restored. Moving a minimized window pulls its stub onto
+/// the screen.
+#[test]
+fn content_that_arrives_while_minimized_fits_on_restore_and_never_moves_the_parked_window() {
+    on_private_desktop("fit", || unsafe {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetClientRect, IsIconic, ShowWindow, SW_SHOWMINNOACTIVE, SW_SHOWNOACTIVATE,
+        };
+        let hwnd = live_viewer();
+        super::place(hwnd, 640, 300, None);
+        let _ = ShowWindow(hwnd, SW_SHOWMINNOACTIVE);
+        assert!(IsIconic(hwnd).as_bool());
+        let parked = window_rect(hwnd);
+        super::place(hwnd, 480, 360, None);
+        assert_eq!(window_rect(hwnd), parked, "the minimized window moved");
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        let mut c = windows::Win32::Foundation::RECT::default();
+        GetClientRect(hwnd, &mut c).unwrap();
+        assert_eq!(
+            (c.right, c.bottom),
+            (480, 360),
+            "restored at the old content's size"
+        );
+        close_quietly(hwnd);
+    });
+}
+
+/// Asking for a file by name (a second Quick Preview launch) brings a minimized preview back:
+/// loading it into a window that stays minimized shows nothing.
+#[test]
+fn opening_a_file_by_name_brings_a_minimized_preview_back() {
+    on_private_desktop("open", || unsafe {
+        use windows::Win32::UI::WindowsAndMessaging::{IsIconic, ShowWindow, SW_SHOWMINNOACTIVE};
+        let hwnd = live_viewer();
+        let _ = ShowWindow(hwnd, SW_SHOWMINNOACTIVE);
+        // Busy (a web page mid-create) parks the load instead of starting a decode: the decode
+        // generation is process-wide, and this test is about the window.
+        let st = &*super::state(hwnd);
+        st.busy.set(true);
+        let file = r"C:\no\such\picture.png";
+        super::super::send_command(hwnd, super::CMD_SET_PATH, Some(file));
+        assert!(!IsIconic(hwnd).as_bool(), "the preview stayed minimized");
+        assert_eq!(st.pending_path.borrow().as_deref(), Some(file));
+        st.busy.set(false);
+        close_quietly(hwnd);
+    });
+}

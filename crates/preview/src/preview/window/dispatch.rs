@@ -271,6 +271,7 @@ pub(in super::super) fn log_abandoned_worker(context: &str) {
 /// `WM_SIZE`: free the stale-sized back-buffer, re-place child windows, clamp scroll.
 pub(super) unsafe fn on_size(hwnd: HWND) -> LRESULT {
     let st = &*state(hwnd);
+    fit_after_restore(hwnd, st);
     // The cached back-buffer bitmap was sized to the OLD client rect; keeping it
     // would blit stale-size content (or a mismatched BitBlt) on the very next paint.
     // Free it now so `paint::ensure_back_buffer` allocates fresh at the new size.
@@ -287,6 +288,17 @@ pub(super) unsafe fn on_size(hwnd: HWND) -> LRESULT {
     let _ = clamp_text_scroll(hwnd);
     let _ = InvalidateRect(Some(hwnd), None, false);
     LRESULT(0)
+}
+
+/// Back from minimized: fit the window to the content that arrived while it was down (`place`
+/// leaves a minimized window parked and records the fit instead).
+unsafe fn fit_after_restore(hwnd: HWND, st: &ViewerState) {
+    if IsIconic(hwnd).as_bool() {
+        return;
+    }
+    if let Some((cw, ch)) = st.fit_on_restore.take() {
+        place(hwnd, cw, ch, None);
+    }
 }
 
 /// `WM_APP_SWITCH`: the follow-selection poll saw a new selection.

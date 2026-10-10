@@ -7,7 +7,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 3.7.2
 
 **TL;DR**
 
@@ -3930,10 +3930,6 @@ please tell me through **Send feedback** in the About box. I can't fix what I ca
 
 **TL;DR**
 
-**New**
-
-- **Feedback notes can include your contact details for a reply**
-
 **Changed**
 
 - **Explorer stays responsive when menus and metadata appear**
@@ -3963,8 +3959,6 @@ please tell me through **Send feedback** in the About box. I can't fix what I ca
   files remain on the normal path, and the configured maximum file size still applies.
 - **Pathological Windows metafiles fail quickly.** WMF and EMF decoding now has a dedicated
   three-second/96 MiB ImageMagick budget instead of consuming the broader raster allowance.
-- **The optional uninstall note can include reply details.** People who want an answer can leave an
-  email or other contact beside their feedback; skipping the survey still never delays removal.
 - **Connections sync is safer across devices and accounts.** Nested preference changes preserve
   unrelated remote edits, cache validators cannot cross account boundaries, shutdown flushes
   pending settings, and retry timing honors server throttling.

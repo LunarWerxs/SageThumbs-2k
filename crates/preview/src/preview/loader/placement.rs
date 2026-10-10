@@ -329,6 +329,10 @@ pub(in super::super) unsafe fn place(hwnd: HWND, cw: i32, ch: i32, pos: Option<(
         Some((x, y)) => {
             let _ = SetWindowPos(hwnd, None, x, y, ww, wh, SWP_NOZORDER | SWP_NOACTIVATE);
         }
+        // Minimized (from its taskbar button) while the follow-selection poll or a video's
+        // metadata changed the content: moving the parked window would pull its stub onto the
+        // screen, so the fit waits for the restore.
+        None if IsIconic(hwnd).as_bool() => (*state(hwnd)).fit_on_restore.set(Some((cw, ch))),
         None => {
             let mut cur = RECT::default();
             let _ = GetWindowRect(hwnd, &mut cur);

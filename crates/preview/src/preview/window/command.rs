@@ -35,13 +35,23 @@ pub(in crate::preview) unsafe fn on_command(hwnd: HWND, lparam: LPARAM) {
     match cmd {
         CMD_SET_PATH => {
             if let Some(p) = path {
-                request_load(hwnd, &p);
+                open_requested(hwnd, &p);
             }
         }
         CMD_TOGGLE => toggle_or_close(hwnd, st, path, in_grace),
         CMD_CLOSE if !in_grace => request_close(hwnd),
         _ => {}
     }
+}
+
+/// Open a file asked for by name (a second Quick Preview launch). A minimized preview comes
+/// back for it, without focus (the launcher brings it to the front): loading into a window that
+/// stays minimized shows nothing.
+unsafe fn open_requested(hwnd: HWND, path: &str) {
+    if IsIconic(hwnd).as_bool() {
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    }
+    request_load(hwnd, path);
 }
 
 /// Apply the `CMD_TOGGLE` arm: switch to the named file, bring back a preview that is minimized

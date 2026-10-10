@@ -450,6 +450,9 @@ pub(super) struct ViewerState {
     pub(super) pending_close: Cell<bool>,
     /// A file-switch requested while `busy` — applied (last-wins) after the create returns.
     pub(super) pending_path: RefCell<Option<String>>,
+    /// The client size content asked for while the window was minimized, applied when it is
+    /// restored (`on_size`): moving a minimized window pulls its parked stub onto the screen.
+    pub(super) fit_on_restore: Cell<Option<(i32, i32)>>,
     /// In-document find (Ctrl+F). The query outlives both closing the bar and switching files, so
     /// the same search can be carried through a folder with ←/→ (see [`super::find`]).
     pub(super) find: RefCell<super::find::FindState>,
@@ -643,6 +646,7 @@ pub(super) unsafe fn create_viewer(
         busy: Cell::new(false),
         pending_close: Cell::new(false),
         pending_path: RefCell::new(None),
+        fit_on_restore: Cell::new(None),
         #[cfg(feature = "html-preview")]
         webview: RefCell::new(None),
         back_dc: Cell::new(HDC::default()),
