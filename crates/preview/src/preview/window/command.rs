@@ -66,7 +66,7 @@ unsafe fn toggle_or_close(hwnd: HWND, st: &ViewerState, path: Option<String>, in
 /// pressed in) and bringing it back will show it. One left on another virtual desktop stays out
 /// of sight however it is raised, so Space closes that one as it always did.
 unsafe fn can_bring_back(hwnd: HWND) -> bool {
-    !is_cloaked(hwnd) && (IsIconic(hwnd).as_bool() || hidden_behind_foreground(hwnd))
+    !is_cloaked(hwnd) && (IsIconic(hwnd).as_bool() || hidden_behind(hwnd, GetForegroundWindow()))
 }
 
 /// True when DWM is hiding the window, as it hides one left on another virtual desktop.
@@ -97,11 +97,10 @@ unsafe fn bring_back(hwnd: HWND, pinned: bool) {
     raise_without_focus(hwnd, pinned);
 }
 
-/// True when the foreground window (the Explorer window Space was pressed in) sits above the
-/// viewer in the z-order and hides enough of it that the user cannot be looking at it. An
+/// True when `fg`, the foreground window (the Explorer window Space was pressed in), sits above
+/// the viewer in the z-order and hides enough of it that the user cannot be looking at it. An
 /// always-on-top foreground over an unpinned viewer does not count: a raise stops below it.
-unsafe fn hidden_behind_foreground(hwnd: HWND) -> bool {
-    let fg = GetForegroundWindow();
+unsafe fn hidden_behind(hwnd: HWND, fg: HWND) -> bool {
     if fg.0.is_null() || fg == hwnd || !is_above(fg, hwnd) {
         return false;
     }
@@ -582,6 +581,55 @@ mod tests {
             !hides_enough(rect(5, 5, 5, 5), rect(0, 0, 10, 10)),
             "empty viewer"
         );
+    }
+
+    /// A hidden top-level window: it sits in the real z-order like a shown one but never appears.
+    unsafe fn hidden_window(ex: WINDOW_EX_STYLE, r: RECT) -> HWND {
+        CreateWindowExW(
+            ex | WS_EX_TOOLWINDOW,
+            w!("STATIC"),
+            w!(""),
+            WS_POPUP,
+            r.left,
+            r.top,
+            r.right - r.left,
+            r.bottom - r.top,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+    }
+
+    /// Put `w` directly below `above` without showing or activating either.
+    unsafe fn place_below(w: HWND, above: HWND) {
+        let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+        SetWindowPos(w, Some(above), 0, 0, 0, 0, flags).unwrap();
+    }
+
+    /// Space on a preview Explorer was clicked over, on real windows in the real z-order: the
+    /// cover above it brings it back, the same cover below it does not, and neither does an
+    /// always-on-top cover over an unpinned preview, which a raise cannot clear.
+    #[test]
+    fn space_brings_back_a_preview_only_when_the_foreground_window_is_over_it() {
+        unsafe {
+            let viewer = hidden_window(WINDOW_EX_STYLE(0), rect(100, 100, 900, 700));
+            let cover = hidden_window(WINDOW_EX_STYLE(0), rect(0, 0, 1920, 1080));
+            place_below(viewer, cover);
+            assert!(hidden_behind(viewer, cover), "Explorer over the preview");
+            place_below(cover, viewer);
+            assert!(!hidden_behind(viewer, cover), "preview over Explorer");
+            assert!(!hidden_behind(viewer, HWND::default()), "no foreground");
+            let on_top = hidden_window(WS_EX_TOPMOST, rect(0, 0, 1920, 1080));
+            assert!(!hidden_behind(viewer, on_top), "always-on-top cover");
+            let pinned = hidden_window(WS_EX_TOPMOST, rect(100, 100, 900, 700));
+            place_below(pinned, on_top);
+            assert!(hidden_behind(pinned, on_top), "pinned preview under it");
+            for w in [viewer, cover, on_top, pinned] {
+                let _ = DestroyWindow(w);
+            }
+        }
     }
 
     #[test]
