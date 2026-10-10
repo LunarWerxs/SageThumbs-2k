@@ -1003,6 +1003,33 @@ The same shape bit the first version of the squat test in the other direction: i
 plain write, which TRUNCATED a name a sibling test legitimately owned, turning two unrelated
 green tests red. Both symptoms have one cause - a test reaching into state it does not own.
 
+Two more of the same family (3.7.2):
+
+- **A named kernel object is shared by the whole session, not the test process.** The screenshot
+  overlay's single-instance test claimed a "private" mutex name, and a second test run on the box
+  holding the same name failed it during a push preflight. A test's mutex, event or pipe name
+  carries `std::process::id()`.
+- **The viewer publishes a process-wide decode generation.** Its load and its `WM_DESTROY` bump
+  `content::cache`'s generation, which the cache tests assert on. A test that drives a real viewer
+  parks loads with `busy` and clears `GWLP_USERDATA` before `DestroyWindow` (then frees the state
+  itself), so it never touches the generation.
+
+## A test that links the preview window needs the Common-Controls v6 manifest, and a desktop of its own
+
+Linking the viewer's window procedure into a test binary imports `TaskDialogIndirect`, which only
+comctl32 **v6** exports. A test exe has no manifest asking for v6, so the loader binds v5 and the
+binary dies before `main` with `0xC0000139` (STATUS_ENTRYPOINT_NOT_FOUND): no test runs, and the
+failure looks like a broken toolchain. `crates/preview/build.rs` embeds the v6 dependency with
+`/MANIFESTDEPENDENCY`. `cargo:rustc-link-arg` reaches only that crate's own test binaries, so any
+other crate whose tests link the viewer needs the same lines.
+
+Real windows in a test never go on the owner's screen: run the body on a fresh thread that calls
+`SetThreadDesktop` on a `CreateDesktopW` desktop named with the process id (the thread must own no
+windows yet). Z-order, minimize and restore all work there; focus does not, because a desktop that
+is not the input desktop has no foreground window. Moving a minimized window with `SetWindowPos`
+pulls its parked stub onto the screen, so a fit that arrives while minimized waits for the restore
+(`fit_on_restore`).
+
 ## A "survives a transient lock" test must be released BY the retry loop, never by a clock
 
 Three tests simulate an Explorer/thumbnail-cache lock by opening the destination with
