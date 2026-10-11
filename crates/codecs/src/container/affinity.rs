@@ -47,17 +47,21 @@ const TAIL_PROBE: usize = 1024 * 1024;
 /// the buffered scan searches (the last [`MAX_SCAN`] bytes and the first), each read on its
 /// own and ranked the way the buffered scan ranks them (the last thumbnail-sized PNG wins,
 /// then the last PNG of any size), so a big document gets the picture a small one gets.
+///
+/// One difference: a PNG that starts in the head window and ends past it is found by the
+/// buffered scan, whose IEND search runs on, and missed here, because the head read stops
+/// at [`MAX_SCAN`] to keep all three reads inside the provider's read budget.
 pub(super) fn extract_seek<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
     let len = r.seek(SeekFrom::End(0)).ok()?;
-    let probe = read_window(r, len.saturating_sub(TAIL_PROBE as u64), TAIL_PROBE)?;
+    let probe = read_window(r, len, len.saturating_sub(TAIL_PROBE as u64), TAIL_PROBE)?;
     if let (Some(thumb), _) = candidates(&probe) {
         return Some(thumb.to_vec());
     }
     let tail_at = len.saturating_sub(MAX_SCAN as u64);
-    let tail = read_window(r, tail_at, MAX_SCAN)?;
+    let tail = read_window(r, len, tail_at, MAX_SCAN)?;
     // The head stops where the tail starts, so no PNG is counted twice.
     let head_len = usize::try_from(tail_at).map_or(MAX_SCAN, |n| n.min(MAX_SCAN));
-    let head = read_window(r, 0, head_len)?;
+    let head = read_window(r, len, 0, head_len)?;
     let (tail_thumb, tail_any) = candidates(&tail);
     let (head_thumb, head_any) = candidates(&head);
     tail_thumb
@@ -67,15 +71,18 @@ pub(super) fn extract_seek<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
         .map(<[u8]>::to_vec)
 }
 
-/// Up to `len` bytes of `r` from offset `at`. The buffer is reserved fallibly: this runs in
-/// the shell's thumbnail host, where a refused allocation must decline the thumbnail rather
-/// than abort the process.
-fn read_window<R: Read + Seek>(r: &mut R, at: u64, len: usize) -> Option<Vec<u8>> {
+/// `len` bytes of `r` from offset `at`, clipped to the file's end, or None if fewer arrive.
+/// The provider's stream reads short once its budget or deadline runs out, and a ranking
+/// over a cut window would pick the wrong PNG, so a short window declines the thumbnail.
+/// The buffer is reserved fallibly: this runs in the shell's thumbnail host, where a
+/// refused allocation must decline the thumbnail rather than abort the process.
+fn read_window<R: Read + Seek>(r: &mut R, file_len: u64, at: u64, len: usize) -> Option<Vec<u8>> {
+    let want = usize::try_from(file_len.saturating_sub(at)).map_or(len, |n| n.min(len));
     r.seek(SeekFrom::Start(at)).ok()?;
     let mut out = Vec::new();
-    out.try_reserve_exact(len).ok()?;
-    r.by_ref().take(len as u64).read_to_end(&mut out).ok()?;
-    Some(out)
+    out.try_reserve_exact(want).ok()?;
+    r.by_ref().take(want as u64).read_to_end(&mut out).ok()?;
+    (out.len() == want).then_some(out)
 }
 
 /// The two picks [`extract`] chooses between: the last PNG whose longest edge is ≤ 512 (the
@@ -212,7 +219,8 @@ mod tests {
 
     /// A file too big to hold is read from its end, and gets the same pick the whole buffer
     /// gives: the thumbnail in the last bytes (found by the small probe), a thumbnail just
-    /// past the probe (found in the tail window), and the same 64 MiB layout as above.
+    /// past the probe (found in the tail window), and the 64 MiB layout above with padding
+    /// after the thumbnail, so the probe misses it and the tail window must outrank the head.
     #[test]
     fn extract_seek_picks_what_extract_picks() {
         let magic = [0x00, 0xFF, 0x4B, 0x41, 0x09, 0x00];
@@ -233,6 +241,7 @@ mod tests {
         past_head_window.extend_from_slice(&icon);
         past_head_window.resize(MAX_SCAN + 1024, 0);
         past_head_window.extend_from_slice(&thumb);
+        past_head_window.resize(past_head_window.len() + TAIL_PROBE + 1024, 0);
 
         for (name, bytes) in [
             ("at the end", at_end),
@@ -245,6 +254,46 @@ mod tests {
             assert_eq!((d.width(), d.height()), (256, 256), "{name}");
         }
         assert!(extract_seek(&mut std::io::Cursor::new(b"no png in here")).is_none());
+    }
+
+    /// Serves bytes below `cut` and reads short past it, as the provider's block stream does
+    /// once its read budget or deadline runs out.
+    struct CutReader {
+        inner: std::io::Cursor<Vec<u8>>,
+        cut: u64,
+    }
+
+    impl Read for CutReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let left = self.cut.saturating_sub(self.inner.position());
+            let n = usize::try_from(left).map_or(buf.len(), |l| l.min(buf.len()));
+            self.inner.read(&mut buf[..n])
+        }
+    }
+
+    impl Seek for CutReader {
+        fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(pos)
+        }
+    }
+
+    /// A read cut short declines the thumbnail. Before, the cut tail came back as a window
+    /// and the scan picked the layer icon at the file's start.
+    #[test]
+    fn a_short_read_declines_rather_than_picking_from_a_cut_window() {
+        let mut bytes = vec![0x00, 0xFF, 0x4B, 0x41, 0x09, 0x00];
+        bytes.extend_from_slice(&png(16, 16));
+        bytes.resize(TAIL_PROBE * 3, 0);
+        bytes.extend_from_slice(&png(256, 256));
+        let whole = extract_seek(&mut std::io::Cursor::new(bytes.clone())).expect("a preview");
+        let d = image::load_from_memory(&whole).unwrap();
+        assert_eq!((d.width(), d.height()), (256, 256));
+
+        let mut cut = CutReader {
+            inner: std::io::Cursor::new(bytes),
+            cut: TAIL_PROBE as u64,
+        };
+        assert_eq!(extract_seek(&mut cut), None);
     }
 
     /// `extract` used to carry its own copy of `find` with no empty-needle guard
