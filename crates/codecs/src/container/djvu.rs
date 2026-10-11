@@ -594,27 +594,64 @@ mod tests {
         head
     }
 
+    /// A page of "text": rows of three small black marks on white, the same three on every
+    /// page, so the encoder promotes them to a shared shape dictionary as it does a scanned
+    /// book's letters.
+    fn text_page(w: u32, h: u32) -> djvu_rs::Pixmap {
+        let mut page = djvu_rs::Pixmap::white(w, h);
+        let marks = (12..h.saturating_sub(16))
+            .step_by(24)
+            .enumerate()
+            .flat_map(|(row, y0)| {
+                (12..w.saturating_sub(12))
+                    .step_by(16)
+                    .enumerate()
+                    .map(move |(col, x0)| ((row + col) % 3, x0, y0))
+            });
+        for (shape, x0, y0) in marks {
+            for (dx, dy) in (0..8u32).flat_map(|dx| (0..12u32).map(move |dy| (dx, dy))) {
+                if mark_ink(shape, dx, dy) {
+                    page.set_rgb(x0 + dx, y0 + dy, 0, 0, 0);
+                }
+            }
+        }
+        page
+    }
+
+    /// Whether `(dx, dy)` of an 8x12 cell is ink in mark `shape`: an L, a T or a box.
+    fn mark_ink(shape: usize, dx: u32, dy: u32) -> bool {
+        match shape {
+            0 => dx < 2 || dy > 9,
+            1 => dy < 2 || (3..5).contains(&dx),
+            _ => !(2..=5).contains(&dx) || !(2..=9).contains(&dy),
+        }
+    }
+
+    /// Three pages of text in three shapes (so the page drawn is identifiably the first),
+    /// sharing one shape dictionary: a mark on two or more pages goes into it.
+    fn shared_book() -> Vec<u8> {
+        let pages = [
+            text_page(600, 900),
+            text_page(900, 600),
+            text_page(500, 500),
+        ];
+        encode_djvm_layered_shared_with_thumbnails(
+            &pages,
+            EncodeQuality::Quality,
+            300,
+            None,
+            2,
+            true,
+        )
+        .expect("djvu-rs encodes a bundle")
+    }
+
     /// A book too big to hold gets page 1, read through the directory: the whole-file parser
     /// refuses the cut bundle (which is why a big book had no thumbnail), and the page read by
     /// offset, shared shape dictionary included, draws what the whole small book draws.
     #[test]
     fn a_big_book_gets_its_first_page_by_offset() {
-        // Three page shapes, so the page drawn is identifiably the first.
-        let pages = [
-            source_page(600, 900),
-            source_page(900, 600),
-            source_page(500, 500),
-        ];
-        let book = encode_djvm_layered_shared_with_thumbnails(
-            &pages,
-            EncodeQuality::Quality,
-            300,
-            None,
-            usize::MAX,
-            true,
-        )
-        .expect("djvu-rs encodes a bundle");
-        let mut real = vec![("encoded", book)];
+        let mut real = vec![("encoded", shared_book())];
         if let Some(scan) = st2k_base::testcorpus::read("sample.djvu") {
             real.push(("corpus sample.djvu", scan));
         }
@@ -647,15 +684,7 @@ mod tests {
     /// above exercises, not just a page that stands alone.
     #[test]
     fn the_encoded_book_shares_a_dictionary() {
-        let book = encode_djvm_layered_shared_with_thumbnails(
-            &[source_page(600, 900), source_page(900, 600)],
-            EncodeQuality::Quality,
-            300,
-            None,
-            usize::MAX,
-            true,
-        )
-        .unwrap();
+        let book = shared_book();
         let mut r = std::io::Cursor::new(&book);
         let parts = directory(&mut r).unwrap();
         let page = parts.iter().find(|p| p.kind == 1).unwrap();
