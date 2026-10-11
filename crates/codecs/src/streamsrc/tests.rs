@@ -327,6 +327,35 @@ fn an_oversized_affinity_document_gets_the_preview_the_whole_file_gets() {
     }
 }
 
+/// A DjVu book past the buffering ceiling gets its first page, through the stream alone. The
+/// outer `FORM` declares 300 MB more than the stream holds, as a big book's head does; the
+/// whole-file parser refuses that, and a scanned book is the DjVu file that gets big.
+#[test]
+fn an_oversized_djvu_book_gets_its_first_page() {
+    let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
+    let Some(mut book) = st2k_base::testcorpus::read("sample.djvu") else {
+        eprintln!("NOT MEASURED: sample.djvu absent");
+        return;
+    };
+    let declared = u32::from_be_bytes(book[8..12].try_into().unwrap()) + (300 << 20);
+    book[8..12].copy_from_slice(&declared.to_be_bytes());
+    match oversized_source(&book, 256) {
+        Some(StreamSource::Frame(img)) => {
+            assert!(
+                img.width() >= 16 && img.height() >= 16,
+                "{}x{}",
+                img.width(),
+                img.height()
+            )
+        }
+        Some(_) => panic!("expected the first page as a frame"),
+        None => panic!("a big DjVu book got no thumbnail"),
+    }
+    if com {
+        unsafe { CoUninitialize() };
+    }
+}
+
 /// A RAR comic past the buffering ceiling gets the cover the whole-file read picks: its block
 /// headers are walked off the stream and only the cover's entry is read.
 #[test]
@@ -835,7 +864,8 @@ fn oversized_source(bytes: &[u8], edge: u32) -> Option<StreamSource> {
 
 /// The formats whose preview sits where no bounded head read reaches it in a big file - a
 /// compound file's streams behind its FAT, a DOS EPS's preview after its PostScript, a DXF's
-/// preview section at its end, a PDF's first page behind the cross-reference at its end - are
+/// preview section at its end, a PDF's first page behind the cross-reference at its end, a DjVu
+/// book's first page behind its directory - are
 /// still drawn past the input ceiling, from the stream alone (the big-file gate, 2026-09-23).
 #[test]
 fn previews_found_by_offset_or_index_survive_the_ceiling() {
@@ -846,6 +876,7 @@ fn previews_found_by_offset_or_index_survive_the_ceiling() {
         "real.eps",
         "real.dxf",
         "real.pdf",
+        "sample.djvu",
     ] {
         let Some(bytes) = st2k_base::testcorpus::read(name) else {
             eprintln!("NOT MEASURED: {name} absent");

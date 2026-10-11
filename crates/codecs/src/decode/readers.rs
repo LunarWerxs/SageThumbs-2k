@@ -602,7 +602,7 @@ fn oversized_preview_by_path(
     max: u64,
     prefix: usize,
 ) -> std::io::Result<Vec<u8>> {
-    use std::io::{Read, Seek};
+    use std::io::Read;
     // Sniff just the magic before committing to a rescue, so a plain oversized
     // file is rejected without touching more than 8 bytes of it.
     let mut f = std::fs::File::open(path)?;
@@ -625,22 +625,34 @@ fn oversized_preview_by_path(
     if let Some(cover) = crate::container::archive_cover_seek(&mut f, &magic, &prefs) {
         return Ok(cover);
     }
-    // An Affinity document's preview, at its end: the same `seek_cover` read the thumbnail
-    // provider's oversized path runs, so the Quick preview and `doctor` see what Explorer
-    // draws. Only Affinity here: the other offset readers walk a file's own tables, and the
-    // provider runs them under a read budget and deadline this plain file handle lacks.
-    if crate::container::looks_like_affinity(&magic) {
-        f.seek(std::io::SeekFrom::Start(0))?;
-        if let Some(crate::container::CoverOut::Bytes(cover)) =
-            crate::container::seek_cover(&mut f, &magic)
-        {
-            return Ok(cover);
-        }
+    if let Some(preview) = offset_preview_by_path(&mut f, &magic) {
+        return Ok(preview);
     }
     Err(std::io::Error::new(
         std::io::ErrorKind::InvalidInput,
         format!("input is {len} bytes, over the {max} byte limit"),
     ))
+}
+
+/// An Affinity document's preview, at its end, or a DjVu book's first page, through its
+/// directory: the reads the thumbnail provider's oversized path runs, so the Quick preview and
+/// `doctor` see what Explorer draws. Only these two here: each is a few bounded reads, while
+/// the other offset readers walk a file's own tables, which the provider runs under a read
+/// budget and deadline this plain file handle lacks.
+fn offset_preview_by_path(f: &mut std::fs::File, magic: &[u8; 8]) -> Option<Vec<u8>> {
+    use std::io::Seek;
+    if crate::container::looks_like_affinity(magic) {
+        f.seek(std::io::SeekFrom::Start(0)).ok()?;
+        return match crate::container::seek_cover(f, magic)? {
+            crate::container::CoverOut::Bytes(cover) => Some(cover),
+            crate::container::CoverOut::Image(_) => None,
+        };
+    }
+    if magic.starts_with(b"AT&TFORM") {
+        // The one-page document, which the decode tiers draw like any small DjVu.
+        return crate::container::djvu_first_page_bundle(f);
+    }
+    None
 }
 
 /// The under-cap fast path of [`read_preview_capped_at`]: bounded-prefix read +

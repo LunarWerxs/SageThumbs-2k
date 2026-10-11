@@ -14,6 +14,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 **Fixed**
 
 - **Big Affinity files get thumbnails**
+- **Big DjVu books get thumbnails**
 
 **Everything in Unreleased**
 
@@ -21,6 +22,9 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   `.afpub`) over 256 MB showed no thumbnail, which is common for layered work brought over
   from Photoshop. Affinity stores its preview at the end of the file, so SageThumbs now reads
   just that part, however big the file is. The Quick preview of such a file works too.
+- **Big DjVu books get thumbnails.** A multi-page DjVu file over 256 MB, such as a book
+  scanned at high resolution, showed no thumbnail. SageThumbs now reads the book's page list
+  and draws the first page alone, however long the book is. The Quick preview works too.
 
 ## 3.7.2
 

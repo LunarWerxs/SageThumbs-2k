@@ -575,6 +575,8 @@ fn a_cover_found_by_offset_is_the_cover_found_in_the_whole_file() {
         "real.eps",
         "real.dxf",
         "sample.af",
+        "sample.djvu",
+        "sample-djvu-thumbnail.djvu",
     ];
     let mut measured = 0;
     for name in names {

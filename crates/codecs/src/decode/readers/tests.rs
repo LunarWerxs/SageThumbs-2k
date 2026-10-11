@@ -299,6 +299,27 @@ fn an_oversized_affinity_document_reads_its_preview_by_path() {
     assert_eq!((img.width(), img.height()), (512, 512));
 }
 
+/// Past the cap, a by-path read of a DjVu book is its first page as a one-page document, as
+/// the thumbnail provider's oversized path reads it. The outer `FORM` declares 300 MB more
+/// than the file holds, as a big book's head does.
+#[test]
+fn an_oversized_djvu_book_reads_its_first_page_by_path() {
+    let Some(mut book) = st2k_base::testcorpus::read("sample.djvu") else {
+        eprintln!("NOT MEASURED: sample.djvu absent");
+        return;
+    };
+    let declared = u32::from_be_bytes(book[8..12].try_into().unwrap()) + (300 << 20);
+    book[8..12].copy_from_slice(&declared.to_be_bytes());
+    let path =
+        std::env::temp_dir().join(format!("st2k_oversized_djvu_{}.djvu", std::process::id()));
+    std::fs::write(&path, &book).expect("stage temp file");
+    let got = read_preview_capped_at(&path.to_string_lossy(), 64, HEAD_PREVIEW_BYTES, ANY_PREVIEW);
+    let _ = std::fs::remove_file(&path);
+    let page = got.expect("the first page");
+    let img = crate::decode::decode_preview(&page).expect("the one-page document draws");
+    assert!(img.width() >= 16 && img.height() >= 16);
+}
+
 /// The by-path preview read's under-cap branch goes through the bounded reader: a file
 /// that is under the cap at metadata time but over it by the time it is read is refused
 /// instead of allocated in full. The file is grown BEFORE the read here, so the outcome

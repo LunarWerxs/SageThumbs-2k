@@ -47,6 +47,7 @@ mod clip;
 pub(crate) mod collage;
 // DjVu (.djvu) cover decode — via the maintained pure-Rust `djvu-rs` crate (see djvu.rs).
 mod djvu;
+pub(crate) use djvu::first_page_bundle as djvu_first_page_bundle;
 // A DDS header in front of one texture surface, for the game-texture containers below.
 mod ddswrap;
 mod dwg;
@@ -543,9 +544,9 @@ pub const SEEK_TAIL_BYTES: u64 = 16 * 1024 * 1024;
 /// The cover of a file too big to hold, for the formats whose preview is found by OFFSET
 /// rather than by reading from the start: a compound file's streams (SolidWorks, 3ds Max,
 /// legacy Office, Visio, Publisher) through its FAT, a DOS EPS's preview through its header,
-/// a DXF's preview section and an Affinity document's preview PNG at their ends. Each reads
-/// only what it needs, so the file's size costs nothing; the same extractors answer for a
-/// small file, so the two draw the same picture.
+/// a DXF's preview section and an Affinity document's preview PNG at their ends, and a DjVu
+/// book's first page through its directory. Each reads only what it needs, so the file's size
+/// costs nothing; the same extractors answer for a small file, so the two draw the same picture.
 pub fn seek_cover<R: std::io::Read + std::io::Seek>(mut r: R, head: &[u8]) -> Option<CoverOut> {
     use std::io::{Read, SeekFrom};
     if ole::looks_like_ole(head) {
@@ -559,6 +560,9 @@ pub fn seek_cover<R: std::io::Read + std::io::Seek>(mut r: R, head: &[u8]) -> Op
     }
     if affinity::looks_like_affinity(head) {
         return affinity::extract_seek(&mut r).map(CoverOut::Bytes);
+    }
+    if djvu::looks_like_djvm(head) {
+        return djvu::first_page_seek(&mut r).map(CoverOut::Image);
     }
     if dxf::looks_like_dxf(head) {
         let len = r.seek(SeekFrom::End(0)).ok()?;

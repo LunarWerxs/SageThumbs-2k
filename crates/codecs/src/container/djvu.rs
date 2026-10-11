@@ -9,6 +9,12 @@
 //! `std` at runtime — a `default-features=false` no_std build compiles but silently
 //! fails to decode (see the Cargo.toml note). Runs in Explorer's thumbnail host under
 //! `panic = "abort"`; djvu-rs is fuzzed, but we still bomb-guard + cap before allocating.
+//!
+//! A scanned book is the DjVu file that gets big, and djvu-rs refuses a bundle whose declared
+//! length runs past the bytes it is given, so a book too big to hold had no thumbnail even
+//! though its first page sits a few MB in. [`first_page_seek`] reads that page by offset.
+
+use std::io::{Read, Seek, SeekFrom};
 
 use image::DynamicImage;
 
@@ -136,6 +142,144 @@ fn render_page(page: &djvu_rs::Page<'_>, dw: u32, dh: u32, long: u32) -> Option<
         0 => page.render_to_size(w, h).ok(),
         n => page.render_progressive(w, h, n - 1).ok(),
     }
+}
+
+/// True for a bundled or indirect multi-page document (`AT&T FORM ... DJVM`).
+pub fn looks_like_djvm(head: &[u8]) -> bool {
+    head.starts_with(b"AT&TFORM") && head.get(12..16) == Some(b"DJVM")
+}
+
+/// The longest `DIRM` payload read: a directory of 65 535 components is 256 KiB of offsets
+/// plus their compressed names.
+const MAX_DIRM: u32 = 4 << 20;
+
+/// One component named by the document's `DIRM` directory.
+struct Part {
+    offset: u64,
+    /// `0` shared (an `INCL` target such as a JB2 shape dictionary), `1` page, `2` thumbnails.
+    kind: u8,
+    id: String,
+}
+
+/// [`extract`] for a bundled document too big to hold, off a seekable reader.
+pub(super) fn first_page_seek<R: Read + Seek>(r: &mut R) -> Option<DynamicImage> {
+    extract(&first_page_bundle(r)?)
+}
+
+/// A bundled document's page 1 as a one-page document of its own, which every DjVu reader
+/// draws. The directory (`DIRM`) at the head gives every component's offset, so page 1 and the
+/// shared components it includes are read on their own, a few small reads however long the
+/// book is.
+pub fn first_page_bundle<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
+    let parts = directory(r)?;
+    rebundle_first_page(r, &parts)
+}
+
+/// The components a bundled document's `DIRM` names, in file order.
+fn directory<R: Read + Seek>(r: &mut R) -> Option<Vec<Part>> {
+    let mut head = [0u8; 24];
+    r.seek(SeekFrom::Start(0)).ok()?;
+    r.read_exact(&mut head).ok()?;
+    if !looks_like_djvm(&head) || &head[16..20] != b"DIRM" {
+        return None;
+    }
+    let len = u32::from_be_bytes([head[20], head[21], head[22], head[23]]);
+    let payload = read_exact_vec(r, u64::from(len.min(MAX_DIRM)))?;
+    parse_directory(&payload)
+}
+
+/// A bundled `DIRM` payload: flags (bit 7 = bundled), a component count, one offset each, then
+/// a BZZ block holding 3-byte sizes, 1-byte flags and NUL-terminated ids (each id followed by a
+/// name when its flag has bit 7, and a title when it has bit 6).
+fn parse_directory(p: &[u8]) -> Option<Vec<Part>> {
+    let (&flags, rest) = p.split_first()?;
+    if flags & 0x80 == 0 || rest.len() < 2 {
+        return None; // indirect: the pages live in other files
+    }
+    let n = usize::from(u16::from_be_bytes([rest[0], rest[1]]));
+    let offsets = rest.get(2..2 + n * 4)?;
+    let meta = djvu_rs::bzz::bzz_decode(&rest[2 + n * 4..]).ok()?;
+    let kinds = meta.get(n * 3..n * 4)?;
+    let mut strings = meta.get(n * 4..)?.split(|&b| b == 0);
+    let mut parts = Vec::with_capacity(n);
+    for (i, &kind) in kinds.iter().enumerate() {
+        let id = String::from_utf8_lossy(strings.next()?).into_owned();
+        // The optional name and title follow the id; only the id is ever referenced.
+        for bit in [0x80, 0x40] {
+            if kind & bit != 0 {
+                strings.next()?;
+            }
+        }
+        let at = &offsets[i * 4..i * 4 + 4];
+        let offset = u64::from(u32::from_be_bytes([at[0], at[1], at[2], at[3]]));
+        parts.push(Part {
+            offset,
+            kind: kind & 0x3f,
+            id,
+        });
+    }
+    Some(parts)
+}
+
+/// Page 1 and the shared components its `INCL` chunks name, as a bundle of their own.
+fn rebundle_first_page<R: Read + Seek>(r: &mut R, parts: &[Part]) -> Option<Vec<u8>> {
+    use djvu_rs::djvm::{DjvmSpool, DjvmStreamWriter};
+    let page = parts.iter().find(|p| p.kind == 1)?;
+    let page_form = read_form(r, page.offset)?;
+    let mut bundle = DjvmStreamWriter::new(Vec::new(), DjvmSpool::Memory).ok()?;
+    for id in includes(&page_form) {
+        // A missing dictionary is the decoder's to judge; it may still draw the page.
+        let Some(shared) = parts.iter().find(|p| p.kind == 0 && p.id == id) else {
+            continue;
+        };
+        bundle
+            .add_component(&shared.id, 0, &read_form(r, shared.offset)?)
+            .ok()?;
+    }
+    bundle.add_component(&page.id, 1, &page_form).ok()?;
+    bundle.finish().ok()
+}
+
+/// The `FORM` chunk at `at`, header included, at most [`super::MAX_COVER`] long.
+fn read_form<R: Read + Seek>(r: &mut R, at: u64) -> Option<Vec<u8>> {
+    let mut hdr = [0u8; 8];
+    r.seek(SeekFrom::Start(at)).ok()?;
+    r.read_exact(&mut hdr).ok()?;
+    let len = u64::from(u32::from_be_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]));
+    if &hdr[..4] != b"FORM" || len > super::MAX_COVER {
+        return None;
+    }
+    let body = read_exact_vec(r, len)?;
+    let mut form = hdr.to_vec();
+    form.extend_from_slice(&body);
+    Some(form)
+}
+
+/// Exactly `len` bytes from the reader's position, reserved fallibly (this runs in the shell's
+/// thumbnail host, where a refused allocation must decline rather than abort), or None.
+fn read_exact_vec<R: Read>(r: &mut R, len: u64) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    out.try_reserve_exact(usize::try_from(len).ok()?).ok()?;
+    r.take(len).read_to_end(&mut out).ok()?;
+    (out.len() as u64 == len).then_some(out)
+}
+
+/// The component ids a page's `INCL` chunks name, in order.
+fn includes(form: &[u8]) -> Vec<String> {
+    let mut ids = Vec::new();
+    let mut at = 12; // past "FORM", the length and "DJVU"
+    while let Some(hdr) = form.get(at..at + 8) {
+        let len = u32::from_be_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as usize;
+        let Some(data) = form.get(at + 8..(at + 8).saturating_add(len)) else {
+            break;
+        };
+        if &hdr[..4] == b"INCL" {
+            let id = String::from_utf8_lossy(data);
+            ids.push(id.trim_end_matches(['\0', '\n', '\r', ' ']).to_owned());
+        }
+        at += 8 + len + (len & 1); // chunks are padded to an even length
+    }
+    ids
 }
 
 #[cfg(test)]
@@ -431,6 +575,98 @@ mod tests {
 
         eprintln!("wrote {} ({} bytes)", a.display(), photo.len());
         eprintln!("wrote {} ({} bytes)", b.display(), thumbed.len());
+    }
+
+    /// `bytes` as a big book's head: the outer `FORM` declares 300 MB more than is there, as it
+    /// does in the first window of a book too big to hold.
+    fn as_big_book_head(bytes: &[u8]) -> Vec<u8> {
+        let mut head = bytes.to_vec();
+        let declared = u32::from_be_bytes(head[8..12].try_into().unwrap()) + (300 << 20);
+        head[8..12].copy_from_slice(&declared.to_be_bytes());
+        head
+    }
+
+    /// A book too big to hold gets page 1, read through the directory: the whole-file parser
+    /// refuses the cut bundle (which is why a big book had no thumbnail), and the page read by
+    /// offset, shared shape dictionary included, draws what the whole small book draws.
+    #[test]
+    fn a_big_book_gets_its_first_page_by_offset() {
+        // Three page shapes, so the page drawn is identifiably the first.
+        let pages = [
+            source_page(600, 900),
+            source_page(900, 600),
+            source_page(500, 500),
+        ];
+        let book = encode_djvm_layered_shared_with_thumbnails(
+            &pages,
+            EncodeQuality::Quality,
+            300,
+            None,
+            usize::MAX,
+            true,
+        )
+        .expect("djvu-rs encodes a bundle");
+        let mut real = vec![("encoded", book)];
+        if let Some(scan) = st2k_base::testcorpus::read("sample.djvu") {
+            real.push(("corpus sample.djvu", scan));
+        }
+        for (name, bytes) in real {
+            let mut r = std::io::Cursor::new(&bytes);
+            let parts = directory(&mut r).expect("a bundled directory");
+            let page = parts.iter().find(|p| p.kind == 1).unwrap();
+            let form = read_form(&mut r, page.offset).unwrap();
+            eprintln!("{name}: page 1 includes {:?}", includes(&form));
+
+            let head = as_big_book_head(&bytes);
+            assert!(
+                extract(&head).is_none(),
+                "{name}: the whole-file parser read a cut bundle, so this proves nothing"
+            );
+            let got = first_page_seek(&mut std::io::Cursor::new(&head)).expect("page 1");
+            let want = extract(&bytes).expect("the whole book draws");
+            assert!(
+                got.to_rgba8() == want.to_rgba8(),
+                "{name}: {}x{} by offset, {}x{} whole",
+                got.width(),
+                got.height(),
+                want.width(),
+                want.height()
+            );
+        }
+    }
+
+    /// The encoder's bundle shares a JB2 shape dictionary, so the include path is what the test
+    /// above exercises, not just a page that stands alone.
+    #[test]
+    fn the_encoded_book_shares_a_dictionary() {
+        let book = encode_djvm_layered_shared_with_thumbnails(
+            &[source_page(600, 900), source_page(900, 600)],
+            EncodeQuality::Quality,
+            300,
+            None,
+            usize::MAX,
+            true,
+        )
+        .unwrap();
+        let mut r = std::io::Cursor::new(&book);
+        let parts = directory(&mut r).unwrap();
+        let page = parts.iter().find(|p| p.kind == 1).unwrap();
+        let ids = includes(&read_form(&mut r, page.offset).unwrap());
+        assert!(
+            ids.iter()
+                .any(|id| parts.iter().any(|p| p.kind == 0 && &p.id == id)),
+            "page 1 includes {ids:?}, none of them a shared component"
+        );
+        // A single page and garbage are not bundles.
+        assert!(first_page_seek(&mut std::io::Cursor::new(encode(
+            64,
+            64,
+            EncodeQuality::Quality
+        )))
+        .is_none());
+        assert!(
+            first_page_seek(&mut std::io::Cursor::new(b"AT&TFORM\0\0\0\x10DJVMDIRM")).is_none()
+        );
     }
 
     /// The real corpus scan, which is what actually ships through this code. Skipped when the
