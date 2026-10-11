@@ -18,6 +18,12 @@
   layouts fixed on 2026-10-10 (an Affinity preview at the end, a DjVu book whose header
   declares the whole book) are pinned by unit tests in the codecs crate, not by this.
 
+  Some RAW files never reach our handler through that route: with Microsoft's Raw Image
+  Extension installed, the thumbnail cache's photo fast path takes their embedded preview
+  itself and answers the first request 0x80070490 (docs/DEVELOPMENT_GOTCHAS.md, "Some RAW files
+  are thumbnailed by WINDOWS"). Such a file is asked again through IThumbnailCache with
+  WTS_EXTRACTDONOTCACHE, which skips the fast path, so our handler is still checked on it.
+
   Runs against the INSTALLED build: install the build being checked first. Needs the test
   corpus (`..\test-corpus`); skips without it.
 
@@ -72,11 +78,36 @@ public static class St2kBigFileThumb {
         if (hr == 0) DeleteObject(hbm);
         return hr;
     }
+
+    [ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellItem { }
+    [ComImport, Guid("091162a4-bc96-411f-aae8-c5122cd03363"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface ISharedBitmap { }
+    [ComImport, Guid("F676C15D-596A-4ce2-8234-33996F445DB1"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IThumbnailCache {
+        [PreserveSig] int GetThumbnail(IShellItem psi, uint cx, int flags, out ISharedBitmap ppvThumb, out int pOutFlags, IntPtr pThumbnailID);
+    }
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false, EntryPoint = "SHCreateItemFromParsingName")]
+    static extern void CreateItem(string path, IntPtr pbc, [MarshalAs(UnmanagedType.LPStruct)] Guid riid, [MarshalAs(UnmanagedType.Interface)] out IShellItem ppv);
+    // The same request past the thumbnail cache's photo fast path (WTS_EXTRACTDONOTCACHE), so
+    // the registered handler answers it: 0 when it drew a thumbnail, else the HRESULT.
+    public static int GetPastFastPath(string path) {
+        IShellItem si;
+        CreateItem(path, IntPtr.Zero, typeof(IShellItem).GUID, out si);
+        var cache = (IThumbnailCache)Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("50EF4544-AC9F-4A8E-B21B-8A26180DB13F")));
+        ISharedBitmap bmp; int outFlags;
+        return cache.GetThumbnail(si, 256, 0x20, out bmp, out outFlags, IntPtr.Zero);
+    }
 }
 "@
 
+$elementNotFound = [int]0x80070490   # the photo fast path took the file and our handler was never asked
+$windowsDrawn = [System.Collections.Generic.SortedSet[string]]::new()
 function Get-Thumb([string]$Path) {
-    try { [St2kBigFileThumb]::Get($Path) } catch { $_.Exception.HResult }
+    $hr = try { [St2kBigFileThumb]::Get($Path) } catch { $_.Exception.HResult }
+    if ($hr -ne $elementNotFound) { return $hr }
+    [void]$windowsDrawn.Add([IO.Path]::GetExtension($Path).TrimStart('.').ToLowerInvariant())
+    try { [St2kBigFileThumb]::GetPastFastPath($Path) } catch { $_.Exception.HResult }
 }
 
 # One sample per extension: real.* first, then sample.*, then the rest by name.
@@ -118,6 +149,9 @@ try {
 
 Write-Host ("check-big-files: {0} formats; {1} keep their thumbnail at {2} MB; {3} listed; {4} with no small thumbnail ({5})" -f `
         $byExt.Count, $ok, [int]($BigBytes / 1MB), $expected.Count, $smallFailed.Count, ($smallFailed -join ', '))
+if ($windowsDrawn.Count) {
+    Write-Host ("  drawn by Windows' own RAW codec in Explorer, checked past it: {0}" -f ($windowsDrawn -join ', '))
+}
 foreach ($e in $passedListed) {
     Write-Host "  $e passes now: drop it from the list in check-big-files.ps1" -ForegroundColor Yellow
 }
