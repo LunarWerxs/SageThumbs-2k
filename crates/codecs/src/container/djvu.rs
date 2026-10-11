@@ -201,24 +201,32 @@ fn parse_directory(p: &[u8]) -> Option<Vec<Part>> {
     let meta = djvu_rs::bzz::bzz_decode(&rest[2 + n * 4..]).ok()?;
     let kinds = meta.get(n * 3..n * 4)?;
     let mut strings = meta.get(n * 4..)?.split(|&b| b == 0);
-    let mut parts = Vec::with_capacity(n);
-    for (i, &kind) in kinds.iter().enumerate() {
-        let id = String::from_utf8_lossy(strings.next()?).into_owned();
-        // The optional name and title follow the id; only the id is ever referenced.
-        for bit in [0x80, 0x40] {
-            if kind & bit != 0 {
-                strings.next()?;
-            }
-        }
-        let at = &offsets[i * 4..i * 4 + 4];
-        let offset = u64::from(u32::from_be_bytes([at[0], at[1], at[2], at[3]]));
-        parts.push(Part {
-            offset,
-            kind: kind & 0x3f,
-            id,
-        });
+    offsets
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(kinds)
+        .map(|(at, &kind)| next_part(at, kind, &mut strings))
+        .collect()
+}
+
+/// One directory entry from its 4-byte offset, its flag byte and the id strings still to read.
+fn next_part<'a>(
+    at: &[u8; 4],
+    kind: u8,
+    strings: &mut impl Iterator<Item = &'a [u8]>,
+) -> Option<Part> {
+    let id = String::from_utf8_lossy(strings.next()?).into_owned();
+    // The optional name and title follow the id; only the id is ever referenced.
+    let extras = usize::from(kind & 0x80 != 0) + usize::from(kind & 0x40 != 0);
+    for _ in 0..extras {
+        strings.next()?;
     }
-    Some(parts)
+    Some(Part {
+        offset: u64::from(u32::from_be_bytes(*at)),
+        kind: kind & 0x3f,
+        id,
+    })
 }
 
 /// Page 1 and the shared components its `INCL` chunks name, as a bundle of their own.
