@@ -298,6 +298,35 @@ fn raw_fast_path_gate_rejects_plain_tiff_and_non_raw() {
     assert!(!looks_like_raw_container(b"not a camera raw", true));
 }
 
+/// An Affinity document past the buffering ceiling gets the preview the whole-file read picks,
+/// read from the file's end (where Affinity writes it) through the stream alone. A layered
+/// `.af` converted from Photoshop is the usual file past 256 MiB, and it used to get no
+/// thumbnail at all.
+#[test]
+fn an_oversized_affinity_document_gets_the_preview_the_whole_file_gets() {
+    let Some(af) = st2k_base::testcorpus::read("sample.af") else {
+        eprintln!("NOT MEASURED: sample.af absent");
+        return;
+    };
+    let whole = match crate::container::extract_cover(&af) {
+        Some(crate::container::CoverOut::Bytes(png)) => png,
+        _ => panic!("the buffered read finds the preview"),
+    };
+    let stream = unsafe { SHCreateMemStream(Some(&af)) }.expect("SHCreateMemStream");
+    assert!(
+        af.len() > 128,
+        "the fixture must be bigger than the cap below"
+    );
+    // A hard cap below the file's size: the oversized rescue, as for a 300 MB document.
+    let got = unsafe { stream_source_with_caps(&stream, &test_cfg(u64::MAX), 128, 256, "test") };
+    match got {
+        Ok(StreamSource::Cover(cover)) => assert_eq!(cover, whole),
+        Ok(StreamSource::Bytes(b)) => panic!("expected the preview, got Bytes({})", b.len()),
+        Ok(_) => panic!("expected the preview, got a decoded picture"),
+        Err(e) => panic!("expected the preview, got Err({e})"),
+    }
+}
+
 /// A RAR comic past the buffering ceiling gets the cover the whole-file read picks: its block
 /// headers are walked off the stream and only the cover's entry is read.
 #[test]

@@ -7,6 +7,13 @@
 //! byte after, so we gate only on the 4-byte prefix. The preview is selected as
 //! the LAST embedded PNG whose longest edge is ≤ 512 (the thumbnail) — picking
 //! "largest" grabs a full-res layer, "smallest" grabs a tiny layer icon.
+//!
+//! Affinity writes the preview AFTER the document's compressed data: in the corpus
+//! file the PNG ends on the file's last byte. So a file too big to hold in memory
+//! (a layered document converted from Photoshop is the usual one) is read from its
+//! end by [`extract_seek`]; without that it had no thumbnail at all.
+
+use std::io::{Read, Seek, SeekFrom};
 
 use super::util::find;
 
@@ -27,6 +34,53 @@ pub fn looks_like_affinity(head: &[u8]) -> bool {
 
 /// Extract the embedded thumbnail PNG, or None.
 pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
+    let (best_le512, last_any) = candidates(bytes);
+    best_le512.or(last_any).map(|p| p.to_vec())
+}
+
+/// How much of a big file's end [`extract_seek`] reads first. The preview ends at or near
+/// the last byte, so this one small read finds it in the usual case; the full windows are
+/// the fallback.
+const TAIL_PROBE: usize = 1024 * 1024;
+
+/// [`extract`] for a file too big to hold in memory, off a seekable reader: the same windows
+/// the buffered scan searches (the last [`MAX_SCAN`] bytes and the first), each read on its
+/// own and ranked the way the buffered scan ranks them (the last thumbnail-sized PNG wins,
+/// then the last PNG of any size), so a big document gets the picture a small one gets.
+pub(super) fn extract_seek<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
+    let len = r.seek(SeekFrom::End(0)).ok()?;
+    let probe = read_window(r, len.saturating_sub(TAIL_PROBE as u64), TAIL_PROBE)?;
+    if let (Some(thumb), _) = candidates(&probe) {
+        return Some(thumb.to_vec());
+    }
+    let tail_at = len.saturating_sub(MAX_SCAN as u64);
+    let tail = read_window(r, tail_at, MAX_SCAN)?;
+    // The head stops where the tail starts, so no PNG is counted twice.
+    let head_len = usize::try_from(tail_at).map_or(MAX_SCAN, |n| n.min(MAX_SCAN));
+    let head = read_window(r, 0, head_len)?;
+    let (tail_thumb, tail_any) = candidates(&tail);
+    let (head_thumb, head_any) = candidates(&head);
+    tail_thumb
+        .or(head_thumb)
+        .or(tail_any)
+        .or(head_any)
+        .map(<[u8]>::to_vec)
+}
+
+/// Up to `len` bytes of `r` from offset `at`. The buffer is reserved fallibly: this runs in
+/// the shell's thumbnail host, where a refused allocation must decline the thumbnail rather
+/// than abort the process.
+fn read_window<R: Read + Seek>(r: &mut R, at: u64, len: usize) -> Option<Vec<u8>> {
+    r.seek(SeekFrom::Start(at)).ok()?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(len).ok()?;
+    r.by_ref().take(len as u64).read_to_end(&mut out).ok()?;
+    Some(out)
+}
+
+/// The two picks [`extract`] chooses between: the last PNG whose longest edge is ≤ 512 (the
+/// thumbnail) and the last valid PNG of any size (the fallback).
+fn candidates(bytes: &[u8]) -> (Option<&[u8]>, Option<&[u8]>) {
     let mut best_le512: Option<&[u8]> = None; // last PNG with max edge ≤ 512
     let mut last_any: Option<&[u8]> = None; // fallback: last valid PNG
 
@@ -47,7 +101,7 @@ pub fn extract(bytes: &[u8]) -> Option<Vec<u8>> {
             &mut last_any,
         );
     }
-    best_le512.or(last_any).map(|p| p.to_vec())
+    (best_le512, last_any)
 }
 
 /// Scan `start..limit` for PNG signatures, recording candidates as `scan_step` does.
@@ -154,6 +208,43 @@ mod tests {
         let got = extract(&bytes).expect("embedded png");
         let d = image::load_from_memory(&got).unwrap();
         assert_eq!((d.width(), d.height()), (256, 256));
+    }
+
+    /// A file too big to hold is read from its end, and gets the same pick the whole buffer
+    /// gives: the thumbnail in the last bytes (found by the small probe), a thumbnail just
+    /// past the probe (found in the tail window), and the same 64 MiB layout as above.
+    #[test]
+    fn extract_seek_picks_what_extract_picks() {
+        let magic = [0x00, 0xFF, 0x4B, 0x41, 0x09, 0x00];
+        let layer = png(1200, 800);
+        let thumb = png(256, 256);
+        let icon = png(16, 16);
+
+        let mut at_end = magic.to_vec();
+        at_end.extend_from_slice(&layer);
+        at_end.extend_from_slice(&thumb);
+
+        let mut past_probe = magic.to_vec();
+        past_probe.extend_from_slice(&thumb);
+        past_probe.resize(TAIL_PROBE * 2, 0);
+        past_probe.extend_from_slice(&layer);
+
+        let mut past_head_window = magic.to_vec();
+        past_head_window.extend_from_slice(&icon);
+        past_head_window.resize(MAX_SCAN + 1024, 0);
+        past_head_window.extend_from_slice(&thumb);
+
+        for (name, bytes) in [
+            ("at the end", at_end),
+            ("past the probe", past_probe),
+            ("past the head window", past_head_window),
+        ] {
+            let seek = extract_seek(&mut std::io::Cursor::new(&bytes));
+            assert_eq!(seek, extract(&bytes), "{name}: seek and buffer differ");
+            let d = image::load_from_memory(&seek.expect("a preview")).unwrap();
+            assert_eq!((d.width(), d.height()), (256, 256), "{name}");
+        }
+        assert!(extract_seek(&mut std::io::Cursor::new(b"no png in here")).is_none());
     }
 
     /// `extract` used to carry its own copy of `find` with no empty-needle guard

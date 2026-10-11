@@ -7,6 +7,21 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## Unreleased
+
+**TL;DR**
+
+**Fixed**
+
+- **Big Affinity files get thumbnails**
+
+**Everything in Unreleased**
+
+- **Big Affinity files get thumbnails.** An Affinity document (`.af`, `.afphoto`, `.afdesign`,
+  `.afpub`) over 256 MB showed no thumbnail, which is common for layered work brought over
+  from Photoshop. Affinity stores its preview at the end of the file, so SageThumbs now reads
+  just that part, however big the file is. The Quick preview of such a file works too.
+
 ## 3.7.2
 
 **TL;DR**

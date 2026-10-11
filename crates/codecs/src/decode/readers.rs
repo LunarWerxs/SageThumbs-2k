@@ -527,8 +527,9 @@ pub const HEAD_PREVIEW_BYTES: usize = 16 * 1024 * 1024;
 /// Clip Studio `.clip`) instead get their cover pulled over the file handle — the
 /// same [`crate::container::archive_cover_seek`] dispatch the thumbnail provider
 /// uses on its oversized IStream path — and the returned COVER bytes flow through
-/// the decode tiers like any image file. Anything else keeps [`read_capped`]'s
-/// hard refusal. NOT for full-fidelity verbs (convert/rotate/strip) — a truncated
+/// the decode tiers like any image file; so does an Affinity document's preview,
+/// read from the file's end ([`crate::container::seek_cover`]). Anything else keeps
+/// [`read_capped`]'s hard refusal. NOT for full-fidelity verbs (convert/rotate/strip) — a truncated
 /// read there would corrupt output.
 /// A caller that will take whatever preview the file offers, however small — the Quick
 /// preview (which posts the fast prefix and then chases it with the real composite of its
@@ -571,7 +572,6 @@ pub(super) fn read_preview_capped_at(
     prefix: usize,
     target_edge: u32,
 ) -> std::io::Result<Vec<u8>> {
-    use std::io::Read;
     let len = std::fs::metadata(path)?.len();
     if len <= max {
         // UNDER-CAP head-preview fast path (opaque PSD/PSB, plain .blend): the
@@ -591,6 +591,18 @@ pub(super) fn read_preview_capped_at(
         // input that proves to be past it is REFUSED rather than handed back truncated.
         return read_bounded(std::fs::File::open(path)?, max);
     }
+    oversized_preview_by_path(path, len, max, prefix)
+}
+
+/// The past-the-cap half of [`read_preview_capped_at`]: a head-preview prefix, a streamed
+/// archive cover or a preview found by offset, else the refusal. `len` is the file's size.
+fn oversized_preview_by_path(
+    path: &str,
+    len: u64,
+    max: u64,
+    prefix: usize,
+) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek};
     // Sniff just the magic before committing to a rescue, so a plain oversized
     // file is rejected without touching more than 8 bytes of it.
     let mut f = std::fs::File::open(path)?;
@@ -612,6 +624,18 @@ pub(super) fn read_preview_capped_at(
     let prefs = crate::container::select::CoverPrefs::from_settings();
     if let Some(cover) = crate::container::archive_cover_seek(&mut f, &magic, &prefs) {
         return Ok(cover);
+    }
+    // An Affinity document's preview, at its end: the same `seek_cover` read the thumbnail
+    // provider's oversized path runs, so the Quick preview and `doctor` see what Explorer
+    // draws. Only Affinity here: the other offset readers walk a file's own tables, and the
+    // provider runs them under a read budget and deadline this plain file handle lacks.
+    if crate::container::looks_like_affinity(&magic) {
+        f.seek(std::io::SeekFrom::Start(0))?;
+        if let Some(crate::container::CoverOut::Bytes(cover)) =
+            crate::container::seek_cover(&mut f, &magic)
+        {
+            return Ok(cover);
+        }
     }
     Err(std::io::Error::new(
         std::io::ErrorKind::InvalidInput,

@@ -20,6 +20,7 @@ pub(crate) trait ReadSeek: std::io::Read + std::io::Seek {}
 impl<T: std::io::Read + std::io::Seek + ?Sized> ReadSeek for T {}
 
 mod affinity;
+pub(crate) use affinity::looks_like_affinity;
 // Windows animated cursors (.ani) - the first shown frame, which is a whole .cur/.ico file.
 mod ani;
 mod creative;
@@ -542,8 +543,9 @@ pub const SEEK_TAIL_BYTES: u64 = 16 * 1024 * 1024;
 /// The cover of a file too big to hold, for the formats whose preview is found by OFFSET
 /// rather than by reading from the start: a compound file's streams (SolidWorks, 3ds Max,
 /// legacy Office, Visio, Publisher) through its FAT, a DOS EPS's preview through its header,
-/// a DXF's preview section at its end. Each reads only what it needs, so the file's size costs
-/// nothing; the same extractors answer for a small file, so the two draw the same picture.
+/// a DXF's preview section and an Affinity document's preview PNG at their ends. Each reads
+/// only what it needs, so the file's size costs nothing; the same extractors answer for a
+/// small file, so the two draw the same picture.
 pub fn seek_cover<R: std::io::Read + std::io::Seek>(mut r: R, head: &[u8]) -> Option<CoverOut> {
     use std::io::{Read, SeekFrom};
     if ole::looks_like_ole(head) {
@@ -554,6 +556,9 @@ pub fn seek_cover<R: std::io::Read + std::io::Seek>(mut r: R, head: &[u8]) -> Op
     }
     if head.starts_with(&[0xC5, 0xD0, 0xD3, 0xC6]) {
         return eps::dos_eps_cover_from_reader(&mut r);
+    }
+    if affinity::looks_like_affinity(head) {
+        return affinity::extract_seek(&mut r).map(CoverOut::Bytes);
     }
     if dxf::looks_like_dxf(head) {
         let len = r.seek(SeekFrom::End(0)).ok()?;

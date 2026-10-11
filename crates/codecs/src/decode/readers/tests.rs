@@ -277,6 +277,28 @@ fn read_bounded_refuses_a_source_past_the_cap_and_accepts_one_at_it() {
     );
 }
 
+/// Past the cap, a by-path read finds an Affinity document's preview at the file's end, as
+/// the thumbnail provider's oversized path does. The Quick preview and `doctor` of a big
+/// `.af` (a layered document converted from Photoshop) used to be refused outright.
+#[test]
+fn an_oversized_affinity_document_reads_its_preview_by_path() {
+    let Some(af) = st2k_base::testcorpus::read("sample.af") else {
+        eprintln!("NOT MEASURED: sample.af absent");
+        return;
+    };
+    let path = std::env::temp_dir().join(format!("st2k_oversized_af_{}.af", std::process::id()));
+    std::fs::write(&path, &af).expect("stage temp file");
+    assert!(
+        af.len() > 64,
+        "the fixture must be bigger than the cap below"
+    );
+    let got = read_preview_capped_at(&path.to_string_lossy(), 64, HEAD_PREVIEW_BYTES, ANY_PREVIEW);
+    let _ = std::fs::remove_file(&path);
+    let preview = got.expect("the preview at the file's end");
+    let img = image::load_from_memory(&preview).expect("the preview is a PNG");
+    assert_eq!((img.width(), img.height()), (512, 512));
+}
+
 /// The by-path preview read's under-cap branch goes through the bounded reader: a file
 /// that is under the cap at metadata time but over it by the time it is read is refused
 /// instead of allocated in full. The file is grown BEFORE the read here, so the outcome

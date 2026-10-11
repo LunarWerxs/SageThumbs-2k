@@ -574,6 +574,7 @@ fn a_cover_found_by_offset_is_the_cover_found_in_the_whole_file() {
         "sample.sldasm",
         "real.eps",
         "real.dxf",
+        "sample.af",
     ];
     let mut measured = 0;
     for name in names {
