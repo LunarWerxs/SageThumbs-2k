@@ -7,7 +7,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 3.7.3
 
 **TL;DR**
 
@@ -16,7 +16,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **Big Affinity files get thumbnails**
 - **Big DjVu books get thumbnails**
 
-**Everything in Unreleased**
+**Everything in 3.7.3**
 
 - **Big Affinity files get thumbnails.** An Affinity document (`.af`, `.afphoto`, `.afdesign`,
   `.afpub`) over 256 MB showed no thumbnail, which is common for layered work brought over

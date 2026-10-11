@@ -124,7 +124,7 @@ surface (Explorer tile, preview pane, Quick preview, `st2k`), and still shows wh
 file shows at a normal size: a Photoshop document's full picture (or, saved without
 "Maximize compatibility", its layers flattened), a PDF's or Illustrator file's first page or
 artboards, an Office, Visio, Publisher, 3ds Max or SolidWorks thumbnail, a RAR or 7z comic's
-cover, a 3D model, a FITS image, a huge TIFF/BigTIFF, PPM, PGM or TGA scan read a row at a
+cover, an Affinity document's preview, a DjVu book's first page, a 3D model, a FITS image, a huge TIFF/BigTIFF, PPM, PGM or TGA scan read a row at a
 time, and, for everything else, the picture in the file's first 16 MB when that is where it
 sits. A picture that runs past that point is never drawn from its first rows. Checked before
 every release by growing a real sample of every supported format past each size limit.
