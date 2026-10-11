@@ -188,6 +188,10 @@ try {
     $section = Get-ReleaseChangelogSection -ChangelogPath $changelog -Version $ver
     Assert-ReleaseNotesTldr -Section $section -Version $ver
     pwsh "$root\scripts\check-consistency.ps1"; if ($LASTEXITCODE) { throw "consistency check failed - fix before releasing" }
+    # Every corpus format past the 256 MiB input ceiling, through the shell and the installed
+    # build (the release ladder installs it first). The tests prove each format on one small
+    # sample, and nothing else asked what a file too big to hold gets.
+    pwsh "$root\scripts\check-big-files.ps1"; if ($LASTEXITCODE) { throw "a format loses its thumbnail past the input ceiling (check-big-files.ps1) - fix before releasing" }
     # The pre-release issue review (CLAUDE.md 6.2). Informational, never a gate - see the
     # header of check-issues.ps1 for why gating would be wrong. It prints the OPEN issues AND,
     # crucially, the CLOSED ones commented since the last release: v2.1.0 shipped while a long
