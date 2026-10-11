@@ -1473,7 +1473,10 @@ files Explorer gets no thumbnail for while `st2k` renders them fine.
   default app, our property handler, the timestamp or a content hash (each ruled out
   2026-09-29; a real CR2/CRW and the generated NEF/RW2 go that way, a real ARW does not).
   `WTS_EXTRACTDONOTCACHE` skips the fast path and reaches our handler. The corner check asks
-  twice and reports these as "drawn by Windows' own codec", not as failures.
+  twice and reports these as "drawn by Windows' own codec", not as failures;
+  `check-big-files.ps1` re-asks a `0x80070490` file through `IThumbnailCache` with
+  `WTS_EXTRACTDONOTCACHE`, so its small and 300 MB copies are still checked against our
+  handler (dng, nef, rw2 in the corpus, 2026-10-11).
 - **The shot harness must use the DPI the controls use.** A `--dpi` capture overrides
   `dpi_scale`/`gui_font_for`, not `GetDpiForWindow`; code that converts client px with
   `GetDpiForWindow` lays out right for users and wrong in a capture, which reads as a bug that
