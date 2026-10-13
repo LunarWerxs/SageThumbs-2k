@@ -34,6 +34,31 @@ fn label_comes_from_the_extension_uppercased() {
     assert_eq!(label_for(r"C:\pics\shot.avif").as_deref(), Some("AVIF"));
 }
 
+/// Issue #63: a Store app's file-type icon reaches us as its own PNG, and must not be
+/// marked "PNG". The names are the real ones from Notepad's and NanaZip's packages.
+#[test]
+fn store_app_icon_pictures_get_no_label_but_dotted_names_do() {
+    for asset in [
+        "inifile.targetsize-256.png",
+        "txtfile.targetsize-48.png",
+        "ArchiveFile.targetsize-1024.png",
+        "Square44x44Logo.targetsize-24_altform-unplated.png",
+        "Logo.scale-200_contrast-black.png",
+        "FileIcon.theme-dark_targetsize-32.png",
+    ] {
+        assert_eq!(label_for(asset), None, "{asset}");
+    }
+    for picture in [
+        "holiday.2024.png",
+        "model.scale-big.png",
+        "draft.targetsize-.png",
+        "scale-200.png",
+        "a.b_scale-200.png",
+    ] {
+        assert_eq!(label_for(picture).as_deref(), Some("PNG"), "{picture}");
+    }
+}
+
 #[test]
 fn refuses_labels_it_cannot_draw() {
     assert_eq!(label_for("no-extension"), None);

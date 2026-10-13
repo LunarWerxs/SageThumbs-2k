@@ -7,6 +7,24 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## Unreleased
+
+**TL;DR**
+
+**Fixed**
+
+- **No "PNG" mark on Store apps' icons**
+
+**Everything in Unreleased**
+
+- **No "PNG" mark on Store apps' icons.** With the corner set to the SageThumbs format mark, a
+  file with no picture of its own showed its program's icon stamped "PNG" when that program
+  came from the Microsoft Store: text and `.ini` files opened by Notepad, `.7z` archives
+  opened by NanaZip, songs without cover art opened by Media Player. Windows draws those
+  icons from a PNG inside the app, and SageThumbs marked that picture as if it were your
+  file. Those icons now stay unmarked. Use Settings, Rebuild thumbnail cache once after
+  updating to clear marks Windows already saved.
+
 ## 3.7.3
 
 **TL;DR**

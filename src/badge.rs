@@ -125,8 +125,12 @@ fn blend_to_white(rgb: (u8, u8, u8), n: u32) -> (u8, u8, u8) {
 ///
 /// Uppercased, `.`-stripped, and limited to characters the font has. A name with no
 /// extension, or an extension too long or full of unrenderable characters, gets no badge
-/// rather than a mangled one.
+/// rather than a mangled one. Neither does a Store app's own icon picture
+/// ([`is_app_icon_asset`]).
 pub fn label_for(file_name: &str) -> Option<String> {
+    if is_app_icon_asset(file_name) {
+        return None;
+    }
     let ext = file_name.rsplit_once('.')?.1;
     if ext.is_empty() || ext.len() > MAX_LABEL {
         return None;
@@ -136,6 +140,47 @@ pub fn label_for(file_name: &str) -> Option<String> {
         return None;
     }
     Some(up)
+}
+
+/// Whether `file_name` is a packaged (Store) app's resource picture, named the way the
+/// Windows resource system names its size and theme variants: `inifile.targetsize-256.png`,
+/// `ArchiveFile.targetsize-48_altform-unplated.png`, `Logo.scale-200_contrast-black.png`.
+///
+/// Explorer draws a Store app's file-type icon by thumbnailing that PNG, and the `.png`
+/// thumbnail provider is us. So with the format mark on, every `.txt` and `.ini` owned by
+/// Notepad, every `.7z` owned by NanaZip and every song without cover art got a "PNG" mark
+/// on its plain icon (issue #63, reproduced 2026-10-13 on Notepad's own assets). The stream
+/// carries only the bare file name, never the folder (`IStream::Stat`, measured), so the name
+/// is all there is to go on. Only the qualifiers an icon variant carries count, each with the
+/// value shape it takes, so a user's `holiday.2024.png` or `model.scale-big.png` keeps its mark.
+fn is_app_icon_asset(file_name: &str) -> bool {
+    let name = file_name.rsplit(['\\', '/']).next().unwrap_or(file_name);
+    let Some((stem, _)) = name.rsplit_once('.') else {
+        return false;
+    };
+    stem.split('.').skip(1).any(is_qualifier_segment)
+}
+
+/// One `.`-separated name segment made only of resource qualifiers joined by `_`.
+fn is_qualifier_segment(segment: &str) -> bool {
+    !segment.is_empty() && segment.split('_').all(is_icon_qualifier)
+}
+
+/// `name-value` for a qualifier a Store app's icon variant is named with.
+fn is_icon_qualifier(part: &str) -> bool {
+    let Some((name, value)) = part.split_once('-') else {
+        return false;
+    };
+    let value = value.to_ascii_lowercase();
+    match name.to_ascii_lowercase().as_str() {
+        "scale" | "targetsize" => !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()),
+        "altform" | "alternateform" => {
+            !value.is_empty() && value.bytes().all(|b| b.is_ascii_alphanumeric())
+        }
+        "contrast" => matches!(value.as_str(), "standard" | "high" | "black" | "white"),
+        "theme" => matches!(value.as_str(), "dark" | "light"),
+        _ => false,
+    }
 }
 
 /// Stamp `label` into the bottom-right of an RGBA8 image, in place.

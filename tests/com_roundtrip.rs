@@ -573,11 +573,27 @@ fn format_badge_stamps_a_real_thumbnail_when_enabled() {
     let icon = unsafe { tile(&corpus, 256) };
     let _ = key.set_u32("FormatBadgeStyle", 0);
     let text = unsafe { tile(&corpus, 256) };
-    let _ = key.remove_value("FormatBadge");
     let _ = key.remove_value("FormatBadgeStyle");
     assert_ne!(
         icon, text,
         "FormatBadgeStyle produced a byte-identical tile - the style never reached the provider"
+    );
+
+    // Issue #63: Explorer draws a Store app's file-type icon by thumbnailing the app's own
+    // PNG (`txtfile.targetsize-256.png` in Notepad's package) through us. That picture is an
+    // icon, not the user's file, so the mark must stay off it while it is on for real PNGs.
+    let dir = std::env::temp_dir().join(format!("st2k-appicon-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let asset = dir.join("txtfile.targetsize-256.png");
+    std::fs::copy(&corpus, &asset).expect("copy sample");
+    let asset_on = unsafe { tile(&asset, 256) };
+    let _ = key.set_u32("FormatBadge", 0);
+    let asset_off = unsafe { tile(&asset, 256) };
+    let _ = key.remove_value("FormatBadge");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        asset_on == asset_off,
+        "a Store app's icon picture got our format mark (issue #63)"
     );
 }
 
