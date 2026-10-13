@@ -593,7 +593,8 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   stale, so for those SageThumbs tells Explorer which icon to draw; a program that has switched
   its own icon off is left alone, and `st2k doctor` names it), *a SageThumbs format mark* (the file's format
   stamped in the corner, as a colour-coded file mark with one colour per kind of file, or as
-  plain text), or *nothing*. Picking either of the last two also stops Explorer painting over the
+  plain text; never on a Microsoft Store app's own file icon, such as Notepad's on a `.txt`,
+  which Windows draws from a PNG inside the app), or *nothing*. Picking either of the last two also stops Explorer painting over the
   corner, which the two separate switches this replaced could not guarantee. **The installer
   asks this once on a first install**, and it is changeable here at any time. When the corner
   holds a SageThumbs format mark, **Format mark size** picks how big it is drawn (Small, the
