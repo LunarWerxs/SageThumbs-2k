@@ -9,6 +9,10 @@ pub const RELAY_BASE: &str = "https://st2k.lunarwerx.com";
 /// and this string is compiled into every copy ever shipped. The redirect moves; this does
 /// not. Opened by the Licence page's Buy button and named in the business-nag notices.
 ///
+/// The three browser links here use the relay's public link host, `go.lunarwerx.com/sagethumbs`:
+/// the same Worker that answers [`RELAY_BASE`], under the name the site and docs already print,
+/// so the address a buyer sees in the browser and in a notice is the public one.
+///
 /// ⛔ THIS ONE GOES TO THE PERPETUAL PRODUCT. Since 2026-09-16 the commercial licence is sold
 /// two ways - US$49 once (this door) and US$2.99 a month - and they are two catalog products,
 /// because `catalog_products.licence_term` is one value per product with a CHECK behind it, so
@@ -22,14 +26,14 @@ pub const RELAY_BASE: &str = "https://st2k.lunarwerx.com";
 /// because the Licence page's action row is three buttons by design (Michael, 2026-09-15) and
 /// a fourth would undo that - the monthly plan gets the full-width prospect line instead. If a
 /// button for it is ever wanted, add the constant then, not before.
-pub const BUY_URL: &str = "https://st2k.lunarwerx.com/buy";
+pub const BUY_URL: &str = "https://go.lunarwerx.com/sagethumbs/buy";
 
 /// Where another 12 months of updates is bought (US$29), for a licence that is already
 /// held. Like [`BUY_URL`] this is a relay redirect on the relay rather than the checkout's
 /// own address (`/renew`, the twin of `/buy`), which forwards the query string, so a
 /// repricing or a new checkout page moves the link without a release. The relay's default
 /// target is the checkout page for [`crate::licence_cert::PRODUCT_ID`].
-pub(super) const RENEW_URL: &str = "https://st2k.lunarwerx.com/renew";
+pub(super) const RENEW_URL: &str = "https://go.lunarwerx.com/sagethumbs/renew";
 
 /// The buyer's own self-serve door into the seat portal: paste the licence key, land in the
 /// same roster a merchant-minted "Manage seats" link would open. This is Connections'
@@ -49,7 +53,7 @@ pub(super) const RENEW_URL: &str = "https://st2k.lunarwerx.com/renew";
 /// A relay redirect (`/claim`, like `/buy`) since 2026-09-18, when `connections.icu` was
 /// suspended by its registry: the portal's host is a [vars] line on the relay now, so it can
 /// move again without a release.
-pub const PORTAL_CLAIM_URL: &str = "https://st2k.lunarwerx.com/claim";
+pub const PORTAL_CLAIM_URL: &str = "https://go.lunarwerx.com/sagethumbs/claim";
 
 /// The renewal link for this machine: the checkout page for our product, with the stored
 /// licence key pre-filled when we have one.

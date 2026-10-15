@@ -104,7 +104,7 @@ pub(super) fn check_licence(r: &mut Report) {
         Phase::Locked => r.fail_with_fix(
             "Licence",
             "STOPPED: this copy is installed for business use, its evaluation has ended (or its licence was revoked), and no licence key is entered - every thumbnail and preview is refused",
-            "Settings -> Licence -> Redeem key. No key yet? Buy one at st2k.lunarwerx.com/buy, or reinstall and choose Personal if this is not a work computer.",
+            "Settings -> Licence -> Redeem key. No key yet? Buy one at go.lunarwerx.com/sagethumbs/buy, or reinstall and choose Personal if this is not a work computer.",
         ),
     }
 }

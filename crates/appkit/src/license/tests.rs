@@ -548,7 +548,10 @@ fn a_revoked_seat_still_reaches_the_deauthorised_notice_with_a_certificate_prese
 /// browser history / a proxy log.
 #[test]
 fn portal_claim_url_never_carries_a_query_string() {
-    assert_eq!(PORTAL_CLAIM_URL, "https://st2k.lunarwerx.com/claim");
+    assert_eq!(
+        PORTAL_CLAIM_URL,
+        "https://go.lunarwerx.com/sagethumbs/claim"
+    );
     assert!(
         !PORTAL_CLAIM_URL.contains('?'),
         "the licence key must never ride in a URL - see PORTAL_CLAIM_URL's doc comment"

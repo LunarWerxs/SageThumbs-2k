@@ -26,7 +26,8 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   updating to clear marks Windows already saved.
 
 - **Licence page in the installer.** It now says who needs a work licence (charities, schools and
-  government offices stay free) and names one buy link.
+  government offices stay free) and names one buy link. The app's Buy, Renew and
+  move-licence links open the same public go.lunarwerx.com address the site uses.
 
 ## 3.7.3
 
