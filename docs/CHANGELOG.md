@@ -14,6 +14,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 **Fixed**
 
 - **No "PNG" mark on Store apps' icons**
+- **A crafted zstd archive can't exhaust memory**
 
 **Everything in Unreleased**
 
@@ -24,6 +25,10 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   icons from a PNG inside the app, and SageThumbs marked that picture as if it were your
   file. Those icons now stay unmarked. Use Settings, Rebuild thumbnail cache once after
   updating to clear marks Windows already saved.
+
+- **A crafted zstd archive can't exhaust memory.** A tiny zstd-compressed entry inside an archive
+  could make the built-in zstd decoder ask for several gigabytes at once (RUSTSEC-2026-0344). The
+  decoder is now 0.9.1, which caps each block's output, so such a file fails cleanly instead.
 
 - **Licence page in the installer.** It now says who needs a work licence (charities, schools and
   government offices stay free) and names one buy link. The app's Buy, Renew and
