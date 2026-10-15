@@ -895,18 +895,17 @@ begin
   // app never nags a Personal install.
   LicensePage := CreateInputOptionPage(CornerPage.ID,
     'How will you use SageThumbs 2K?',
-    'Personal use is free. Business use needs a licence.',
-    'SageThumbs 2K is free for personal, non-commercial use under the PolyForm'
-      + ' Noncommercial license. Using it in a business or other commercial setting'
-      + ' requires a commercial licence.',
+    'Personal use is free. Use at work needs a licence.',
+    'SageThumbs 2K is free for personal, non-commercial use, and for charities, schools'
+      + ' and government offices (PolyForm Noncommercial license). A PC used for paid'
+      + ' work, from a freelancer to a whole company, needs a licence.',
     True,   // exclusive: radio buttons
     False);
   LicensePage.Add('Personal use (free)' + #13#10
     + 'Home, hobby, and other non-commercial use. Every feature included.');
   LicensePage.Add('Business or commercial use' + #13#10
-    + 'For work. Try it for 7 days, then enter a licence key under Settings > Licence'
-    + ' (US$2.99 a month from sagethumbs.lunarwerx.com, or US$49 per installation'
-    + ' and it is yours permanently, from st2k.lunarwerx.com/buy).');
+    + 'For paid work. Try it for 7 days, then enter a licence key under Settings > Licence.'
+    + ' US$2.99 a month or US$49 once per PC, at go.lunarwerx.com/sagethumbs/buy');
   LicensePage.SelectedValueIndex := LicenseModeInitial;
 end;
 

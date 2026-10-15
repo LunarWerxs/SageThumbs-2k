@@ -25,6 +25,9 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   file. Those icons now stay unmarked. Use Settings, Rebuild thumbnail cache once after
   updating to clear marks Windows already saved.
 
+- **Licence page in the installer.** It now says who needs a work licence (charities, schools and
+  government offices stay free) and names one buy link.
+
 ## 3.7.3
 
 **TL;DR**
