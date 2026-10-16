@@ -7,7 +7,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 3.7.4
 
 **TL;DR**
 
@@ -18,7 +18,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **Right-click Upload asks first**
 - **Online-only cloud files are never downloaded for a thumbnail**
 
-**Everything in Unreleased**
+**Everything in 3.7.4**
 
 - **No "PNG" mark on Store apps' icons.** With the corner set to the SageThumbs format mark, a
   file with no picture of its own showed its program's icon stamped "PNG" when that program
