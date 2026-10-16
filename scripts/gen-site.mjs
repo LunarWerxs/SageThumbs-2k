@@ -269,7 +269,11 @@ export function assertCapabilityFields(formats, exePath) {
   }
 }
 
-export function buildFormatWall(formats, CR) {
+/** `guides` maps an extension to the site's guide page for it (the site repo's
+ *  formats/guides.json, written by its scripts/format-pages.mjs). A chip with a guide wraps its
+ *  label in a link and keeps the `<span class="fc">` itself, which is what the site's
+ *  sync-version.mjs counts the wall by. */
+export function buildFormatWall(formats, CR, guides = {}) {
   const TOTAL = formats.length;
   const by = {};
   for (const x of formats) (by[x.category] = by[x.category] || []).push(x);
@@ -288,7 +292,10 @@ export function buildFormatWall(formats, CR) {
     const n = items.length, pct = TOTAL ? (n / TOTAL * 100).toFixed(1) : '0.0';
     aria.push(n + ' ' + ARIA[dc]);
     spans.push(`      <span style="width:${pct}%;background:${color}"></span>`);
-    const chips = items.map(x => `<span class="fc" title="${esc(x.description)}">.${x.ext}</span>`).join(' ');
+    const chips = items.map(x => {
+      const label = guides[x.ext] ? `<a href="${esc(guides[x.ext])}">.${x.ext}</a>` : `.${x.ext}`;
+      return `<span class="fc" title="${esc(x.description)}">${label}</span>`;
+    }).join(' ');
     const panelId = `fgdesc-${dc}`;
     const descList = items.map(x => `<li><code>.${x.ext}</code> ${esc(x.description)}</li>`).join(CR + '            ');
     const capParagraphs = n ? capabilityParagraphs(items) : [];
@@ -306,6 +313,26 @@ export function buildFormatWall(formats, CR) {
   const block = `    <div class="bar reveal" role="img" aria-label="Format coverage by category: ${aria.join(', ')}">${CR}${spans.join(CR)}${CR}    </div>${CR}    <div class="fmtwall reveal">${CR}${groups.join(CR)}${CR}    </div>`;
   const presentCategories = ORDER.filter(([, cat]) => (by[cat] || []).length > 0).length;
   return { block, by, TOTAL, presentCategories };
+}
+
+/** The guide links for the wall: `formats/guides.json` beside the index.html being written.
+ *  The deploy repo has one; the app repo's own staging copy does not, and gets plain chips.
+ *  A page whose wall already links guides but has no guides.json beside it is refused,
+ *  because regenerating it would strip every one of those links without a word. */
+export function loadGuides(sitePath, existingHtml) {
+  const file = path.join(path.dirname(sitePath), 'formats', 'guides.json');
+  if (!fs.existsSync(file)) {
+    if (/<span class="fc"[^>]*><a /.test(existingHtml)) {
+      throw new Error(`gen-site: ${sitePath} links format guides but ${file} is missing; ` +
+        'regenerating would drop every link. Run the site repo\'s scripts/format-pages.mjs first.');
+    }
+    return {};
+  }
+  const guides = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const bad = Object.entries(guides).filter(([ext, href]) =>
+    !/^[a-z0-9]+$/.test(ext) || typeof href !== 'string' || !/^\/formats\/[a-z0-9-]+\/$/.test(href));
+  if (bad.length) throw new Error(`gen-site: ${file} has ${bad.length} malformed entr${bad.length === 1 ? 'y' : 'ies'}, first: ${JSON.stringify(bad[0])}`);
+  return guides;
 }
 
 /** Splices the format-wall block into `html` and syncs the version-derived scalars
@@ -444,12 +471,13 @@ function main(argv) {
   const EXISTING = fs.readFileSync(SITE, 'utf8');
   const CR = EXISTING.includes('\r\n') ? '\r\n' : '\n';
 
-  const { block, by, TOTAL, presentCategories } = buildFormatWall(formats, CR);
+  const guides = loadGuides(SITE, EXISTING);
+  const { block, by, TOTAL, presentCategories } = buildFormatWall(formats, CR, guides);
   const { html, changed } = applyAll(EXISTING, { block, VERSION, presentCategories });
 
   if (CHECK) {
     console.log(`gen-site --check: st2k=${ST2K} (v${exeVersion} matches Cargo.toml v${VERSION})`);
-    console.log(`  site=${SITE}`);
+    console.log(`  site=${SITE}  guide_links=${Object.keys(guides).length}`);
     console.log(`  formats=${TOTAL} categories_present=${presentCategories}  ` + ORDER.map(o => o[1] + '=' + (by[o[1]] || []).length).join(' '));
     console.log(changed ? '  WOULD be updated (run without --check to write)' : '  already up to date (no change would be made)');
     process.exit(0);
@@ -457,7 +485,7 @@ function main(argv) {
 
   fs.writeFileSync(SITE, html);
   console.log(`gen-site: st2k=${ST2K} (v${exeVersion} matches Cargo.toml v${VERSION})`);
-  console.log(`  site=${SITE}`);
+  console.log(`  site=${SITE}  guide_links=${Object.keys(guides).length}`);
   console.log(`  formats=${TOTAL} categories_present=${presentCategories}  ` + ORDER.map(o => o[1] + '=' + (by[o[1]] || []).length).join(' '));
   console.log(`  version=v${VERSION}`);
   console.log(changed ? '  index.html updated' : '  index.html already up to date (no change)');
