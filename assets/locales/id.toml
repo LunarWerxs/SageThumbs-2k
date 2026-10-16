@@ -769,6 +769,7 @@ preview_upload_off_body = "Pengunggahan dari pratinjau dinonaktifkan.\n\nTombol 
 preview_upload_off_open = "Buka Pengaturan"
 preview_upload_confirm_body = "Unggah “{name}”?\n\nFile akan ditaruh di situs web publik gratis dan tautannya disalin ke clipboard Anda. Siapa pun yang punya tautan bisa membukanya."
 preview_upload_confirm_yes = "Unggah"
+upload_confirm_many_body = "Unggah {count} file?\n\nFile akan ditaruh di situs web publik gratis dan tautan ke masing-masing disalin ke clipboard Anda. Siapa pun yang punya tautan bisa membuka file tersebut."
 
 tip_preview_enabled = "Tekan Spasi di Explorer atau di Desktop untuk menampilkan pratinjau file yang dipilih, lalu tekan Esc atau Spasi untuk menutup. Aktif secara default, kecuali aplikasi pratinjau tombol Spasi lain (seperti QuickLook atau Seer) sudah terpasang. Fitur ini menjalankan helper kecil di latar belakang (yang sama dengan yang dipakai pintasan keyboard). Juga berfungsi di hasil pencarian Everything."
 fr_intro = "SageThumbs sudah menambahkan thumbnail ke Explorer. Dua fitur tambahan yang bisa Anda aktifkan atau nonaktifkan di sini:"

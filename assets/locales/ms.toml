@@ -767,6 +767,7 @@ preview_upload_off_body = "Muat naik dari pratonton dimatikan.\n\nButang Muat Na
 preview_upload_off_open = "Buka tetapan"
 preview_upload_confirm_body = "Muat naik “{name}”?\n\nIa akan diletakkan di tapak web awam percuma dan pautan kepadanya akan disalin ke papan keratan anda. Sesiapa yang mempunyai pautan itu boleh membukanya."
 preview_upload_confirm_yes = "Muat naik"
+upload_confirm_many_body = "Muat naik {count} fail?\n\nFail-fail itu akan diletakkan di tapak web awam percuma dan pautan kepada setiap satu akan disalin ke papan keratan anda. Sesiapa yang mempunyai pautan boleh membuka fail itu."
 
 tip_preview_enabled = "Tekan Space dalam Explorer atau pada Desktop untuk memaparkan pratonton fail yang dipilih, kemudian tekan Esc atau Space untuk menutupnya. Dihidupkan secara lalai, kecuali jika pempratonton bar Space lain (seperti QuickLook atau Seer) sudah dipasang. Ia menjalankan pembantu latar belakang yang kecil (yang sama digunakan oleh kekunci pintas). Juga berfungsi dalam hasil carian Everything."
 fr_intro = "SageThumbs sudah menambah thumbnail ke dalam Explorer. Dua tambahan yang boleh anda hidupkan atau matikan di sini:"

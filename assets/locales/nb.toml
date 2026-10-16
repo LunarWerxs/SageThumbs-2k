@@ -769,6 +769,7 @@ preview_upload_off_body = "Opplasting fra forhåndsvisningen er slått av.\n\nOp
 preview_upload_off_open = "Åpne innstillinger"
 preview_upload_confirm_body = "Last opp «{name}»?\n\nDen blir lagt på et gratis offentlig nettsted, og en lenke til den kopieres til utklippstavlen din. Alle med lenken kan åpne den."
 preview_upload_confirm_yes = "Last opp"
+upload_confirm_many_body = "Last opp {count} filer?\n\nDe blir lagt på et gratis offentlig nettsted, og en lenke til hver av dem kopieres til utklippstavlen din. Alle med en lenke kan åpne den filen."
 
 tip_preview_enabled = "Trykk mellomrom i Utforsker eller på skrivebordet for å vise en forhåndsvisning av den valgte filen, og trykk Esc eller mellomrom for å lukke den. Slått på som standard, med mindre et annet forhåndsvisningsprogram for mellomromstasten (for eksempel QuickLook eller Seer) allerede var installert. Det kjører en liten hjelper i bakgrunnen (den samme som hurtigtastene bruker). Fungerer også i søkeresultater i Everything."
 fr_intro = "SageThumbs legger allerede til miniatyrbilder i Utforsker. To tillegg du kan slå på eller av her:"

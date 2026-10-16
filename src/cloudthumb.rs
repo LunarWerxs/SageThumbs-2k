@@ -39,11 +39,6 @@ use st2k_base::{safety, settings};
 
 use crate::thumbprovider::ThumbnailProvider;
 
-/// `FILE_ATTRIBUTE_OFFLINE`: the data lives elsewhere.
-const ATTR_OFFLINE: u32 = 0x0000_1000;
-/// `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`: reading the data would download it (an online-only or
-/// partly downloaded cloud placeholder).
-const ATTR_RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
 const INVALID_FILE_ATTRIBUTES: u32 = u32::MAX;
 
 #[implement(IThumbnailProvider, IInitializeWithItem)]
@@ -152,9 +147,12 @@ pub(crate) fn attempts(
     out
 }
 
-/// Is the file's data on this PC, so reading it downloads nothing?
+/// Is the file's data on this PC, so reading it downloads nothing? Any of the three "data is
+/// elsewhere" flags (offline, recall on data access, recall on open) says no: the same trio, from
+/// the same constant, that the prebuild walk, `st2k batch` and the doctor skip on. This check
+/// once held its own copy of two of them and read a file carrying only RECALL_ON_OPEN.
 pub(crate) fn data_is_local(attrs: u32) -> bool {
-    attrs != INVALID_FILE_ATTRIBUTES && attrs & (ATTR_OFFLINE | ATTR_RECALL_ON_DATA_ACCESS) == 0
+    attrs != INVALID_FILE_ATTRIBUTES && attrs & crate::prebuild::OFFLINE_ATTRS == 0
 }
 
 impl CloudThumbnailProvider_Impl {
@@ -371,6 +369,7 @@ mod tests {
         assert!(data_is_local(0x0000_2420)); // a hydrated placeholder, as measured
         assert!(!data_is_local(0x0040_2420)); // online-only
         assert!(!data_is_local(0x0000_1020)); // offline
+        assert!(!data_is_local(0x0004_0020)); // recall on open
         assert!(!data_is_local(u32::MAX));
     }
 }

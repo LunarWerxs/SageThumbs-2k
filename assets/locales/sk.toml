@@ -761,6 +761,7 @@ preview_upload_off_body = "Nahrávanie z náhľadu je vypnuté.\n\nTlačidlo Nah
 preview_upload_off_open = "Otvoriť nastavenia"
 preview_upload_confirm_body = "Nahrať „{name}“?\n\nBude umiestnený na bezplatnú verejnú webovú stránku a odkaz naň sa skopíruje do schránky. Môže ho otvoriť ktokoľvek s odkazom."
 preview_upload_confirm_yes = "Nahrať"
+upload_confirm_many_body = "Nahrať súbory ({count})?\n\nBudú umiestnené na bezplatnú verejnú webovú stránku a odkaz na každý z nich sa skopíruje do schránky. Daný súbor môže otvoriť ktokoľvek s odkazom."
 
 tip_preview_enabled = "Stlačte medzerník v Prieskumníkovi alebo na pracovnej ploche a zobrazí sa náhľad vybraného súboru; zavriete ho klávesom Esc alebo medzerníkom. Predvolene zapnuté, ak už nebol nainštalovaný iný náhľad cez medzerník (napríklad QuickLook alebo Seer). Spúšťa malého pomocníka na pozadí (toho istého, ktorého používajú klávesové skratky). Funguje aj vo výsledkoch vyhľadávania Everything."
 fr_intro = "SageThumbs už pridáva miniatúry do Prieskumníka. Tu môžete zapnúť alebo vypnúť dve doplnkové funkcie:"

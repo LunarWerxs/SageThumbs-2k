@@ -518,6 +518,7 @@ pub(super) unsafe fn dispatch_screenshot_modes(hinst: HINSTANCE, args: &[String]
     // since its file is a throwaway capture). Exact-match above means `--upload` never
     // swallows this longer flag. An optional trailing `--url-to <file>` is how `st2k upload`
     // reuses this same path headlessly: see `run_upload_keep`'s doc comment for the contract.
+    // `--asked` means the caller (the Quick preview) has already asked before uploading.
     if let Some(pos) = args.iter().position(|a| a == "--upload-keep") {
         if let Some(listfile) = args.get(pos + 1) {
             let url_to = args
@@ -525,7 +526,8 @@ pub(super) unsafe fn dispatch_screenshot_modes(hinst: HINSTANCE, args: &[String]
                 .position(|a| a == "--url-to")
                 .and_then(|p| args.get(p + 1))
                 .map(String::as_str);
-            st2k_screenshot::screenshot::run_upload_keep(listfile, url_to);
+            let asked = args.iter().any(|a| a == "--asked");
+            st2k_screenshot::screenshot::run_upload_keep(listfile, url_to, asked);
         }
         return true;
     }

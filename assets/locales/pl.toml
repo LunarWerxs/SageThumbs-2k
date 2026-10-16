@@ -769,6 +769,7 @@ preview_upload_off_body = "Przesyłanie z podglądu jest wyłączone.\n\nPrzycis
 preview_upload_off_open = "Otwórz ustawienia"
 preview_upload_confirm_body = "Przesłać „{name}”?\n\nPlik zostanie umieszczony na darmowej publicznej stronie, a link do niego skopiowany do schowka. Każdy, kto ma ten link, może go otworzyć."
 preview_upload_confirm_yes = "Prześlij"
+upload_confirm_many_body = "Przesłać pliki ({count})?\n\nPliki zostaną umieszczone na darmowej publicznej stronie, a link do każdego z nich skopiowany do schowka. Każdy, kto ma link, może otworzyć dany plik."
 
 tip_preview_enabled = "Naciśnij Spację w Eksploratorze lub na Pulpicie, aby wyświetlić podgląd zaznaczonego pliku, a potem Esc lub Spację, aby go zamknąć. Domyślnie włączone, chyba że był już zainstalowany inny program do podglądu pod Spacją (np. QuickLook lub Seer). Działa dzięki małemu programowi pomocniczemu w tle (temu samemu, którego używają skróty klawiszowe). Działa też w wynikach wyszukiwania Everything."
 fr_intro = "SageThumbs już dodaje miniatury w Eksploratorze. Tutaj możesz włączyć lub wyłączyć dwie dodatkowe funkcje:"

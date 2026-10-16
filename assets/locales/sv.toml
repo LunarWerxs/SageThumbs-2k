@@ -763,6 +763,7 @@ preview_upload_off_body = "Uppladdning från förhandsvisningen är avstängd.\n
 preview_upload_off_open = "Öppna inställningar"
 preview_upload_confirm_body = "Ladda upp ”{name}”?\n\nDen läggs på en gratis offentlig webbplats och en länk till den kopieras till Urklipp. Alla med länken kan öppna den."
 preview_upload_confirm_yes = "Ladda upp"
+upload_confirm_many_body = "Ladda upp {count} filer?\n\nDe läggs på en gratis offentlig webbplats och en länk till var och en kopieras till Urklipp. Alla med en länk kan öppna den filen."
 
 tip_preview_enabled = "Tryck på Mellanslag i Utforskaren eller på skrivbordet för att visa en förhandsvisning av den markerade filen, och tryck sedan på Esc eller Mellanslag för att stänga. På som standard, om inte en annan förhandsvisare som använder mellanslagstangenten (till exempel QuickLook eller Seer) redan var installerad. Den kör ett litet hjälpprogram i bakgrunden (samma som snabbtangenterna använder). Fungerar även i sökresultat i Everything."
 fr_intro = "SageThumbs lägger redan till miniatyrer i Utforskaren. Två extrafunktioner som du kan slå på eller av här:"

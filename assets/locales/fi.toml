@@ -759,6 +759,7 @@ preview_upload_off_body = "Lataaminen esikatselusta on pois päältä.\n\nLataa-
 preview_upload_off_open = "Avaa asetukset"
 preview_upload_confirm_body = "Ladataanko ”{name}”?\n\nSe viedään ilmaiselle julkiselle verkkosivustolle ja linkki siihen kopioidaan leikepöydällesi. Kuka tahansa, jolla on linkki, voi avata sen."
 preview_upload_confirm_yes = "Lataa palvelimelle"
+upload_confirm_many_body = "Ladataanko {count} tiedostoa?\n\nNe viedään ilmaiselle julkiselle verkkosivustolle ja linkki kuhunkin kopioidaan leikepöydällesi. Kuka tahansa, jolla on linkki, voi avata sen tiedoston."
 
 tip_preview_enabled = "Paina välilyöntiä Resurssienhallinnassa tai työpöydällä, niin valitun tiedoston esikatselu avautuu. Sulje se Esc- tai välilyöntinäppäimellä. Päällä oletuksena, ellei toista välilyöntiesikatselijaa (kuten QuickLook tai Seer) ollut jo asennettu. Se käyttää pientä taustaapuohjelmaa (samaa kuin pikanäppäimet). Toimii myös Everything-haun tuloksissa."
 fr_intro = "SageThumbs lisää jo pienoiskuvia Resurssienhallintaan. Kaksi lisäominaisuutta, jotka voit ottaa käyttöön tai poistaa käytöstä tässä:"

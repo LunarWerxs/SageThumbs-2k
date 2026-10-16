@@ -759,6 +759,7 @@ preview_upload_off_body = "Subir desde la vista previa está desactivado.\n\nEl 
 preview_upload_off_open = "Abrir configuración"
 preview_upload_confirm_body = "¿Subir \"{name}\"?\n\nSe pondrá en un sitio web público y gratuito y se copiará un enlace a tu portapapeles. Cualquiera con el enlace puede abrirlo."
 preview_upload_confirm_yes = "Subir"
+upload_confirm_many_body = "¿Subir {count} archivos?\n\nSe pondrán en un sitio web público y gratuito y se copiará un enlace a cada uno en tu portapapeles. Cualquiera con un enlace puede abrir ese archivo."
 
 tip_preview_enabled = "Pulsa Espacio en el Explorador o en el Escritorio para ver una vista previa del archivo seleccionado y luego Esc o Espacio para cerrarla. Activada por defecto, salvo que ya hubiera instalado otro visor con la barra espaciadora (como QuickLook o Seer). Usa un pequeño asistente en segundo plano (el mismo que usan los atajos de teclado). También funciona en los resultados de búsqueda de Everything."
 fr_intro = "SageThumbs ya está añadiendo miniaturas al Explorador. Dos extras que puedes activar o desactivar aquí:"

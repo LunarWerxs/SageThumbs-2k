@@ -769,6 +769,7 @@ preview_upload_off_body = "Il caricamento dall'anteprima è disattivato.\n\nIl p
 preview_upload_off_open = "Apri Impostazioni"
 preview_upload_confirm_body = "Caricare «{name}»?\n\nIl file sarà messo su un sito pubblico gratuito e un link sarà copiato negli appunti. Chiunque abbia il link può aprirlo."
 preview_upload_confirm_yes = "Carica"
+upload_confirm_many_body = "Caricare {count} file?\n\nI file saranno messi su un sito pubblico gratuito e un link a ciascuno sarà copiato negli appunti. Chiunque abbia un link può aprire quel file."
 
 tip_preview_enabled = "Premi Spazio in Esplora file o sul Desktop per aprire un'anteprima del file selezionato, poi Esc o Spazio per chiuderla. Attiva per impostazione predefinita, a meno che non fosse già installato un altro programma di anteprima con la barra spaziatrice (come QuickLook o Seer). Esegue un piccolo programma di supporto in background (lo stesso usato dalle scorciatoie da tastiera). Funziona anche nei risultati di ricerca di Everything."
 fr_intro = "SageThumbs sta già aggiungendo le miniature a Esplora file. Due extra che puoi attivare o disattivare qui:"

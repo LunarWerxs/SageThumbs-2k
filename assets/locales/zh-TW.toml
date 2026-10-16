@@ -766,6 +766,7 @@ preview_upload_off_body = "已關閉從預覽上傳。\n\n「上傳」按鈕會�
 preview_upload_off_open = "開啟設定"
 preview_upload_confirm_body = "要上傳「{name}」嗎？\n\n它會被放到免費的公開網站，並將其連結複製到您的剪貼簿。任何取得連結的人都能開啟。"
 preview_upload_confirm_yes = "上傳"
+upload_confirm_many_body = "要上傳 {count} 個檔案嗎？\n\n它們會被放到免費的公開網站，並將每個檔案的連結複製到您的剪貼簿。任何取得連結的人都能開啟對應的檔案。"
 
 tip_preview_enabled = "在檔案總管或桌面上按空白鍵，即可彈出所選檔案的預覽，再按 Esc 或空白鍵關閉。預設為開啟，除非已安裝其他空白鍵預覽工具（例如 QuickLook 或 Seer）。它會執行一個小型背景輔助程式（與快速鍵使用的是同一個）。在 Everything 搜尋結果中也能使用。"
 fr_intro = "SageThumbs 已經在為檔案總管加入縮圖。您可以在這裡開啟或關閉兩項額外功能："

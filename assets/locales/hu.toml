@@ -770,6 +770,7 @@ preview_upload_off_body = "A feltöltés az előnézetből ki van kapcsolva.\n\n
 preview_upload_off_open = "Beállítások megnyitása"
 preview_upload_confirm_body = "Feltölti a(z) „{name}” fájlt?\n\nA fájl egy ingyenes nyilvános webhelyre kerül, és a rá mutató link a vágólapjára másolódik. Bárki megnyithatja, aki ismeri a linket."
 preview_upload_confirm_yes = "Feltöltés"
+upload_confirm_many_body = "Feltölt {count} fájlt?\n\nA fájlok egy ingyenes nyilvános webhelyre kerülnek, és mindegyikhez egy link a vágólapjára másolódik. Bárki megnyithatja az adott fájlt, aki ismeri a linkjét."
 
 tip_preview_enabled = "Nyomja meg a Szóközt a Fájlkezelőben vagy az Asztalon a kijelölt fájl előnézetéhez, majd az Esc vagy a Szóköz billentyűvel zárhatja be. Alapértelmezés szerint be van kapcsolva, kivéve, ha már telepítve volt másik szóközbillentyűs előnézeti program (például QuickLook vagy Seer). Egy kis háttérsegédet futtat (ugyanazt, amelyet a gyorsbillentyűk is használnak). Az Everything keresési találataiban is működik."
 fr_intro = "A SageThumbs már bélyegképeket ad a Fájlkezelőhöz. Két extra, amelyet itt kapcsolhat be vagy ki:"

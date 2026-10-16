@@ -768,6 +768,7 @@ preview_upload_off_body = "Učitavanje iz pretpregleda je isključeno.\n\nGumb U
 preview_upload_off_open = "Otvori postavke"
 preview_upload_confirm_body = "Učitati „{name}“?\n\nDatoteka će biti postavljena na besplatno javno web-mjesto, a veza na nju kopirana u vaš međuspremnik. Svatko s vezom može je otvoriti."
 preview_upload_confirm_yes = "Učitaj"
+upload_confirm_many_body = "Učitati datoteke ({count})?\n\nBit će postavljene na besplatno javno web-mjesto, a veza na svaku kopirana u vaš međuspremnik. Svatko s vezom može otvoriti tu datoteku."
 
 tip_preview_enabled = "Pritisnite razmaknicu u Exploreru ili na radnoj površini da biste otvorili pretpregled odabrane datoteke, a zatim Esc ili razmaknicu da ga zatvorite. Prema zadanim postavkama uključeno, osim ako je već instaliran drugi alat za pretpregled razmaknicom (poput QuickLooka ili Seera). Pokreće mali pomoćni program u pozadini (isti koji koriste i tipkovnički prečaci). Radi i u rezultatima pretraživanja programa Everything."
 fr_intro = "SageThumbs već dodaje sličice u Explorer. Ovdje možete uključiti ili isključiti dva dodatka:"

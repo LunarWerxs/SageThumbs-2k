@@ -761,6 +761,7 @@ preview_upload_off_body = "Upload fra eksempelvisningen er slået fra.\n\nUpload
 preview_upload_off_open = "Åbn indstillinger"
 preview_upload_confirm_body = "Upload »{name}«?\n\nDen bliver lagt på et gratis offentligt websted, og et link til den kopieres til din udklipsholder. Alle med linket kan åbne den."
 preview_upload_confirm_yes = "Upload"
+upload_confirm_many_body = "Upload {count} filer?\n\nDe bliver lagt på et gratis offentligt websted, og et link til hver af dem kopieres til din udklipsholder. Alle med et link kan åbne den fil."
 
 tip_preview_enabled = "Tryk på mellemrumstasten i Stifinder eller på skrivebordet for at få vist et eksempel af den valgte fil, og tryk derefter på Esc eller mellemrumstasten for at lukke. Slået til som standard, medmindre en anden eksempelvisning med mellemrumstasten (f.eks. QuickLook eller Seer) allerede var installeret. Den kører en lille hjælper i baggrunden (den samme som genvejstasterne bruger). Virker også i søgeresultater i Everything."
 fr_intro = "SageThumbs tilføjer allerede miniaturer til Stifinder. To ekstra funktioner, du kan slå til eller fra her:"

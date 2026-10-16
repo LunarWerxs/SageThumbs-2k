@@ -35,6 +35,7 @@ pub use hosts::open_hosts_config;
 use wire::*;
 
 use windows::core::PCWSTR;
+use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, DispatchMessageW, GetSystemMetrics, MessageBoxW, PeekMessageW,
@@ -206,7 +207,10 @@ fn save_recovery_copy(bytes: &[u8]) -> Option<std::path::PathBuf> {
 /// reason goes to stderr instead, and the process exits `1`. `st2k`, a console-subsystem
 /// binary, still gets stderr/exit-status from this windows-subsystem one because both are
 /// plain inherited OS handles — no console window is involved either way.
-pub unsafe fn run_upload_keep(list_path: &str, url_to: Option<&str>) {
+///
+/// On the GUI path it asks before anything leaves the PC (see [`confirm_upload`]), unless
+/// `asked` says the caller already did: the Quick preview's Upload button passes `--asked`.
+pub unsafe fn run_upload_keep(list_path: &str, url_to: Option<&str>, asked: bool) {
     let hosts = match resolve_hosts(list_path, url_to) {
         Some(h) => h,
         None => return,
@@ -230,6 +234,9 @@ pub unsafe fn run_upload_keep(list_path: &str, url_to: Option<&str>) {
         }
         return;
     }
+    if url_to.is_none() && !asked && !confirm_upload(&files) {
+        return;
+    }
     let total = files.len();
     // Upload each file under its real name so the host keeps the extension (the
     // returned link then stays viewable in a browser). Remember the last failure
@@ -244,6 +251,31 @@ pub unsafe fn run_upload_keep(list_path: &str, url_to: Option<&str>) {
         Some(url_to) => report_to_file(url_to, &done, last_reason),
         None => report_interactively(total, &done, last_reason),
     }
+}
+
+/// The right-click "Upload (copy link)" verb (and the extra hotkey set to Upload) asks before
+/// anything leaves the PC, the rule the Quick preview's Upload button already follows (owner,
+/// 2026-10-05, after a user found one click had uploaded with no question): the verb sits one
+/// line under Copy, Copy text and Copy as data URI, and it puts the user's own files on a public
+/// website. Cancel is the default. `st2k upload` (`--url-to`) is a typed command and the preview
+/// has already asked (`--asked`), so neither asks again.
+unsafe fn confirm_upload(files: &[String]) -> bool {
+    let body = match files {
+        [one] => {
+            let name = std::path::Path::new(one)
+                .file_name()
+                .map_or_else(|| one.clone(), |n| n.to_string_lossy().into_owned());
+            t("preview_upload_confirm_body").replace("{name}", &name)
+        }
+        many => t("upload_confirm_many_body").replace("{count}", &many.len().to_string()),
+    };
+    st2k_appkit::win::confirm_verbs(
+        HWND::default(),
+        file_caption(),
+        &body,
+        t("preview_upload_confirm_yes"),
+        t("btn_cancel"),
+    )
 }
 
 /// The DLL writes the selection CRLF-joined; tolerate either ending, drop blanks. Removes

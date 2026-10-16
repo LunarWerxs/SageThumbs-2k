@@ -766,6 +766,7 @@ preview_upload_off_body = "Tải lên từ bản xem trước đang bị tắt.\
 preview_upload_off_open = "Mở cài đặt"
 preview_upload_confirm_body = "Tải lên “{name}”?\n\nTệp sẽ được đưa lên một trang web công khai miễn phí và liên kết tới tệp sẽ được sao chép vào khay nhớ tạm. Bất kỳ ai có liên kết đều có thể mở."
 preview_upload_confirm_yes = "Tải lên"
+upload_confirm_many_body = "Tải lên {count} tệp?\n\nCác tệp sẽ được đưa lên một trang web công khai miễn phí và liên kết tới từng tệp sẽ được sao chép vào khay nhớ tạm. Bất kỳ ai có liên kết đều có thể mở tệp đó."
 
 tip_preview_enabled = "Nhấn Space trong Explorer hoặc trên màn hình nền để hiện bản xem trước của tệp đã chọn, rồi nhấn Esc hoặc Space để đóng. Mặc định được bật, trừ khi đã cài sẵn một trình xem trước dùng phím Space khác (như QuickLook hoặc Seer). Tính năng này chạy một trình hỗ trợ nhỏ ở nền (cùng trình mà các phím tắt sử dụng). Cũng hoạt động trong kết quả tìm kiếm của Everything."
 fr_intro = "SageThumbs đã thêm hình thu nhỏ vào Explorer. Hai tính năng bổ sung bạn có thể bật hoặc tắt tại đây:"

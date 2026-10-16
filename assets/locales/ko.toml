@@ -769,6 +769,7 @@ preview_upload_off_body = "미리보기에서 업로드가 꺼져 있습니다.\
 preview_upload_off_open = "설정 열기"
 preview_upload_confirm_body = "“{name}”을(를) 업로드할까요?\n\n이 파일은 무료 공개 웹사이트에 올라가고 링크가 클립보드에 복사됩니다. 링크를 가진 사람은 누구나 열 수 있습니다."
 preview_upload_confirm_yes = "업로드"
+upload_confirm_many_body = "파일 {count}개를 업로드할까요?\n\n파일들은 무료 공개 웹사이트에 올라가고 각 파일의 링크가 클립보드에 복사됩니다. 링크를 가진 사람은 누구나 해당 파일을 열 수 있습니다."
 
 tip_preview_enabled = "탐색기나 바탕 화면에서 Space를 누르면 선택한 파일의 미리보기가 나타나고, Esc 또는 Space를 누르면 닫힙니다. 다른 Space 키 미리보기 프로그램(QuickLook, Seer 등)이 이미 설치되어 있지 않다면 기본적으로 켜져 있습니다. 작은 백그라운드 도우미(단축키에 쓰는 것과 같은 것)를 실행합니다. Everything 검색 결과에서도 작동합니다."
 fr_intro = "SageThumbs가 이미 탐색기에 썸네일을 추가하고 있습니다. 여기서 켜거나 끌 수 있는 추가 기능이 두 가지 있습니다:"

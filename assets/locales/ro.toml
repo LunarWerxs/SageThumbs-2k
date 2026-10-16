@@ -764,6 +764,7 @@ preview_upload_off_body = "Încărcarea din previzualizare este dezactivată.\n\
 preview_upload_off_open = "Deschide setările"
 preview_upload_confirm_body = "Încarci „{name}”?\n\nVa fi pus pe un site public gratuit, iar un link către el va fi copiat în clipboard. Oricine are linkul îl poate deschide."
 preview_upload_confirm_yes = "Încarcă"
+upload_confirm_many_body = "Încarci fișierele ({count})?\n\nVor fi puse pe un site public gratuit, iar câte un link către fiecare va fi copiat în clipboard. Oricine are un link poate deschide fișierul respectiv."
 
 tip_preview_enabled = "Apasă Space în Explorer sau pe Desktop ca să deschizi o previzualizare a fișierului selectat, apoi Esc sau Space ca să o închizi. Activat implicit, cu excepția cazului în care era deja instalat un alt program de previzualizare cu Space (cum ar fi QuickLook sau Seer). Rulează un mic utilitar în fundal (același pe care îl folosesc tastele rapide). Funcționează și în rezultatele căutării Everything."
 fr_intro = "SageThumbs adaugă deja miniaturi în Explorer. Două funcții suplimentare pe care le poți activa sau dezactiva aici:"

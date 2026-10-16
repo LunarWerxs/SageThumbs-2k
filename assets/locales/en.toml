@@ -496,6 +496,7 @@ preview_upload_off_body = "Uploading from the preview is turned off.\n\nThe Uplo
 preview_upload_off_open = "Open settings"
 preview_upload_confirm_body = "Upload “{name}”?\n\nIt will be put on a free public website and a link to it copied to your clipboard. Anyone with the link can open it."
 preview_upload_confirm_yes = "Upload"
+upload_confirm_many_body = "Upload {count} files?\n\nThey will be put on a free public website and a link to each copied to your clipboard. Anyone with a link can open that file."
 preview_tip_openwith = "Open with…"
 preview_tip_open = "Open"
 preview_tip_close = "Close"

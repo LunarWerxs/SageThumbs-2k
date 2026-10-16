@@ -769,6 +769,7 @@ preview_upload_off_body = "Uploaden vanuit de voorvertoning staat uit.\n\nMet de
 preview_upload_off_open = "Instellingen openen"
 preview_upload_confirm_body = "“{name}” uploaden?\n\nHet bestand wordt op een gratis openbare website gezet en er wordt een koppeling ernaar naar je klembord gekopieerd. Iedereen met de koppeling kan het openen."
 preview_upload_confirm_yes = "Uploaden"
+upload_confirm_many_body = "{count} bestanden uploaden?\n\nDe bestanden worden op een gratis openbare website gezet en er wordt voor elk een koppeling naar je klembord gekopieerd. Iedereen met een koppeling kan dat bestand openen."
 
 tip_preview_enabled = "Druk op Spatie in Verkenner of op het bureaublad om een voorvertoning van het geselecteerde bestand te openen; druk daarna op Esc of Spatie om die te sluiten. Staat standaard aan, tenzij er al een andere voorvertoner met de spatiebalk (zoals QuickLook of Seer) was geïnstalleerd. Er draait een klein hulpprogramma op de achtergrond (hetzelfde dat de sneltoetsen gebruiken). Werkt ook in de zoekresultaten van Everything."
 fr_intro = "SageThumbs voegt al miniaturen toe aan Verkenner. Hier kun je twee extra's aan- of uitzetten:"

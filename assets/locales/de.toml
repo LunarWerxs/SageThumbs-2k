@@ -763,6 +763,7 @@ preview_upload_off_body = "Hochladen aus der Vorschau ist ausgeschaltet.\n\nDie 
 preview_upload_off_open = "Einstellungen öffnen"
 preview_upload_confirm_body = "„{name}“ hochladen?\n\nDie Datei wird auf einer kostenlosen öffentlichen Website abgelegt und ein Link darauf in die Zwischenablage kopiert. Jeder mit dem Link kann sie öffnen."
 preview_upload_confirm_yes = "Hochladen"
+upload_confirm_many_body = "{count} Dateien hochladen?\n\nDie Dateien werden auf einer kostenlosen öffentlichen Website abgelegt und je ein Link darauf in die Zwischenablage kopiert. Jeder mit einem Link kann die Datei öffnen."
 
 tip_preview_enabled = "Drücken Sie im Explorer oder auf dem Desktop die Leertaste, um eine Vorschau der markierten Datei einzublenden; mit Esc oder der Leertaste schließen Sie sie wieder. Standardmäßig aktiviert, außer wenn bereits ein anderes Leertasten-Vorschauprogramm (z. B. QuickLook oder Seer) installiert war. Es läuft ein kleiner Hintergrundhelfer (derselbe wie bei den Tastenkombinationen). Funktioniert auch in den Suchergebnissen von Everything."
 fr_intro = "SageThumbs fügt dem Explorer bereits Miniaturansichten hinzu. Zwei Extras, die Sie hier ein- oder ausschalten können:"

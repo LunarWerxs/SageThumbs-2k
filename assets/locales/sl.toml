@@ -763,6 +763,7 @@ preview_upload_off_body = "Nalaganje iz predogleda je izklopljeno.\n\nGumb Nalo�
 preview_upload_off_open = "Odpri nastavitve"
 preview_upload_confirm_body = "Naložim »{name}«?\n\nDatoteka bo shranjena na brezplačno javno spletno mesto, povezava do nje pa kopirana v vaše odložišče. Vsak, ki ima povezavo, jo lahko odpre."
 preview_upload_confirm_yes = "Naloži"
+upload_confirm_many_body = "Naložim datoteke ({count})?\n\nDatoteke bodo shranjene na brezplačno javno spletno mesto, povezava do vsake pa kopirana v vaše odložišče. Vsak, ki ima povezavo, lahko odpre to datoteko."
 
 tip_preview_enabled = "Pritisnite preslednico v Raziskovalcu ali na namizju, da se prikaže predogled izbrane datoteke, nato ga zaprite z Esc ali preslednico. Privzeto je vklopljeno, razen če je bil že nameščen drug predoglednik s preslednico (na primer QuickLook ali Seer). Deluje z majhnim pomočnikom v ozadju (istim, ki ga uporabljajo bližnjične tipke). Deluje tudi v rezultatih iskanja Everything."
 fr_intro = "SageThumbs že dodaja sličice v Raziskovalec. Dva dodatka, ki ju lahko tukaj vklopite ali izklopite:"

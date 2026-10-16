@@ -15,6 +15,8 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 - **No "PNG" mark on Store apps' icons**
 - **A crafted zstd archive can't exhaust memory**
+- **Right-click Upload asks first**
+- **Online-only cloud files are never downloaded for a thumbnail**
 
 **Everything in Unreleased**
 
@@ -29,6 +31,17 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **A crafted zstd archive can't exhaust memory.** A tiny zstd-compressed entry inside an archive
   could make the built-in zstd decoder ask for several gigabytes at once (RUSTSEC-2026-0344). The
   decoder is now 0.9.1, which caps each block's output, so such a file fails cleanly instead.
+
+- **Right-click Upload asks first.** "Upload (copy link)" puts your files on a free public
+  website, and it sits just under the Copy items, so one misread click shared a file. It now
+  names the file (or says how many) and asks, with Cancel as the default, the way the Quick
+  preview's Upload button already does. The extra hotkey set to Upload asks the same way;
+  `st2k upload` on the command line does not.
+
+- **Online-only cloud files are never downloaded for a thumbnail.** In a OneDrive, Synology
+  Drive or other sync folder, a file marked to download when opened could be read, and so
+  pulled down, just to draw its thumbnail. It is now left to the cloud app like every other
+  online-only file.
 
 - **Licence page in the installer.** It now says who needs a work licence (charities, schools and
   government offices stay free) and names one buy link. The app's Buy, Renew and

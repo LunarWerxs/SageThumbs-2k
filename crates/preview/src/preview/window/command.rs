@@ -398,7 +398,9 @@ fn upload(p: &str) {
     lf.push(format!("st2k_preview_upload_{}.lst", std::process::id()));
     if std::fs::write(&lf, p).is_ok() {
         if let Some(s) = lf.to_str() {
-            crate::preview::spawn_self(&["--upload-keep", s]);
+            // `--asked`: `on_btn_upload` has already asked, over this window; the upload
+            // process would otherwise ask the same question again.
+            crate::preview::spawn_self(&["--upload-keep", s, "--asked"]);
         }
     }
 }
