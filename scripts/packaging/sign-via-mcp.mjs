@@ -66,7 +66,12 @@ params.description = "SageThumbs 2K";
 // process inherits PowerShell 7's PSModulePath, and 5.1 handed that path cannot load
 // Get-AuthenticodeSignature, so a file that signed fine reports as unsigned. Without the
 // variable, 5.1 computes its own.
+// That only reaches the server when this process starts it: since 2026-10-12 the Connections
+// loader hands a stdio chat to one shared host started by someone else, whose environment keeps
+// PowerShell 7's path, and 3.7.4's first run failed all four files that way. Relay off runs the
+// server here, in the environment built below.
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.toUpperCase() !== "PSMODULEPATH"));
+env.CONNECTIONS_STDIO_RELAY = "off";
 const child = spawn(command[0], command.slice(1), { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env });
 child.on("error", (e) => fail(`could not start the MCP server (${command.join(" ")}): ${e.message}`));
 child.stderr.on("data", () => {}); // server logs are not ours to parse; drain so it never blocks
