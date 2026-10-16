@@ -393,12 +393,58 @@ const EMBEDDED_PREVIEW_EXTS: &[&str] = &[
     "vsix",
 ];
 
+/// Second names for a format another `FORMATS` entry already covers (the alias rows in
+/// `FORMATS`, mostly its "MysticThumbs-parity aliases" block). `container::extract_cover` and
+/// the decode tiers sniff CONTENT, never the extension, so an alias's thumbnail is made exactly
+/// the way its parent's is - a `.psdt` shows the same baked PSD preview a `.psd` does.
+/// `capability()` therefore answers for the parent. The Blender auto-save backups
+/// (`.blend1`-`.blend32`) resolve in `alias_parent` instead of taking 32 rows here.
+/// Both sides must be in `FORMATS` (enforced by `capability_lists_are_subset_of_formats`).
+const ALIAS_PARENTS: &[(&str, &str)] = &[
+    ("dicom", "dcm"),
+    ("heics", "heic"),
+    ("heifs", "heif"),
+    ("hif", "heic"),
+    ("jpf", "jp2"),
+    ("jpx", "jp2"),
+    ("rgbe", "hdr"),
+    ("xyze", "hdr"),
+    ("hdri", "hdr"),
+    ("cxr", "exr"),
+    ("wmp", "jxr"),
+    ("wmz", "wmf"),
+    ("emg", "emf"),
+    ("tpic", "tga"),
+    ("pdd", "psd"),
+    ("psdt", "psd"),
+    ("indt", "indd"),
+    ("aftemplate", "af"),
+    ("skb", "skp"),
+    ("ph", "pcd"),
+];
+
+/// The extension whose capability `ext` shares: its parent for an alias (see `ALIAS_PARENTS`),
+/// `ext` itself otherwise.
+fn alias_parent(ext: &str) -> &str {
+    if let Some(&(_, parent)) = ALIAS_PARENTS.iter().find(|&&(alias, _)| alias == ext) {
+        return parent;
+    }
+    // Blender's rolling auto-save backups: the same container as `.blend`, renamed.
+    let backup = ext.strip_prefix("blend").and_then(|n| n.parse::<u8>().ok());
+    if matches!(backup, Some(1..=32)) && is_known(ext) {
+        return "blend";
+    }
+    ext
+}
+
 /// The capability of a hooked extension - derived from `category()` plus the small explicit
 /// lists above for the handful of extensions whose route is genuinely per-extension rather
 /// than per-category (the OS-codec dependencies). Not a second hand-maintained table: every
 /// field either falls out of `category()`, or reuses `is_known`/`is_archive` exactly the way
 /// their existing callers (`verbs::actions::is_image`, the Quick preview archive listing) do.
+/// An alias answers exactly as its parent (`alias_parent`).
 pub fn capability(ext: &str) -> Capability {
+    let ext = alias_parent(ext);
     let convertible = is_known(ext) && !is_archive(ext);
     let source = match category(ext) {
         // Most Image-category formats really are a full decode, but a fixed subset carve an

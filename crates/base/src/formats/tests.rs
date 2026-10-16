@@ -192,6 +192,12 @@ fn capability_lists_are_subset_of_formats() {
             "HEIF_OS_CODEC_EXTS names `{ext}`, which is not in FORMATS"
         );
     }
+    for &(alias, parent) in ALIAS_PARENTS {
+        assert!(
+            in_formats(alias) && in_formats(parent),
+            "ALIAS_PARENTS row `{alias}` -> `{parent}` names an extension not in FORMATS"
+        );
+    }
     for &ext in EMBEDDED_PREVIEW_EXTS {
         assert!(
             in_formats(ext),
@@ -308,6 +314,17 @@ fn spot_check_one_extension_per_source_kind() {
         ("pdf", Source::CoverOrFirstPage, None),
         ("mp4", Source::VideoFrame, Some(OsCodec::MediaFoundation)),
         ("zip", Source::ContainedImages, None),
+        // Aliases answer as their parent: the cover is content-sniffed, so a renamed
+        // container still shows its stored preview (or its parent's codec need).
+        ("blend1", Source::EmbeddedPreview, None),
+        ("blend32", Source::EmbeddedPreview, None),
+        ("skb", Source::EmbeddedPreview, None),
+        ("psdt", Source::EmbeddedPreview, None),
+        ("pdd", Source::EmbeddedPreview, None),
+        ("aftemplate", Source::EmbeddedPreview, None),
+        ("indt", Source::CoverOrFirstPage, None),
+        ("hif", Source::FullDecode, Some(OsCodec::Heif)),
+        ("wmp", Source::FullDecode, Some(OsCodec::WmPhoto)),
     ];
     for &(ext, expected_source, expected_codec) in cases {
         let cap = capability(ext);

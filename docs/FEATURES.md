@@ -377,8 +377,9 @@ plus these viewer-only extras:
   several sizes, and an A–Z / a–z / 0–9 glyph sheet, all rendered in the font itself (via the OS
   text stack). A `.woff` web font is just an sfnt with compressed tables, so it is unpacked on the
   fly and previews exactly like a `.ttf`.
-- **Archive listings** for `.zip`/`.7z`/`.rar` (and .jar/.apk/…): a sorted file tree with sizes,
-  read from the central directory / headers only; nothing is extracted.
+- **Archive listings** for `.zip`/`.7z`/`.rar` and zip-based packages (.jar, .whl, .nupkg, .appx,
+  .msix and the like): a sorted file tree with sizes, read from the central directory / headers
+  only; nothing is extracted. Android packages (.apk) show their app icon instead.
 - **Local HTML rendering** (opt-in, off by default) in an embedded **locked-down** WebView2:
   JavaScript disabled and **every non-`file://` request blocked**, so a page cannot phone home or
   load remote trackers. A separate opt-in can live-load a `.url` or `.webloc` shortcut's real page
