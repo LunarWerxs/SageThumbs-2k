@@ -31,6 +31,14 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $fail = New-Object System.Collections.Generic.List[string]
 
+# The registered extensions, read from crates/base/src/formats.rs `FORMATS` alone: its rows are
+# ("ext", "Friendly name") tuples, and other tables there use tuples too (ALIAS_PARENTS), so the
+# match is scoped to the FORMATS block. An empty result trips the count guard in section 2.
+$formatsBlock = [regex]::Match((Get-Content (Join-Path $root 'crates\base\src\formats.rs') -Raw),
+  '(?s)pub const FORMATS: &\[\(&str, &str\)\] = &\[(.*?)\r?\n\];').Groups[1].Value
+$formatsExts = @([regex]::Matches($formatsBlock, '\(\s*"([A-Za-z0-9]+)"\s*,\s*"') |
+  ForEach-Object { $_.Groups[1].Value.ToLower() })
+
 # Set of git-tracked paths (forward-slash, as git emits them).
 $tracked = @{}
 & git -C $root ls-files | ForEach-Object { $tracked[$_] = $true }
@@ -62,9 +70,8 @@ foreach ($doc in $docs) {
 }
 
 # --- 2) format count: crates/base/src/formats.rs FORMATS vs README badge + FEATURES --------
-# FORMATS entries are ("ext", "Friendly name") tuples; the category sub-lists are bare
-# &[&str] (no tuple) so this pattern counts FORMATS only. (Cross-checked == `st2k formats`.)
-$count = ([regex]::Matches((Get-Content (Join-Path $root 'crates\base\src\formats.rs') -Raw), '\(\s*"[A-Za-z0-9]+"\s*,\s*"')).Count
+# (Cross-checked == `st2k formats`.)
+$count = $formatsExts.Count
 if ($count -lt 250) {
   $fail.Add("FORMATS count parse looks wrong ($count) - the regex in this script needs fixing")
 }
@@ -513,8 +520,7 @@ if (-not (Test-Path $realManifest)) {
   $fail.Add('scripts/corpus-real.json is missing - the real-sample manifest every registered extension is checked against')
 } else {
   $real = Get-Content $realManifest -Raw | ConvertFrom-Json -AsHashtable
-  $registered = @([regex]::Matches((Get-Content (Join-Path $root 'crates\base\src\formats.rs') -Raw), '\(\s*"([A-Za-z0-9]+)"\s*,\s*"') |
-    ForEach-Object { $_.Groups[1].Value.ToLower() } | Sort-Object -Unique)
+  $registered = @($formatsExts | Sort-Object -Unique)
   $known = @{}
   foreach ($s in $real.samples) {
     $known[$s.file] = $true
@@ -562,8 +568,7 @@ if (-not (Test-Path $bigManifest) -or -not (Test-Path $ballastPy)) {
   $table = [regex]::Match((Get-Content $ballastPy -Raw), '(?s)STRATEGIES = \{(.*?)\}').Groups[1].Value
   $strategies = @([regex]::Matches($table, '"([a-z0-9-]+)"\s*:') | ForEach-Object { $_.Groups[1].Value })
   if ($strategies.Count -lt 3) { $fail.Add('could not read the STRATEGIES table out of scripts/bigfiles/ballast.py') }
-  $registeredBig = @([regex]::Matches((Get-Content (Join-Path $root 'crates\base\src\formats.rs') -Raw), '\(\s*"([A-Za-z0-9]+)"\s*,\s*"') |
-    ForEach-Object { $_.Groups[1].Value.ToLower() } | Sort-Object -Unique)
+  $registeredBig = @($formatsExts | Sort-Object -Unique)
   foreach ($ext in $registeredBig) {
     $e = $big[$ext]
     if ($null -eq $e) {
