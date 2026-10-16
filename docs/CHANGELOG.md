@@ -7,6 +7,22 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## Unreleased
+
+**TL;DR**
+
+**Fixed**
+
+- **Backup and template files name the right thumbnail source**
+
+**Everything in Unreleased**
+
+- **Backup and template files name the right thumbnail source.** The Settings format list and
+  `st2k formats` said Blender's auto-save backups (`.blend1` to `.blend32`), SketchUp backups
+  (`.skb`), Photoshop `.psdt` and `.pdd` files and Affinity templates (`.aftemplate`) were fully
+  decoded. Like the files they are copies of, they show the preview stored inside, and they now
+  say so. The thumbnails themselves are unchanged.
+
 ## 3.7.4
 
 **TL;DR**
