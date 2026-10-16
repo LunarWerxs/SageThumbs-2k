@@ -121,7 +121,7 @@ windows-core = "0.62"
 # renderer in pdf.rs. Same version `windows` 0.62 pulls in transitively.
 windows-future = "0.3"
 windows-implement = "0.60"
-zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 # CMYK JPEGs: the `image` crate converts CMYK→RGB naively (ignoring the embedded CMYK ICC)
 # → wrong/inverted colors. We decode the RAW 4-channel CMYK with zune-jpeg (the JPEG backend
 # `image` ALREADY uses, so naming it here shares the compiled crate = zero added bytes) and

@@ -78,7 +78,9 @@ fn brute_force_cover<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<String> 
         if f.is_dir() {
             continue;
         }
-        let name = f.name().to_string();
+        let Ok(name) = f.name().map(|n| n.into_owned()) else {
+            continue;
+        };
         if super::is_image_name(&name) && name.to_ascii_lowercase().contains("cover") {
             return Some(name);
         }
@@ -321,7 +323,7 @@ fn read_named_ci<R: Read + Seek>(zip: &mut ZipArchive<R>, name: &str) -> Option<
     for i in 0..zip.len().min(super::MAX_LIST_ENTRIES) {
         if zip
             .name_for_index(i)
-            .is_some_and(|n| n.eq_ignore_ascii_case(name))
+            .is_some_and(|n| n.is_ok_and(|n| n.eq_ignore_ascii_case(name)))
         {
             return read_index(zip, i);
         }

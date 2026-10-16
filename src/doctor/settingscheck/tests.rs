@@ -152,7 +152,7 @@ fn bundle_writes_a_zip_with_report_formats_log_tail_and_settings() {
     let f = std::fs::File::open(&out).unwrap();
     let mut zip = zip::ZipArchive::new(f).unwrap();
     let names: Vec<String> = (0..zip.len())
-        .map(|i| zip.by_index(i).unwrap().name().to_string())
+        .map(|i| zip.by_index(i).unwrap().name().unwrap().into_owned())
         .collect();
     for expect in [
         "doctor-report.txt",

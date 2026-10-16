@@ -31,8 +31,9 @@ pub fn extract<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Option<Vec<u8>
         let name = zip
             .file_names()
             .take(super::MAX_LIST_ENTRIES)
+            .flatten()
             .find(|n| !n.contains('/') && n.to_ascii_lowercase().ends_with(".nuspec"))?
-            .to_string();
+            .into_owned();
         (name, false)
     };
     let xml = zip
@@ -84,8 +85,9 @@ fn read_entry<R: Read + Seek>(zip: &mut ZipArchive<R>, path: &str) -> Option<Vec
     let name = zip
         .file_names()
         .take(super::MAX_LIST_ENTRIES)
+        .flatten()
         .find(|n| n.eq_ignore_ascii_case(path))?
-        .to_string();
+        .into_owned();
     read_named(zip, &name)
 }
 

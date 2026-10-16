@@ -162,8 +162,9 @@ fn read_suffix<R: Read + Seek>(zip: &mut ZipArchive<R>, suffix_lc: &str) -> Opti
     // it WAITS: the worker keeps burning CPU in the shell after the caller has given up.
     let mut hit = None;
     for (i, n) in zip.file_names().take(super::MAX_LIST_ENTRIES).enumerate() {
+        let Ok(n) = n else { continue };
         if n.to_ascii_lowercase().ends_with(suffix_lc) {
-            hit = Some((i, n.to_string()));
+            hit = Some((i, n.into_owned()));
             break;
         }
     }

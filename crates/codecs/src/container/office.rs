@@ -51,7 +51,7 @@ fn has_ooxml_part<R: Read + Seek>(zip: &mut ZipArchive<R>) -> bool {
     // slower than its siblings (apk.rs, epub.rs, project.rs, zipfmt.rs all clamp the same way).
     (0..zip.len().min(super::MAX_LIST_ENTRIES)).any(|i| {
         zip.name_for_index(i)
-            .is_some_and(|n| PREFIXES.iter().any(|p| n.starts_with(p)))
+            .is_some_and(|n| n.is_ok_and(|n| PREFIXES.iter().any(|p| n.starts_with(p))))
     })
 }
 

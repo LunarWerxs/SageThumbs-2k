@@ -72,7 +72,7 @@ fn combine_to_cbz_zips_pages_in_natural_order() {
     let mut zip = zip::ZipArchive::new(f).unwrap();
     assert_eq!(zip.len(), 4);
     let order: Vec<String> = (0..zip.len())
-        .map(|i| zip.by_index(i).unwrap().name().to_string())
+        .map(|i| zip.by_index(i).unwrap().name().unwrap().into_owned())
         .collect();
     assert_eq!(
         order,

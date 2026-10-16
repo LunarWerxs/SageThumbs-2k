@@ -123,7 +123,7 @@ fn cbz_leads_with_comicinfo_and_describes_every_page() {
     let mut zip = zip::ZipArchive::new(f).unwrap();
     assert_eq!(zip.len(), 4, "3 pages + the sidecar");
     assert_eq!(
-        zip.by_index(0).unwrap().name(),
+        zip.by_index(0).unwrap().name().unwrap(),
         "ComicInfo.xml",
         "the sidecar must be the first entry"
     );
@@ -153,9 +153,9 @@ fn cbz_leads_with_comicinfo_and_describes_every_page() {
         "the sidecar counted itself as a page"
     );
 
-    assert_eq!(zip.by_index(1).unwrap().name(), "001_page1.png");
-    assert_eq!(zip.by_index(2).unwrap().name(), "002_page2.png");
-    assert_eq!(zip.by_index(3).unwrap().name(), "003_page10.png");
+    assert_eq!(zip.by_index(1).unwrap().name().unwrap(), "001_page1.png");
+    assert_eq!(zip.by_index(2).unwrap().name().unwrap(), "002_page2.png");
+    assert_eq!(zip.by_index(3).unwrap().name().unwrap(), "003_page10.png");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

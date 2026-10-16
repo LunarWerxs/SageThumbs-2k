@@ -33,7 +33,7 @@ tiff = { version = "0.11", default-features = false }
 webp = { version = "0.3", default-features = false, optional = true }
 windows = { workspace = true }
 windows-registry = "0.6"
-zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 st2k_base = { package = "sagethumbs2k-base", path = "../base" }
 st2k_codecs = { package = "sagethumbs2k-codecs", path = "../codecs" }
 

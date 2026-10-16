@@ -16,7 +16,8 @@
 
 use std::io::{Cursor, Read, Seek};
 
-use zip::{HasZipMetadata, ZipArchive};
+use zip::unstable::format::flags::ZipFlags;
+use zip::ZipArchive;
 
 use super::names;
 use super::select::{pick_covers, CoverPrefs, Entry};
@@ -138,9 +139,9 @@ pub(crate) fn cover_image_only<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Optio
 /// up-to-three extra pictures of a contact sheet share one small pool (a crafted archive of
 /// MAX_COVER-sized "cover" candidates once cost 128 MiB for one shell thumbnail). Each pick is
 /// charged from the bytes it ACTUALLY reads, and the read itself is capped at what is left
-/// (`read_index_bounded`): the `zip` crate never enforces the central directory's declared
-/// uncompressed size against the real deflate output, so a crafted archive can declare any
-/// number and still inflate to the cap. Bounding the read is the only thing that holds; a
+/// (`read_index_bounded`). Since zip 9 the crate fails a read that inflates past the declared
+/// uncompressed size, but a declared size up to the cap is still the archive's own word, and
+/// this module must not depend on one crate version's check. Bounding the read is what holds; a
 /// declared-size pre-check can neither trust the number nor tell a lie from an honestly
 /// incompressible page whose deflate stream came out a few bytes larger than the original.
 pub(crate) fn covers_image_only<R: Read + Seek>(
@@ -195,8 +196,9 @@ fn find_entry_ext<R: Read + Seek>(zip: &mut ZipArchive<R>, dot_ext: &str) -> Opt
     // `list_entries` below: the FBZ probe now also runs on the SEEKABLE path.
     zip.file_names()
         .take(super::MAX_LIST_ENTRIES)
+        .flatten()
         .find(|name| name.to_ascii_lowercase().ends_with(dot_ext))
-        .map(str::to_string)
+        .map(|name| name.into_owned())
 }
 
 /// Collect up to `max` central-directory entries as display [`Entry`]s. The bound is
@@ -232,9 +234,9 @@ pub(crate) fn list_bytes(bytes: &[u8], max: usize) -> Option<Vec<Entry>> {
     Some(entries_bounded(&mut zip, max))
 }
 
-/// The listing DISPLAY name for an entry. `zip` parses the central directory's general-purpose
-/// bit 11 itself (set -> UTF-8, unset -> CP437, via its own embedded table), so a correctly-
-/// flagged archive already comes back right. This is layered on top of that for two gaps the
+/// The listing DISPLAY name for an entry. `zip` 9 decodes a name as UTF-8 whenever the bytes are
+/// valid UTF-8 and as CP437 otherwise (via its own embedded table), whatever general-purpose bit 11
+/// says, so a UTF-8 or CP437 name already comes back right. This is layered on top of that for two gaps the
 /// crate's own decode doesn't cover: some real-world writers (older Info-ZIP on Linux, some
 /// 7-Zip configurations) store raw UTF-8 bytes but never set the flag, and an unflagged name
 /// may not be CP437 at all (a Shift-JIS name written on a Japanese system, for instance) - see
@@ -245,7 +247,7 @@ pub(crate) fn list_bytes(bytes: &[u8], max: usize) -> Option<Vec<Entry>> {
 // is generic over it rather than over one concrete reader. `?Sized` is required: the crate hands
 // out `ZipFile<'_, dyn Read>` on some paths.
 fn entry_display_name<R: std::io::Read + ?Sized>(f: &zip::read::ZipFile<'_, R>) -> String {
-    prefer_utf8(f.name_raw(), f.get_metadata().is_utf8)
+    prefer_utf8(f.name_raw(), f.flags().matching(ZipFlags::LanguageEncoding))
 }
 
 /// Decode `raw` via [`names::decode_entry_name`], passing along the zip crate's own
@@ -382,12 +384,14 @@ mod tests {
         );
     }
 
-    /// The contact-sheet budget is spent by the bytes an entry REALLY inflates to, and an
-    /// entry that does not fit what is left is refused whole. Four 3 MiB pages that all
-    /// declare 1 byte: the first is the cover, the next two fit the 8 MiB extras pool, and
-    /// the fourth would need 3 MiB of the remaining 2 MiB and is skipped.
+    /// An entry whose deflate stream inflates past its declared size is refused whole: never
+    /// served cut off at the size its header claims, never charged to the budget. Four 3 MiB
+    /// pages that all declare 1 byte. Under zip 8 the crate did not hold a read to the declared
+    /// size, so the bounded read admitted the cover and two extras by their real bytes; zip 9
+    /// (9.0.1, zip-rs/zip2#1022) fails such a read, so no page of this archive is served. The
+    /// pool accounting by real bytes is owned by the honest-size test above.
     #[test]
-    fn contact_sheet_budget_is_spent_by_real_bytes_not_the_declared_size() {
+    fn an_entry_that_inflates_past_its_declared_size_is_refused_whole() {
         let real = vec![0xABu8; 3_000_000]; // inflates to ~3 MiB
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         let opts = zip::write::SimpleFileOptions::default()
@@ -417,16 +421,15 @@ mod tests {
             1,
             "the lie must be in place"
         );
-        let covers = covers_image_only(&mut zip, 4, &default_prefs())
-            .expect("the pages that fit the budget are still served");
         assert_eq!(
-            covers.len(),
-            3,
-            "the cover and two real 3 MiB extras fit, not four"
+            read_index(&mut zip, 0),
+            None,
+            "a lying entry is refused, never handed back cut off at its declared byte"
         );
-        assert!(
-            covers.iter().all(|c| c.len() == real.len()),
-            "never a truncated page"
+        assert_eq!(
+            covers_image_only(&mut zip, 4, &default_prefs()),
+            None,
+            "no page of a lying archive is served"
         );
     }
 

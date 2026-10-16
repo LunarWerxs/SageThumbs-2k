@@ -33,7 +33,7 @@ webview2-com = { version = "0.39", optional = true }
 windows = { workspace = true }
 # The `#[implement]` macro (the video player's notify callback) expands to `windows_core::` paths.
 windows-core = "0.62"
-zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 st2k_base = { package = "sagethumbs2k-base", path = "../base" }
 st2k_codecs = { package = "sagethumbs2k-codecs", path = "../codecs" }
 st2k_actions = { package = "sagethumbs2k-actions", path = "../actions" }

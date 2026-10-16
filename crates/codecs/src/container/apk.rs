@@ -157,8 +157,8 @@ pub(crate) fn archive_is_apk<R: Read + Seek>(zip: &mut ZipArchive<R>) -> bool {
     if zip.by_name("AndroidManifest.xml").is_ok() {
         return true;
     }
-    for name in zip.file_names().take(super::MAX_LIST_ENTRIES) {
-        if ends_with_ci(name, ".apk") && is_shallow(name) {
+    for name in zip.file_names().take(super::MAX_LIST_ENTRIES).flatten() {
+        if ends_with_ci(&name, ".apk") && is_shallow(&name) {
             return true;
         }
     }
@@ -246,11 +246,11 @@ fn pick_wrapper_apk<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<usize> {
     let mut pick: Option<(bool, u64, usize)> = None;
     for i in 0..zip.len().min(super::MAX_LIST_ENTRIES) {
         let Ok(f) = zip.by_index(i) else { continue };
-        let name = f.name();
-        if !ends_with_ci(name, ".apk") || !is_shallow(name) {
+        let Ok(name) = f.name() else { continue };
+        if !ends_with_ci(&name, ".apk") || !is_shallow(&name) {
             continue;
         }
-        let is_base = name.eq_ignore_ascii_case("base.apk") || ends_with_ci(name, "/base.apk");
+        let is_base = name.eq_ignore_ascii_case("base.apk") || ends_with_ci(&name, "/base.apk");
         let size = f.size();
         // A compressed split past MAX_INNER_APK would have to be held whole, which
         // `wrapper_icon` refuses: picked, it hid a smaller split that fits.
@@ -331,7 +331,9 @@ fn scan_for_launcher<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<String> 
     let mut best: Option<(u8, u64, String)> = None;
     for i in 0..zip.len().min(super::MAX_LIST_ENTRIES) {
         let Ok(f) = zip.by_index(i) else { continue };
-        let name = f.name().to_string();
+        let Ok(name) = f.name().map(|n| n.into_owned()) else {
+            continue;
+        };
         let lower = name.to_ascii_lowercase();
         if !lower.starts_with("res/") || !lower.contains("ic_launcher") || !is_raster_path(&lower) {
             continue;

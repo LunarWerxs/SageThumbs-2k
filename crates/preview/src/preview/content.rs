@@ -598,8 +598,12 @@ fn big_zip_entries(path: &str) -> Option<Vec<(String, u64, bool)>> {
             continue;
         };
         // Valid UTF-8 wins whatever the flag says (the same rule as the whole-file listing);
-        // otherwise the crate's own CP437 reading.
-        let name = String::from_utf8(f.name_raw().to_vec()).unwrap_or_else(|_| f.name().to_owned());
+        // otherwise the crate's own CP437 reading. zip 9's `name()` applies exactly that order; a
+        // name it cannot decode at all is shown lossily rather than dropped.
+        let name = f.name().map_or_else(
+            |_| String::from_utf8_lossy(f.name_raw()).into_owned(),
+            |n| n.into_owned(),
+        );
         out.push((name, f.size(), f.is_dir()));
     }
     Some(out)

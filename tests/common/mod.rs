@@ -97,7 +97,7 @@ pub fn zip_entries(path: &std::path::Path) -> Vec<(String, Vec<u8>)> {
             let mut entry = zip.by_index(i).expect("entry");
             let mut bytes = Vec::new();
             std::io::Read::read_to_end(&mut entry, &mut bytes).expect("read entry");
-            (entry.name().to_string(), bytes)
+            (entry.name().expect("entry name").into_owned(), bytes)
         })
         .collect()
 }
