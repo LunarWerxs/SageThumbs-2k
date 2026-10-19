@@ -40,7 +40,6 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   SageThumbs missed it and showed another image from the file, a nearly empty mask the slicer
   uses for clicking on objects, so the thumbnail came out blank and see-through. The plate's
   render is now shown.
-
 - **Backup and template files name the right thumbnail source.** The Settings format list and
   `st2k formats` said Blender's auto-save backups (`.blend1` to `.blend32`), SketchUp backups
   (`.skb`), Photoshop `.psdt` and `.pdd` files and Affinity templates (`.aftemplate`) were fully
@@ -49,14 +48,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **The File types list shows every extension in full.** Its columns had fixed widths that did
   not grow with Windows display scaling, so at 150% or 200% the checkbox took up most of the
   Extension column and extensions were cut to `.ap…` or `b…`. Extensions now always show in
-  full, in every language and at every scaling. Category and How size themselves to what they
-  hold, up to a share of the list so Description always keeps room, and Description gets the
-  rest. You can still drag the dividers between columns, and double-clicking one fits that
-  column to its contents.
+  full, in every language and at every scaling, and the other columns size themselves to what
+  they hold. You can still drag the dividers, and double-clicking one fits that column to its
+  contents.
 - **The File types list's Category column is in your language.** It said Image, Ebook, Audio
-  and so on in English whatever language SageThumbs was set to. It is now translated into all
-  36 languages, and the search box above the list finds a format by its category in your
-  language or in English.
+  and so on in English whatever language SageThumbs was set to. It now follows your language
+  in all 36 that SageThumbs speaks, and the search box above the list finds a format by its
+  category in your language or in English.
 - **The File types list's How column no longer cuts off translated labels.** In 24 languages
   some How labels ran up to three times as wide as the English ones, mostly the "(OS codec)"
   note on video rows, so they ended in "...". They now use the short forms each language's
