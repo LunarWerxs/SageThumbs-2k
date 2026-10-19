@@ -7,7 +7,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 3.8.0
 
 **TL;DR**
 
@@ -24,7 +24,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **The File types list's Category column is in your language**
 - **The File types list's How column no longer cuts off translated labels**
 
-**Everything in Unreleased**
+**Everything in 3.8.0**
 
 - **3MF files without a saved picture show their model.** A 3MF from a CAD program, or a bare
   model file, carries only the 3D model and no picture of it, so it got no thumbnail, or a
