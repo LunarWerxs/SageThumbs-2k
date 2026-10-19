@@ -111,6 +111,54 @@ fn format_search_matches_the_category_in_english_and_in_the_shown_language() {
     assert!(!png("video"), "another category does not match");
 }
 
+/// Widest a File types "How" cell may measure, in 96-DPI design px. The column stops at a third
+/// of the list (about 171 px at 96 dpi, some 159 px of text once the cell padding is taken),
+/// and the widest English cell is 125 px.
+const HOW_CELL_MAX: i32 = 150;
+
+/// Every language's How cell for every format fits the How column. Translations ran up to
+/// three times the English width, "Πλήρης αποκωδικοποίηση (Κωδικοποιητής λειτουργικού
+/// συστήματος)" at 385 px, so with the column capped 24 languages showed "..." on those rows
+/// (2026-10-19). Builds each cell the way the list does, from the real format table.
+///
+/// Has teeth: the old German label is measured too and must come out over the limit, so
+/// a measurement that silently returns 0 cannot pass this.
+#[test]
+fn every_language_fits_every_how_cell_in_the_how_column() {
+    let measure = |s: &str| unsafe { st2k_appkit::win::design_text_w(s) };
+    let old_german = "Vollständige Dekodierung (Betriebssystem-Codec)";
+    assert!(
+        measure(old_german) > HOW_CELL_MAX,
+        "the 265 px German label measured {} px: the measurement is broken",
+        measure(old_german)
+    );
+    let mut too_wide = Vec::new();
+    for (code, pairs) in i18n::LOCALES {
+        let tr = |key: &str| -> &'static str {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| *v)
+                .expect("check-locale-keys keeps every key in every language")
+        };
+        let cells: std::collections::BTreeSet<String> = formats::FORMATS
+            .iter()
+            .map(|(ext, _)| capability_label_in(ext, tr))
+            .collect();
+        for cell in cells {
+            let w = measure(&cell);
+            if w > HOW_CELL_MAX {
+                too_wide.push(format!("{code}: {w} px {cell:?}"));
+            }
+        }
+    }
+    assert!(
+        too_wide.is_empty(),
+        "How cells wider than {HOW_CELL_MAX} px; shorten the translation:\n{}",
+        too_wide.join("\n")
+    );
+}
+
 /// Every top-level menu item but Settings has a row in Settings' menu list, so it can be
 /// hidden and moved like the rest. Compress to size and Save frame as image shipped without
 /// one: nobody could hide them, and any saved order dumped them at the bottom (2026-10-07).

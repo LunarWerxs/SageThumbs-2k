@@ -22,6 +22,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **Backup and template files name the right thumbnail source**
 - **The File types list shows every extension in full**
 - **The File types list's Category column is in your language**
+- **The File types list's How column no longer cuts off translated labels**
 
 **Everything in Unreleased**
 
@@ -56,6 +57,10 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   and so on in English whatever language SageThumbs was set to. It is now translated into all
   36 languages, and the search box above the list finds a format by its category in your
   language or in English.
+- **The File types list's How column no longer cuts off translated labels.** In 24 languages
+  some How labels ran up to three times as wide as the English ones, mostly the "(OS codec)"
+  note on video rows, so they ended in "...". They now use the short forms each language's
+  own software uses (OS, SO, ОС, 系统解码器 and so on), and every one fits.
 
 ## 3.7.4
 

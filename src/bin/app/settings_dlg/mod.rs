@@ -449,17 +449,23 @@ impl Drop for PopulateGuard {
 /// route depends on one that may not be installed. `formats::capability` is the single
 /// source of truth for the underlying fact; this is presentation only.
 pub(super) fn capability_label(ext: &str) -> String {
+    capability_label_in(ext, t)
+}
+
+/// [`capability_label`] with the strings looked up by `tr`, so a test can build every
+/// language's cells without switching the process language.
+pub(super) fn capability_label_in(ext: &str, tr: impl Fn(&str) -> &'static str) -> String {
     let cap = formats::capability(ext);
-    let base = match cap.source {
-        formats::Source::FullDecode => t("cap_full_decode"),
-        formats::Source::EmbeddedPreview => t("cap_embedded_preview"),
-        formats::Source::CoverArt => t("cap_cover_art"),
-        formats::Source::CoverOrFirstPage => t("cap_cover_or_first_page"),
-        formats::Source::VideoFrame => t("cap_video_frame"),
-        formats::Source::ContainedImages => t("cap_contained_images"),
-    };
+    let base = tr(match cap.source {
+        formats::Source::FullDecode => "cap_full_decode",
+        formats::Source::EmbeddedPreview => "cap_embedded_preview",
+        formats::Source::CoverArt => "cap_cover_art",
+        formats::Source::CoverOrFirstPage => "cap_cover_or_first_page",
+        formats::Source::VideoFrame => "cap_video_frame",
+        formats::Source::ContainedImages => "cap_contained_images",
+    });
     match cap.os_codec {
-        Some(_) => format!("{base} ({})", t("cap_os_codec")),
+        Some(_) => format!("{base} ({})", tr("cap_os_codec")),
         None => base.to_string(),
     }
 }
