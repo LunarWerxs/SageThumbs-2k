@@ -47,12 +47,34 @@ fn spawn(dir: &Path, lang: &str, dpi: u32) -> (PathBuf, Child) {
     (out, child)
 }
 
-/// What the runs reported: findings, windows that failed, and how many windows were audited.
+/// What the runs reported: findings, windows that failed, how many windows were audited, and
+/// each run's window titles in order (tag, titles).
 #[derive(Default)]
 struct Tally {
     findings: Vec<String>,
     failed: Vec<String>,
     audited: usize,
+    titles: Vec<(String, Vec<String>)>,
+}
+
+/// The `"window":"…"` title on one line of an audit file.
+fn window_title(line: &str) -> Option<String> {
+    let rest = &line[line.find("\"window\":\"")? + 10..];
+    Some(rest[..rest.find('"')?].to_string())
+}
+
+/// The non-English runs whose windows came up with exactly the English run's titles: the app
+/// never switched language (an unknown code, an ini it did not read), so the run audited the
+/// English windows and its clean result says nothing about the translation it is named for.
+fn runs_still_in_english(titles: &[(String, Vec<String>)]) -> Vec<String> {
+    let Some((_, english)) = titles.iter().find(|(tag, _)| tag.starts_with("en_")) else {
+        return Vec::new();
+    };
+    titles
+        .iter()
+        .filter(|(tag, t)| !tag.starts_with("en_") && t == english)
+        .map(|(tag, _)| tag.clone())
+        .collect()
 }
 
 /// Wait for one run and add what its file says to `t`.
@@ -60,6 +82,13 @@ fn tally_run(t: &mut Tally, out: &Path, mut child: Child) {
     let status = child.wait().expect("wait for the audit run");
     let tag = out.file_stem().unwrap().to_string_lossy().into_owned();
     let text = std::fs::read_to_string(out).unwrap_or_default();
+    t.titles.push((
+        tag.clone(),
+        text.lines()
+            .filter(|l| l.contains("\"audited\":"))
+            .filter_map(window_title)
+            .collect(),
+    ));
     for line in text.lines() {
         match ["kind", "error", "audited"]
             .into_iter()
@@ -74,6 +103,24 @@ fn tally_run(t: &mut Tally, out: &Path, mut child: Child) {
     if !status.success() {
         t.failed.push(format!("{tag}: exit {:?}", status.code()));
     }
+}
+
+/// The language check itself, on the titles a real run records: a Bulgarian run that came up
+/// in English is caught, a translated one is not, and with no English run to compare against
+/// nothing is claimed (2026-10-19: a shot script's broken ini path left every "translated"
+/// audit in English, and each passed clean).
+#[test]
+fn a_run_that_never_left_english_is_reported() {
+    let line = |w: &str| format!("{{\"audited\":3,\"shot\":\"settings:0\",\"window\":\"{w}\"}}");
+    assert_eq!(window_title(&line("Send feedback")).as_deref(), Some("Send feedback"));
+    let en = ("en_96".to_string(), vec!["Send feedback".to_string(), "Settings".to_string()]);
+    let stuck = ("bg_192".to_string(), en.1.clone());
+    let translated = ("fil_144".to_string(), vec!["Magpadala ng feedback".to_string(), "Mga Setting".to_string()]);
+    assert_eq!(
+        runs_still_in_english(&[en.clone(), stuck.clone(), translated.clone()]),
+        vec!["bg_192".to_string()]
+    );
+    assert!(runs_still_in_english(&[stuck, translated]).is_empty());
 }
 
 #[test]
@@ -92,6 +139,7 @@ fn no_window_cuts_off_a_control_in_english_or_the_longest_languages() {
         findings,
         failed,
         audited,
+        titles,
     } = t;
 
     assert!(
@@ -99,6 +147,11 @@ fn no_window_cuts_off_a_control_in_english_or_the_longest_languages() {
         "windows that did not build or showed nothing: {failed:#?}"
     );
     assert!(audited > 0, "the runs audited no window at all");
+    let english = runs_still_in_english(&titles);
+    assert!(
+        english.is_empty(),
+        "these runs came up in English, not their language, so they tested nothing: {english:?}"
+    );
     assert!(
         findings.is_empty(),
         "{} control(s) cut off, off the edge or overlapping:\n{}",

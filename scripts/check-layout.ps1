@@ -68,11 +68,25 @@ Remove-Item Env:\ST2K_PORTABLE_INI -ErrorAction SilentlyContinue
 
 $findings = New-Object System.Collections.ArrayList
 $audited = 0
+$titles = @{}
 foreach ($f in Get-ChildItem $Out -Filter *.jsonl) {
+    $titles[$f.BaseName] = @()
     foreach ($line in Get-Content $f.FullName) {
         if ($line -match '"kind":') { [void]$findings.Add("$($f.BaseName): $line") }
         elseif ($line -match '"error":') { [void]$failed.Add("$($f.BaseName): $line") }
-        elseif ($line -match '"audited":') { $audited++ }
+        elseif ($line -match '"audited":') {
+            $audited++
+            if ($line -match '"window":"([^"]*)"') { $titles[$f.BaseName] += $Matches[1] }
+        }
+    }
+}
+# A run whose windows carry exactly the English run's titles never switched language (an
+# unknown code, an ini it did not read): it audited English and its clean result tests nothing.
+foreach ($dpi in $Dpis) {
+    $en = $titles["en_$dpi"]
+    if (-not $en) { continue }
+    foreach ($tag in @($titles.Keys | Where-Object { $_ -like "*_$dpi" -and $_ -ne "en_$dpi" })) {
+        if (($titles[$tag] -join "`n") -eq ($en -join "`n")) { [void]$failed.Add("${tag}: came up in English, not its language") }
     }
 }
 "layout: $audited shots audited ($($Langs.Count) languages x $($Dpis.Count) scalings), $($findings.Count) finding(s), $($failed.Count) failed run(s), $([int]$clock.Elapsed.TotalSeconds) s - details in $Out"
