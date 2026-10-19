@@ -840,14 +840,12 @@ unsafe fn threemf_stream(stream: &IStream, head: &StreamHead, who: &str) -> Opti
     if !head.bytes().starts_with(b"PK\x03\x04") {
         return None;
     }
+    let size = head.size?;
     let _ = stream.Seek(0, STREAM_SEEK_SET, None);
-    let reader = std::io::BufReader::with_capacity(
-        1 << 20,
-        IStreamReader {
-            stream: stream.clone(),
-        },
-    );
-    let img = crate::container::draw_3mf_from_reader(reader);
+    // Through the walk reader, as every other zip on this path is: a deadline and a read
+    // budget. A bare reader let zip's backward hunt for the directory read a megabyte for every
+    // kilobyte it stepped back, without end, on a large file that has no directory.
+    let img = crate::container::draw_3mf_from_reader(walk_reader(stream, size));
     let _ = stream.Seek(0, STREAM_SEEK_SET, None);
     let img = img?;
     safety::log_debugf!(

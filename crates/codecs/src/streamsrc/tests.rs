@@ -989,3 +989,200 @@ fn an_appledouble_companion_is_refused_at_the_head() {
         Ok(_) => panic!("an AppleDouble companion must not reach the decode tiers"),
     }
 }
+
+/// The 3MF the fuzz seeds carry: a picture-less package in Bambu Studio's shape.
+fn picture_less_3mf() -> Vec<u8> {
+    crate::container::fuzzseed::seeds()
+        .into_iter()
+        .find(|(name, _)| *name == "3mf-model")
+        .expect("the 3MF fuzz seed")
+        .1
+}
+
+/// A 3MF past the buffering ceiling with no picture of its own has its model drawn off the
+/// stream, the zip read through the same bounded walk reader as every other zip there.
+#[test]
+fn an_oversized_picture_less_3mf_is_drawn_off_the_stream() {
+    let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
+    let got = oversized_source(&picture_less_3mf(), 256);
+    if com {
+        unsafe { CoUninitialize() };
+    }
+    match got {
+        Some(StreamSource::Frame(img)) => assert!(img.width() >= 16 && img.height() >= 16),
+        Some(_) => panic!("expected the drawn model as a frame"),
+        None => panic!("a big picture-less 3MF got no thumbnail"),
+    }
+}
+
+/// A zip past the buffering ceiling with no central directory costs less than one read of the
+/// file. zip hunts for the directory backward a kilobyte at a time, and through the bare
+/// buffered reader the 3MF path once used, every step re-read a megabyte: a terabyte for this
+/// 1 GiB file, with no deadline, on the thumbnail thread (the 3.8.0 release review,
+/// 2026-10-19). Counted, not timed: a stream in memory serves those re-reads too fast to tell
+/// apart, and the shell's stream from another process does not.
+#[test]
+fn a_directory_less_zip_past_the_ceiling_costs_less_than_the_file() {
+    let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
+    let size: u64 = 1 << 30;
+    let zip = zeros::DirectoryLessZip::new(size);
+    let read = std::sync::Arc::clone(&zip.read);
+    let stream: IStream = zip.into();
+    let got =
+        unsafe { stream_source_with_caps(&stream, &test_cfg(u64::MAX), 1024, 256, "test") }.ok();
+    if com {
+        unsafe { CoUninitialize() };
+    }
+    let read = read.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(got.is_none(), "zeros past a zip header are no picture");
+    assert!(
+        read < size,
+        "the cascade read {read} bytes of a {size}-byte zip with no directory"
+    );
+}
+
+/// A zip's local header and then zeros, produced on read, so a gigabyte of it costs no memory.
+/// It counts what is read, and past [`DirectoryLessZip::STOP`] bytes every read fails, so a
+/// reader with no budget of its own still ends and the count says how far it got.
+mod zeros {
+    use core::ffi::c_void;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use windows::core::{Error, Result, HRESULT};
+    use windows::Win32::Foundation::{
+        E_FAIL, E_INVALIDARG, E_NOTIMPL, E_POINTER, STG_E_ACCESSDENIED, S_FALSE, S_OK,
+    };
+    use windows::Win32::System::Com::{
+        ISequentialStream_Impl, IStream, IStream_Impl, LOCKTYPE, STATFLAG, STATSTG, STGC,
+        STGTY_STREAM, STREAM_SEEK, STREAM_SEEK_CUR, STREAM_SEEK_END, STREAM_SEEK_SET,
+    };
+    use windows_implement::implement;
+
+    const HEAD: &[u8] = b"PK\x03\x04";
+
+    #[implement(IStream)]
+    pub struct DirectoryLessZip {
+        size: u64,
+        pos: Mutex<u64>,
+        /// Bytes handed out by every read so far.
+        pub read: Arc<AtomicU64>,
+    }
+
+    impl DirectoryLessZip {
+        /// Past this many bytes read, every read fails.
+        const STOP: u64 = 8 << 30;
+
+        pub fn new(size: u64) -> Self {
+            Self {
+                size,
+                pos: Mutex::new(0),
+                read: Arc::default(),
+            }
+        }
+    }
+
+    impl ISequentialStream_Impl for DirectoryLessZip_Impl {
+        fn Read(&self, pv: *mut c_void, cb: u32, pcbread: *mut u32) -> HRESULT {
+            if pv.is_null() {
+                return E_POINTER;
+            }
+            let Ok(mut pos) = self.pos.lock() else {
+                return E_FAIL;
+            };
+            let n = u64::from(cb).min(self.size.saturating_sub(*pos));
+            if self.read.fetch_add(n, Ordering::Relaxed) + n > DirectoryLessZip::STOP {
+                return E_FAIL;
+            }
+            // SAFETY: the caller's buffer holds `cb` bytes, and `n <= cb`.
+            let out = unsafe { std::slice::from_raw_parts_mut(pv as *mut u8, n as usize) };
+            out.fill(0);
+            let at = *pos as usize;
+            if at < HEAD.len() {
+                let k = (HEAD.len() - at).min(out.len());
+                out[..k].copy_from_slice(&HEAD[at..at + k]);
+            }
+            *pos += n;
+            if !pcbread.is_null() {
+                unsafe { *pcbread = n as u32 };
+            }
+            if n == u64::from(cb) {
+                S_OK
+            } else {
+                S_FALSE
+            }
+        }
+
+        fn Write(&self, _pv: *const c_void, _cb: u32, _pcbwritten: *mut u32) -> HRESULT {
+            STG_E_ACCESSDENIED
+        }
+    }
+
+    impl IStream_Impl for DirectoryLessZip_Impl {
+        fn Seek(
+            &self,
+            dlibmove: i64,
+            dworigin: STREAM_SEEK,
+            plibnewposition: *mut u64,
+        ) -> Result<()> {
+            let mut pos = self.pos.lock().map_err(|_| Error::from(E_FAIL))?;
+            let base: i128 = match dworigin {
+                STREAM_SEEK_SET => 0,
+                STREAM_SEEK_CUR => *pos as i128,
+                STREAM_SEEK_END => self.size as i128,
+                _ => return Err(Error::from(E_INVALIDARG)),
+            };
+            let np = base + dlibmove as i128;
+            if np < 0 {
+                return Err(Error::from(E_INVALIDARG));
+            }
+            *pos = np as u64;
+            if !plibnewposition.is_null() {
+                unsafe { *plibnewposition = *pos };
+            }
+            Ok(())
+        }
+
+        fn Stat(&self, pstatstg: *mut STATSTG, _grfstatflag: &STATFLAG) -> Result<()> {
+            if pstatstg.is_null() {
+                return Err(Error::from(E_POINTER));
+            }
+            unsafe {
+                *pstatstg = STATSTG {
+                    r#type: STGTY_STREAM.0 as u32,
+                    cbSize: self.size,
+                    ..Default::default()
+                }
+            };
+            Ok(())
+        }
+
+        fn SetSize(&self, _libnewsize: u64) -> Result<()> {
+            Err(Error::from(E_NOTIMPL))
+        }
+        fn CopyTo(
+            &self,
+            _pstm: windows::core::Ref<'_, IStream>,
+            _cb: u64,
+            _pcbread: *mut u64,
+            _pcbwritten: *mut u64,
+        ) -> Result<()> {
+            Err(Error::from(E_NOTIMPL))
+        }
+        fn Commit(&self, _grfcommitflags: &STGC) -> Result<()> {
+            Ok(())
+        }
+        fn Revert(&self) -> Result<()> {
+            Ok(())
+        }
+        fn LockRegion(&self, _liboffset: u64, _cb: u64, _dwlocktype: &LOCKTYPE) -> Result<()> {
+            Err(Error::from(E_NOTIMPL))
+        }
+        fn UnlockRegion(&self, _liboffset: u64, _cb: u64, _dwlocktype: u32) -> Result<()> {
+            Err(Error::from(E_NOTIMPL))
+        }
+        fn Clone(&self) -> Result<IStream> {
+            Err(Error::from(E_NOTIMPL))
+        }
+    }
+}
