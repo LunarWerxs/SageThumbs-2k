@@ -112,10 +112,22 @@ fn tally_run(t: &mut Tally, out: &Path, mut child: Child) {
 #[test]
 fn a_run_that_never_left_english_is_reported() {
     let line = |w: &str| format!("{{\"audited\":3,\"shot\":\"settings:0\",\"window\":\"{w}\"}}");
-    assert_eq!(window_title(&line("Send feedback")).as_deref(), Some("Send feedback"));
-    let en = ("en_96".to_string(), vec!["Send feedback".to_string(), "Settings".to_string()]);
+    assert_eq!(
+        window_title(&line("Send feedback")).as_deref(),
+        Some("Send feedback")
+    );
+    let en = (
+        "en_96".to_string(),
+        vec!["Send feedback".to_string(), "Settings".to_string()],
+    );
     let stuck = ("bg_192".to_string(), en.1.clone());
-    let translated = ("fil_144".to_string(), vec!["Magpadala ng feedback".to_string(), "Mga Setting".to_string()]);
+    let translated = (
+        "fil_144".to_string(),
+        vec![
+            "Magpadala ng feedback".to_string(),
+            "Mga Setting".to_string(),
+        ],
+    );
     assert_eq!(
         runs_still_in_english(&[en.clone(), stuck.clone(), translated.clone()]),
         vec!["bg_192".to_string()]
