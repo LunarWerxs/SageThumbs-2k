@@ -145,6 +145,7 @@ fn a_fan_out_at_the_depth_cap_spends_the_walks_work() {
         components: (0..100_000)
             .map(|_| Placement {
                 part: None,
+                at: None,
                 id: 1,
                 m: IDENTITY,
             })
@@ -155,13 +156,13 @@ fn a_fan_out_at_the_depth_cap_spends_the_walks_work() {
         objects: HashMap::from([(1, fan)]),
         build: vec![Placement {
             part: None,
+            at: None,
             id: 1,
             m: IDENTITY,
         }],
     };
     let model = Model {
-        root: "r".to_owned(),
-        parts: HashMap::from([("r".to_owned(), root)]),
+        parts: vec![("r".to_owned(), root)],
     };
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -171,7 +172,7 @@ fn a_fan_out_at_the_depth_cap_spends_the_walks_work() {
             push: &mut push,
             left: 100_000,
         };
-        let _ = tx.send(walk.place("r", &model.parts["r"].build[0], &IDENTITY, 0));
+        let _ = tx.send(walk.place(0, &model.parts[0].1.build[0], &IDENTITY, 0));
     });
     let finished = rx
         .recv_timeout(std::time::Duration::from_secs(10))
@@ -193,7 +194,7 @@ fn objects_past_the_cap_are_not_held() {
         ..Caps::package()
     };
     let model = Model::load_capped(&mut zip, ROOT_DEFAULT.to_owned(), caps);
-    assert_eq!(model.parts[ROOT_DEFAULT].objects.len(), 3);
+    assert_eq!(model.part(ROOT_DEFAULT).objects.len(), 3);
 }
 
 /// Every placement keeps its own copy of the part path it names, so those bytes are capped too,
@@ -212,7 +213,7 @@ fn placement_paths_are_capped_in_length_and_in_total() {
         ..Caps::package()
     };
     let model = Model::load_capped(&mut zip, ROOT_DEFAULT.to_owned(), caps);
-    let named: Vec<Option<&str>> = model.parts[ROOT_DEFAULT].objects[&1]
+    let named: Vec<Option<&str>> = model.part(ROOT_DEFAULT).objects[&1]
         .components
         .iter()
         .map(|c| c.part.as_deref())
@@ -249,13 +250,55 @@ fn parts_past_the_inflate_cap_are_not_read() {
         Model::load_capped(&mut zip, ROOT_DEFAULT.to_owned(), caps)
     };
     assert!(
-        !load(MAX_PACKED_BYTES).parts["3D/Objects/a.model"]
+        !load(MAX_PACKED_BYTES)
+            .part("3D/Objects/a.model")
             .objects
             .is_empty(),
         "with room, the part the component names is read"
     );
     assert!(
-        load(1).parts["3D/Objects/a.model"].objects.is_empty(),
+        load(1).part("3D/Objects/a.model").objects.is_empty(),
         "the root part crosses a one-byte cap, so no part after it is read"
     );
+}
+
+impl Model {
+    /// The part read under `name`.
+    fn part(&self, name: &str) -> &Part {
+        let found = self.parts.iter().find(|(n, _)| n == name);
+        &found.expect("a part of that name").1
+    }
+}
+
+/// A walk goes from part to part by index, never by name. Each visit once hashed the name of the
+/// part it was in, and a part's name is a zip entry's, up to 64 KiB: a million visits inside a
+/// part named with 60,000 bytes hashed 60 GB, minutes of a thumbnail host (the 3.8.0 release
+/// review, 2026-10-19). This package's million visits must take well under ten seconds.
+#[test]
+fn a_long_part_name_costs_nothing_per_visit() {
+    let name = format!("3D/{}.model", "a".repeat(60_000));
+    let rels = RELS.replace("/3D/3dmodel.model", &format!("/{name}"));
+    let wide = |of: u32| -> String {
+        let one = format!(r#"<component objectid="{of}"/>"#);
+        one.repeat(1000)
+    };
+    let root = format!(
+        r#"<model><resources><object id="3"></object><object id="2"><components>{}</components></object><object id="1"><components>{}</components></object></resources><build><item objectid="1"/></build></model>"#,
+        wide(3),
+        wide(2)
+    );
+    let bytes = package(&[
+        ("_rels/.rels", rels.as_str()),
+        (name.as_str(), root.as_str()),
+    ]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let root = root_part(&mut zip).expect("the long-named root part");
+        let model = Model::load(&mut zip, root);
+        model.emit(&mut |_: [f32; 9]| true);
+        let _ = tx.send(());
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(10))
+        .expect("a million visits must not hash the part's name each time");
 }

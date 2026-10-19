@@ -85,9 +85,11 @@ fn then(a: &Mat, b: &Mat) -> Mat {
 }
 
 /// An object placed by a build item or a component: which part (`None`: the one placing it),
-/// which object, and where.
+/// which object, and where. `at` is the named part's index in [`Model::parts`], found once the
+/// package is read; `None` beside a `part` is a part that was not read.
 struct Placement {
     part: Option<String>,
+    at: Option<usize>,
     id: u32,
     m: Mat,
 }
@@ -307,7 +309,12 @@ fn placement(rest: &[u8], caps: &mut Caps) -> Option<Placement> {
     if let Some(p) = &part {
         caps.path_bytes = caps.path_bytes.checked_sub(p.len())?;
     }
-    Some(Placement { part, id, m })
+    Some(Placement {
+        part,
+        at: None,
+        id,
+        m,
+    })
 }
 
 fn object_id(rest: &[u8]) -> Option<u32> {
@@ -493,10 +500,9 @@ fn rels_root(rels: &[u8]) -> Option<String> {
     None
 }
 
-/// Every part the model reaches from its root, read once each.
+/// Every part the model reaches from its root, read once each, by name, the root first.
 struct Model {
-    root: String,
-    parts: HashMap<String, Part>,
+    parts: Vec<(String, Part)>,
 }
 
 impl Model {
@@ -505,9 +511,10 @@ impl Model {
     }
 
     fn load_capped<R: Read + Seek>(zip: &mut ZipArchive<R>, root: String, mut caps: Caps) -> Model {
-        let mut parts = HashMap::new();
+        let mut parts = Vec::new();
+        let mut index = HashMap::new();
         let mut seen = HashSet::from([root.clone()]);
-        let mut queue = vec![root.clone()];
+        let mut queue = vec![root];
         while let Some(name) = queue.pop() {
             let part = entry_name(zip, &name)
                 .and_then(|entry| zip.by_name(&entry).ok())
@@ -519,14 +526,23 @@ impl Model {
                     queue.push(path.to_owned());
                 }
             }
-            parts.insert(name, part);
+            index.insert(name.clone(), parts.len());
+            parts.push((name, part));
         }
-        Model { root, parts }
+        // Each placement's part is found by name once, here, and walked by index: a part's name
+        // is a zip entry's, up to 64 KiB, and hashing it on every visit made a million visits
+        // cost 60 GB of hashing (the 3.8.0 release review, 2026-10-19).
+        for (_, part) in &mut parts {
+            for p in part.placements_mut() {
+                p.at = p.part.as_deref().and_then(|n| index.get(n).copied());
+            }
+        }
+        Model { parts }
     }
 
     /// Every triangle of the model, placed, to `push` until it answers `false`.
     fn emit(&self, push: &mut dyn FnMut([f32; 9]) -> bool) {
-        let Some(root) = self.parts.get(&self.root) else {
+        let Some((_, root)) = self.parts.first() else {
             return;
         };
         let mut walk = Walk {
@@ -544,7 +560,7 @@ impl Model {
             return;
         }
         for item in &root.build {
-            if !walk.place(&self.root, item, &IDENTITY, 0) {
+            if !walk.place(0, item, &IDENTITY, 0) {
                 return;
             }
         }
@@ -558,6 +574,12 @@ impl Part {
         components
             .chain(&self.build)
             .filter_map(|p| p.part.as_deref())
+    }
+
+    /// Every placement this part holds.
+    fn placements_mut(&mut self) -> impl Iterator<Item = &mut Placement> {
+        let components = self.objects.values_mut().flat_map(|o| &mut o.components);
+        components.chain(&mut self.build)
     }
 }
 
@@ -584,13 +606,22 @@ impl Walk<'_, '_> {
     /// walk must stop (the sink is full or the work is spent). Every visit is paid for before
     /// anything else: a visit that cost nothing could be made without end (an object placing
     /// itself a million times kept a thumbnail host busy for hours at the depth cap).
-    fn place(&mut self, here: &str, p: &Placement, parent: &Mat, depth: u32) -> bool {
+    fn place(&mut self, here: usize, p: &Placement, parent: &Mat, depth: u32) -> bool {
         if !self.spend() {
             return false;
         }
         let model = self.model;
-        let part = p.part.as_deref().unwrap_or(here);
-        let Some(obj) = model.parts.get(part).and_then(|q| q.objects.get(&p.id)) else {
+        let part = match p.at {
+            Some(at) => at,
+            None if p.part.is_none() => here,
+            // A part that was not read places nothing.
+            None => return true,
+        };
+        let Some(obj) = model
+            .parts
+            .get(part)
+            .and_then(|(_, q)| q.objects.get(&p.id))
+        else {
             return true;
         };
         let m = then(&p.m, parent);
