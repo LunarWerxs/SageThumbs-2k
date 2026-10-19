@@ -401,6 +401,13 @@
    "source": "3MFConsortium/3mf-samples@665e20dc  examples/material/multiprop-metallic.3mf"
   },
   {
+   "file": "real-bambu.3mf",
+   "url": "https://raw.githubusercontent.com/bambulab/BambuStudio/79df7ae309be398ed30c9f397c13c9911c2edc57/resources/calib/pressure_advance/pa_pattern.3mf",
+   "sha256": "2E2C0E271A50C6F89CC42A97B134D6F678D7D3D2849FA9B48C8203586ABA5111",
+   "bytes": 23059,
+   "source": "bambulab/BambuStudio@79df7ae3  resources/calib/pressure_advance/pa_pattern.3mf"
+  },
+  {
    "file": "real.stl",
    "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testSTL-ascii.stl",
    "sha256": "66087D5B82F32068647583D1FA26FBF7C73331182CAC3A8AD001CE944CD02EE7",
@@ -1999,7 +2006,8 @@
    "real.3gp"
   ],
   "3mf": [
-   "real.3mf"
+   "real.3mf",
+   "real-bambu.3mf"
   ],
   "7z": [
    "archive-sample.7z",

@@ -5,7 +5,8 @@
 //!
 //!   - Krita      `.kra`   → `mergedimage.png` | `preview.png`   (mimetype: krita)
 //!   - OpenRaster `.ora`   → `Thumbnails/thumbnail.png`          (mimetype: openraster)
-//!   - 3MF        `.3mf`   → `Metadata/thumbnail.png` | `.jpg`   (3D printing)
+//!   - 3MF        `.3mf`   → `Metadata/thumbnail.png` | `.jpg` | `plate_1.png` (3D printing;
+//!     the last is Bambu Studio's and OrcaSlicer's)
 //!   - FreeCAD    `.fcstd` → `thumbnails/Thumbnail.png`
 //!   - Fusion 360 `.f3d`   → `…/Previews/small.png`              (256² model render, CAD)
 //!   - Sketch     `.sketch`→ `previews/preview.png`              (design)
@@ -79,6 +80,11 @@ pub fn extract<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<Vec<u8>> {
         &[
             "Metadata/thumbnail.png",
             "Metadata/thumbnail.jpg",
+            // Bambu Studio and OrcaSlicer: the first plate's render (`THUMBNAIL_FILE` in
+            // Bambu's `bbs_3mf.cpp`); they write no `thumbnail.png`. Without this the generic
+            // image pick took `Metadata/pick_1.png`, the slicer's click-selection mask, which
+            // is all but fully transparent: a blank, see-through thumbnail.
+            "Metadata/plate_1.png",
             "thumbnails/Thumbnail.png",
             "thumbnails/thumbnail.png",
             "previews/preview.png",              // Sketch
@@ -249,6 +255,13 @@ mod tests {
             ("Metadata/thumbnail.png", &png),
         ]);
         assert!(extract_bytes(&mf).is_some());
+        // Bambu Studio / OrcaSlicer 3MF: the plate render, no thumbnail.png.
+        let bambu = make_zip(&[
+            ("3D/3dmodel.model", b"<model/>"),
+            ("Metadata/model_settings.config", b"<config/>"),
+            ("Metadata/plate_1.png", &png),
+        ]);
+        assert!(extract_bytes(&bambu).is_some(), "bambu 3mf plate preview");
 
         // FreeCAD path.
         let fc = make_zip(&[

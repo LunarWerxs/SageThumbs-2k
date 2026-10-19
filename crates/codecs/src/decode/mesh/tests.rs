@@ -111,6 +111,54 @@ fn cube_renders_shaded_not_silhouette() {
     );
 }
 
+/// The reported "see-through" STLs (2026-10-18): the camera sat BELOW the model, so a solid
+/// cube showed its underside and read as an open, hollow box. Seen from above, taking the top
+/// away changes the picture and taking the bottom away does not. The view must also be a
+/// rotation, not a mirror, or the lettering on a print reads backwards.
+#[test]
+fn a_solid_is_seen_from_above_unmirrored() {
+    let cube = parse_mesh_sniffed(&cube_stl()).unwrap();
+    // `cube_stl` writes two triangles per face: bottom, top, then the sides.
+    let without = |face: usize| -> Vec<[f32; 9]> {
+        cube.iter()
+            .enumerate()
+            .filter(|(i, _)| i / 2 != face)
+            .map(|(_, t)| *t)
+            .collect()
+    };
+    let whole = render(&cube, 128);
+    let opaque = whole.pixels().filter(|p| p[3] > 0).count();
+    let changed = |tris: &[[f32; 9]]| {
+        let img = render(tris, 128);
+        whole
+            .pixels()
+            .zip(img.pixels())
+            .filter(|(a, b)| a != b)
+            .count()
+    };
+    let (no_bottom, no_top) = (changed(&without(0)), changed(&without(1)));
+    assert!(
+        no_top > opaque / 5,
+        "the top must be in view: removing it changed {no_top} of {opaque} px"
+    );
+    assert!(
+        no_bottom < opaque / 100,
+        "the underside must be hidden: removing it changed {no_bottom} of {opaque} px"
+    );
+
+    let v = MeshView::new();
+    let [x, y, z] = [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]].map(|a| v.project(a));
+    let x_cross_y = [
+        x[1] * y[2] - x[2] * y[1],
+        x[2] * y[0] - x[0] * y[2],
+        x[0] * y[1] - x[1] * y[0],
+    ];
+    assert!(
+        x_cross_y.iter().zip(z).all(|(a, b)| (a - b).abs() < 1e-5),
+        "the view mirrors the model: x × y = {x_cross_y:?}, z = {z:?}"
+    );
+}
+
 /// ASCII STL round-trips too (same cube, textual form).
 #[test]
 fn ascii_stl_parses() {

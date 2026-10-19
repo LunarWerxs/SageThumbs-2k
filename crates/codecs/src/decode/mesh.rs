@@ -366,9 +366,12 @@ fn parse_obj_face_indices(rest: &str, n_verts: usize) -> Vec<usize> {
         .collect()
 }
 
-/// The fixed turntable/tilt view: turntable −35°, tilt −25°, giving every mesh the same
-/// three-quarter view a slicer's file list shows, which is what makes a FOLDER of models
-/// scannable. Precomputes its sin/cos once so `project` is a handful of multiplies.
+/// The fixed turntable/tilt view: turntable −35°, then a 25° tilt that lifts the camera ABOVE
+/// the model, giving every mesh the same three-quarter view from above a slicer's file list
+/// shows, which is what makes a FOLDER of models scannable. Until 2026-10-18 the tilt was −25°,
+/// a camera BELOW the model: with no perspective to say otherwise, every solid print read as a
+/// hollow, see-through shell. Precomputes its sin/cos once so `project` is a handful of
+/// multiplies.
 #[derive(Clone, Copy)]
 struct MeshView {
     sy: f32,
@@ -379,17 +382,18 @@ struct MeshView {
 
 impl MeshView {
     fn new() -> Self {
-        let (ya, xa) = (-35f32.to_radians(), -25f32.to_radians());
+        let (ya, xa) = (-35f32.to_radians(), 25f32.to_radians());
         let (sy, cy) = ya.sin_cos();
         let (sx, cx) = xa.sin_cos();
         MeshView { sy, cy, sx, cx }
     }
 
-    /// STL/OBJ convention: Z is UP. Pre-swap model (x, y, z) -> view (x, z, y) so the
-    /// turntable spins around the model's vertical axis, then Y-axis turntable, then
-    /// X-axis tilt.
+    /// STL/OBJ convention: Z is UP, and the camera starts in front, at −Y, looking along +Y.
+    /// Model (x, y, z) -> view (x, z, −y), a rotation (a bare y/z swap would mirror the model)
+    /// with +z toward the camera, so the turntable spins around the model's vertical axis;
+    /// then the Y-axis turntable, then the X-axis tilt. The z-buffer keeps the LARGEST z.
     fn project(&self, p: [f32; 3]) -> [f32; 3] {
-        let p = [p[0], p[2], p[1]];
+        let p = [p[0], p[2], -p[1]];
         let (x1, z1) = (
             p[0] * self.cy + p[2] * self.sy,
             -p[0] * self.sy + p[2] * self.cy,
@@ -437,9 +441,12 @@ fn mesh_light() -> [f32; 3] {
     [l[0] / n, l[1] / n, l[2] / n]
 }
 
-/// Two-sided flat-shading luminance from a triangle's (already-projected) vertices;
-/// two-sided so inverted windings and open shells still light rather than going black.
-/// `None` for a degenerate (zero-area-normal) triangle.
+/// Two-sided flat-shading luminance from a triangle's (already-projected) vertices; two-sided
+/// so inverted windings and open shells still light rather than going black. The normal is
+/// turned to face the camera, never mirrored through the light: an `abs(n·l)` lit the side of
+/// a curve facing away from the light as brightly as the side facing it, a false highlight
+/// that made convex surfaces read as hollow. Half-Lambert (`((n·l + 1) / 2)²`) keeps the
+/// unlit side shaded rather than flat. `None` for a degenerate (zero-area-normal) triangle.
 fn triangle_luminance(p: &[[f32; 3]], light: [f32; 3]) -> Option<u8> {
     let u = [p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]];
     let v = [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]];
@@ -452,8 +459,10 @@ fn triangle_luminance(p: &[[f32; 3]], light: [f32; 3]) -> Option<u8> {
     if nl <= 0.0 || !nl.is_finite() {
         return None;
     }
-    let ndl = ((n[0] * light[0] + n[1] * light[1] + n[2] * light[2]) / nl).abs();
-    Some((48.0 + 195.0 * ndl).min(255.0) as u8)
+    let facing = if n[2] < 0.0 { -nl } else { nl };
+    let ndl = (n[0] * light[0] + n[1] * light[1] + n[2] * light[2]) / facing;
+    let lit = (ndl * 0.5 + 0.5).clamp(0.0, 1.0);
+    Some((48.0 + 195.0 * lit * lit).min(255.0) as u8)
 }
 
 /// Project, light, and rasterize (barycentric over each row's span of its screen-space

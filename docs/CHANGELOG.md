@@ -13,9 +13,21 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 **Fixed**
 
+- **3D models no longer look see-through**
+- **Bambu Studio and OrcaSlicer 3MF files show their picture**
 - **Backup and template files name the right thumbnail source**
 
 **Everything in Unreleased**
+
+- **3D models no longer look see-through.** STL, OBJ and PLY thumbnails were drawn from below
+  the model, and mirrored, so a solid print showed its underside and read as a hollow,
+  see-through shell. They are now drawn from above and in front, the way a slicer shows them,
+  with shading that follows the light, so a solid looks solid.
+- **Bambu Studio and OrcaSlicer 3MF files show their picture.** These slicers save their
+  preview as the first plate's render rather than the `thumbnail.png` other slicers use.
+  SageThumbs missed it and showed another image from the file, a nearly empty mask the slicer
+  uses for clicking on objects, so the thumbnail came out blank and see-through. The plate's
+  render is now shown.
 
 - **Backup and template files name the right thumbnail source.** The Settings format list and
   `st2k formats` said Blender's auto-save backups (`.blend1` to `.blend32`), SketchUp backups
