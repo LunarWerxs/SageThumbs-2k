@@ -68,6 +68,8 @@ fn synthetic_seed_set() -> Vec<(&'static str, Vec<u8>)> {
     // nothing to corrupt — and on CI, which has no `test-corpus` to fall back on, that was the
     // whole of the coverage. See `container::fuzzseed`.
     seeds.extend(crate::container::fuzzseed::seeds());
+    // The same for the metadata-strip parsers (WebP, SVG, XMP, HEIC items, a C2PA box).
+    seeds.extend(crate::strip::fuzzseed::seeds());
     seeds.extend(new_surface_seeds());
     for (i, stub) in header_stubs().into_iter().enumerate() {
         seeds.push((Box::leak(format!("stub{i}").into_boxed_str()), stub));

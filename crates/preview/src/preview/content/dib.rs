@@ -69,8 +69,8 @@ impl Drop for RenderData {
 
 /// Build a top-down 32bpp DIB of `rgba` composited over the opaque `bg` (`COLORREF`
 /// 0x00BBGGRR), so painting is a plain `StretchBlt`. `None` on a malformed size /
-/// allocation failure (never panics on attacker-controlled dims). Verbatim port of
-/// `previewhandler::make_dib`.
+/// allocation failure (never panics on attacker-controlled dims). The compositing is
+/// [`st2k_base::safety::composite_rgba_over_bg`], the same loop the Explorer preview pane uses.
 pub(crate) unsafe fn make_dib(iw: i32, ih: i32, rgba: &[u8], bg: u32) -> Option<HBITMAP> {
     make_dib_hinted(iw, ih, rgba, bg, None)
 }
@@ -97,8 +97,8 @@ fn composite_channel(s: u32, d: u32, a: u32) -> u8 {
 /// question to choose a DIB builder at all) pass `Some` and save it.
 ///
 /// A thin wrapper over [`st2k_base::safety::composite_rgba_over_bg`] — the actual
-/// compositing loop is shared with `previewhandler::make_dib` (the Explorer preview-pane host),
-/// which used to carry its own hand-copied duplicate that never got this opacity-hint fast
+/// compositing loop is shared with the Explorer preview-pane host (`previewhandler`'s render
+/// arm, `src/previewhandler/window.rs`), which used to carry its own hand-copied duplicate that never got this opacity-hint fast
 /// path. `all_opaque` above stays local: `make_render`'s premultiplied path below still needs it
 /// directly, and that path is NOT part of this shared loop (different output — premultiplied
 /// BGRA for `AlphaBlend`, not composited-over-bg).

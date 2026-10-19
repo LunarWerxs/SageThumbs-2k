@@ -158,15 +158,23 @@ pub(super) fn blit_band_into_plane(
 
 /// Tile bounds `(tx0, ty0, tx1, ty1)` on the reference grid, or `None` for a
 /// degenerate (empty) tile.
+///
+/// Summed in u64: SIZ lets a tile's far edge (tile origin plus tile size) pass 4 GiB on the
+/// reference grid, and only the clamp to the image area brings it back into range. In u32 that
+/// sum wrapped, which dropped the tile (a black picture) in a release build and panicked in a
+/// debug one.
 pub(super) fn tile_bounds(siz: &codestream::Siz, tx: u32, ty: u32) -> Option<(u32, u32, u32, u32)> {
-    let tx0 = (siz.xtosiz + tx * siz.xtsiz).max(siz.xosiz);
-    let ty0 = (siz.ytosiz + ty * siz.ytsiz).max(siz.yosiz);
-    let tx1 = (siz.xtosiz + (tx + 1) * siz.xtsiz).min(siz.xsiz);
-    let ty1 = (siz.ytosiz + (ty + 1) * siz.ytsiz).min(siz.ysiz);
+    let edge = |origin: u32, n: u64, size: u32| u64::from(origin) + n * u64::from(size);
+    let tx0 = edge(siz.xtosiz, tx.into(), siz.xtsiz).max(siz.xosiz.into());
+    let ty0 = edge(siz.ytosiz, ty.into(), siz.ytsiz).max(siz.yosiz.into());
+    let tx1 = edge(siz.xtosiz, u64::from(tx) + 1, siz.xtsiz).min(siz.xsiz.into());
+    let ty1 = edge(siz.ytosiz, u64::from(ty) + 1, siz.ytsiz).min(siz.ysiz.into());
     if tx1 <= tx0 || ty1 <= ty0 {
         return None;
     }
-    Some((tx0, ty0, tx1, ty1))
+    // Each is at most xsiz or ysiz now, so it fits again.
+    let fit = |v: u64| u32::try_from(v).ok();
+    Some((fit(tx0)?, fit(ty0)?, fit(tx1)?, fit(ty1)?))
 }
 
 /// Print one band's coefficients, row by row, for tier-1 debugging.

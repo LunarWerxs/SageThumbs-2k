@@ -204,7 +204,8 @@ fn decode_huge_corpus_jp2() {
             assert!(w > 0 && h > 0, "reduced to {w}x{h}");
             assert_eq!(rgb.len(), w as usize * h as usize * 3, "pixel buffer size");
             if let Some(img) = image::RgbImage::from_raw(w, h, rgb) {
-                let out = std::env::temp_dir().join("st2k_jp2_native.png");
+                let out = std::env::temp_dir()
+                    .join(format!("st2k_jp2_native_{}.png", std::process::id()));
                 let _ = img.save(&out);
                 eprintln!("jp2 native: wrote {}", out.display());
             }
@@ -255,4 +256,50 @@ fn an_image_offset_decodes_to_the_picture() {
         mean < 6.0,
         "not ImageMagick's picture: mean difference {mean:.1}"
     );
+}
+
+/// A file may sit its whole reference grid near the top of the u32 range, with tiles so large
+/// that a tile's far edge (origin plus tile size) passes 4 GiB. `tile_bounds` summed that in
+/// u32: the tile was dropped, a black picture, in a release build, and the sum panicked in a
+/// debug one. Moving a real file's grid up by an offset that keeps every code-block and wavelet
+/// boundary where it was must draw exactly the same picture.
+#[test]
+fn a_tile_grid_reaching_past_4_gib_draws_the_same_picture() {
+    let Some(bytes) = st2k_base::testcorpus::read("tiny32-grad.jp2") else {
+        eprintln!("NOT MEASURED: tiny32-grad.jp2 absent");
+        return;
+    };
+    let want = super::decode_reduced(&bytes, 600).expect("the file decodes");
+    // SOC, SIZ, Lsiz and Rsiz, then Xsiz Ysiz XOsiz YOsiz XTsiz YTsiz XTOsiz YTOsiz.
+    let siz = bytes
+        .windows(4)
+        .position(|w| w == [0xFF, 0x4F, 0xFF, 0x51])
+        .expect("a SIZ right after SOC")
+        + 8;
+    let field = |i: usize| {
+        u32::from_be_bytes(
+            bytes[siz + 4 * i..siz + 4 * i + 4]
+                .try_into()
+                .expect("4 bytes"),
+        )
+    };
+    // 2^31 keeps every power-of-two partition where it was; the second puts the picture in the
+    // last 64 columns and rows below 4 GiB.
+    for shift in [1u32 << 31, u32::MAX - 63] {
+        let mut moved = bytes.clone();
+        for i in 0..8 {
+            // The image and tile origins and extents move up; each tile becomes 2^31 across.
+            let v = if i == 4 || i == 5 {
+                1 << 31
+            } else {
+                field(i) + shift
+            };
+            moved[siz + 4 * i..siz + 4 * i + 4].copy_from_slice(&v.to_be_bytes());
+        }
+        let got = super::decode_reduced(&moved, 600).expect("the moved file decodes");
+        assert!(
+            got == want,
+            "a grid moved up by {shift} draws another picture"
+        );
+    }
 }

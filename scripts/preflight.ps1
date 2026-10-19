@@ -126,7 +126,9 @@ if (-not $failed) {
 
 # Clippy is minutes (check mode, no codegen); everything below it is a release build or a
 # test pass. A lint is the likeliest failure after formatting, so it blocks before any of them.
-if (-not $failed) { Step 'clippy (-D warnings)'  { cargo clippy --release --all-targets -- -D warnings } }
+# The same command as ci.yml's Clippy step: the debug profile (so `debug_assertions` code is
+# linted the way CI lints it) and `--locked`.
+if (-not $failed) { Step 'clippy (-D warnings)'  { cargo clippy --locked --all-targets -- -D warnings } }
 
 # Mirror .github/workflows/ci.yml -> build-test job, in order. A bare default-feature
 # `cargo build --release` (no -p split) used to stand in for this and NEVER built the
@@ -137,6 +139,8 @@ if (-not $failed) { Step 'clippy (-D warnings)'  { cargo clippy --release --all-
 if (-not $failed) { Step 'build production EXEs' { cargo build --release --locked -p sagethumbs2k --features webp-lossy,html-preview,hdr-capture } }
 if (-not $failed) { Step 'build production slim DLL' { cargo build --release --locked -p sagethumbs2k-dll --features webp-lossy,dll-i18n-subset } }
 if (-not $failed) { Step 'build dialog hook DLL'      { cargo build --release --locked -p sagethumbs2k-dlghook } }
+# ci.yml's "Production Rust payload size" step, on the three binaries just built.
+if (-not $failed) { Step 'production Rust payload size' { & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'check-release-rust-payload.ps1') -ArtifactDirectory (Join-Path (& (Join-Path $PSScriptRoot '_targetdir.ps1')) 'release') } }
 
 # ~10 SECONDS over the whole corpus, and it is the cheap half of the staged gate. With
 # ST2K_NO_MAGICK=1, every sample that used to stand on our own decoders must still stand on

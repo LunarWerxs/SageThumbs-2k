@@ -7,6 +7,21 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## Unreleased
+
+**TL;DR**
+
+**Fixed**
+
+- **JPEG 2000 files with a far-off tile grid show their picture**
+
+**Everything in Unreleased**
+
+- **JPEG 2000 files with a far-off tile grid show their picture.** A JPEG 2000 file may place
+  its picture and tile grid billions of pixels from the origin. SageThumbs read such a file's
+  tile edges wrongly and drew it black. It now draws the same picture as the file without the
+  offset.
+
 ## 3.8.0
 
 **TL;DR**

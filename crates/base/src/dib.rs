@@ -27,7 +27,7 @@ pub unsafe fn create_premultiplied_dib(width: i32, height: i32, rgba: &[u8]) -> 
     if width <= 0 || height <= 0 {
         return Err(Error::from(E_FAIL));
     }
-    // Checked, mirroring `previewhandler::make_dib`'s guard: `width`/`height` are i32 and
+    // Checked, mirroring `safety::composite_rgba_over_bg`'s guard: `width`/`height` are i32 and
     // this crate only ever targets x64/arm64 (64-bit `usize`), so `px * 4` cannot actually
     // overflow for any positive i32 pair today — but the twin function next to this one
     // already pays for the check, and letting the two drift apart is how a future decoder
@@ -175,8 +175,8 @@ mod tests {
         assert_eq!(&big[4..], &[9u8; 8]);
     }
 
-    /// Mirrors `previewhandler::make_dib`'s own overflow-guard test: huge dims must be
-    /// rejected via checked arithmetic, not silently wrap. On this crate's x64/arm64-only
+    /// Mirrors `safety::composite_rgba_over_bg`'s overflow-guard test (`safety/dib_tests.rs`):
+    /// huge dims must be rejected via checked arithmetic, not silently wrap. On this crate's x64/arm64-only
     /// target `px * 4` cannot actually overflow for any positive `i32` pair (`i32::MAX`
     /// squared times 4 stays under `u64::MAX`), so the length check already caught this
     /// input before the `checked_mul` above existed - it is defense-in-depth, not a

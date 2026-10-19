@@ -76,7 +76,7 @@ fn render_sample_sheet() {
         );
         x += w + 8;
     }
-    let out = std::env::temp_dir().join("st2k_badge_sheet.png");
+    let out = std::env::temp_dir().join(format!("st2k_badge_sheet_{}.png", std::process::id()));
     sheet.save(&out).expect("save");
     eprintln!("badge sheet -> {}", out.display());
 }
