@@ -9,10 +9,16 @@
 //! the suite could have noticed.
 
 use super::*;
+use windows::core::PWSTR;
 use windows::Win32::Foundation::POINT;
 use windows::Win32::Graphics::Gdi::{
     DrawTextW, GetDC, ReleaseDC, ScreenToClient, SelectObject, DRAW_TEXT_FORMAT, DT_CALCRECT,
     DT_NOPREFIX, DT_SINGLELINE, DT_WORDBREAK, HGDIOBJ,
+};
+use windows::Win32::UI::Controls::{
+    HDM_GETBITMAPMARGIN, HDM_GETITEMCOUNT, HDM_GETITEMRECT, LVCF_TEXT, LVCOLUMNW, LVIR_LABEL,
+    LVITEMW, LVM_GETCOLUMNW, LVM_GETEXTENDEDLISTVIEWSTYLE, LVM_GETHEADER, LVM_GETITEMCOUNT,
+    LVM_GETITEMRECT, LVM_GETITEMTEXTW, LVM_GETSTRINGWIDTHW,
 };
 
 /// One thing wrong with one control.
@@ -100,6 +106,9 @@ unsafe fn audit_children(parent: HWND, out: &mut Vec<LayoutFinding>) {
         out.extend(clip_finding(k, client));
         if let Some(detail) = text_overflow(k.hwnd, k.rect) {
             out.push(finding("text", k.hwnd, detail));
+        }
+        if let Some(detail) = list_overflow(k.hwnd) {
+            out.push(finding("column", k.hwnd, detail));
         }
         audit_children(k.hwnd, out);
     }
@@ -190,6 +199,143 @@ unsafe fn text_overflow(c: HWND, r: RECT) -> Option<String> {
         return Some(format!("text needs {need_h} px tall, has {h}"));
     }
     None
+}
+
+/// What a report-view checkbox list cuts off: a visible column header too narrow for its
+/// title, or a row whose first-column label does not fit. In a checkbox list that label is the
+/// thing being ticked (a file extension, a menu entry), so a row cut to `.ap…` cannot be told
+/// from its neighbours; a user at 150% scaling reported exactly that (2026-10-19). Later
+/// columns may ellipsize on purpose (a long description), and so may lists without checkboxes.
+unsafe fn list_overflow(list: HWND) -> Option<String> {
+    const LVS_TYPEMASK: u32 = 0x3;
+    const LVS_REPORT: u32 = 0x1;
+    const LVS_EX_CHECKBOXES: usize = 0x4;
+    if !class_of(list).eq_ignore_ascii_case("SysListView32")
+        || style_of(list) & LVS_TYPEMASK != LVS_REPORT
+        || SendMessageW(list, LVM_GETEXTENDEDLISTVIEWSTYLE, None, None).0 as usize
+            & LVS_EX_CHECKBOXES
+            == 0
+    {
+        return None;
+    }
+    header_overflow(list).or_else(|| first_column_overflow(list))
+}
+
+/// The first column header of `list` whose title needs more room than its column has.
+unsafe fn header_overflow(list: HWND) -> Option<String> {
+    let header = HWND(SendMessageW(list, LVM_GETHEADER, None, None).0 as *mut c_void);
+    if header.is_invalid() || !IsWindowVisible(header).as_bool() {
+        return None;
+    }
+    // The header insets its text by this margin on each side.
+    let margin = SendMessageW(header, HDM_GETBITMAPMARGIN, None, None).0 as i32;
+    let cols = SendMessageW(header, HDM_GETITEMCOUNT, None, None).0 as i32;
+    (0..cols).find_map(|col| {
+        let mut rc = RECT::default();
+        SendMessageW(
+            header,
+            HDM_GETITEMRECT,
+            Some(WPARAM(col as usize)),
+            Some(LPARAM(&mut rc as *mut _ as isize)),
+        );
+        let title = column_title(list, col);
+        let (text_w, _) = measure(header, &title, DT_SINGLELINE | DT_NOPREFIX, 0);
+        let has = rc.right - rc.left;
+        (text_w + 2 * margin > has + SLACK).then(|| {
+            format!(
+                "header `{title}` needs {} px, has {has}",
+                text_w + 2 * margin
+            )
+        })
+    })
+}
+
+/// The widest row label in `list`'s first column that does not fit it, with how many do not.
+/// A row of nothing but box-drawing characters is a divider drawn as a rule, meant to run off
+/// the edge, and is skipped.
+unsafe fn first_column_overflow(list: HWND) -> Option<String> {
+    // The room the control keeps beside a label: LVSCW_AUTOSIZE leaves exactly this (6 px,
+    // 3 x SM_CXEDGE at system 96 dpi) next to the widest label, at every `--dpi`.
+    let pad = 3 * GetSystemMetrics(SM_CXEDGE);
+    let rows = SendMessageW(list, LVM_GETITEMCOUNT, None, None).0 as i32;
+    let cut: Vec<(String, i32, i32)> = (0..rows)
+        .filter_map(|row| {
+            let label = item_label(list, row);
+            if label
+                .chars()
+                .all(|c| ('\u{2500}'..='\u{257F}').contains(&c))
+            {
+                return None;
+            }
+            let wide: Vec<u16> = label.encode_utf16().chain(Some(0)).collect();
+            let need = SendMessageW(
+                list,
+                LVM_GETSTRINGWIDTHW,
+                None,
+                Some(LPARAM(wide.as_ptr() as isize)),
+            )
+            .0 as i32
+                + pad;
+            let mut rc = RECT {
+                left: LVIR_LABEL as i32,
+                ..Default::default()
+            };
+            SendMessageW(
+                list,
+                LVM_GETITEMRECT,
+                Some(WPARAM(row as usize)),
+                Some(LPARAM(&mut rc as *mut _ as isize)),
+            );
+            let has = rc.right - rc.left;
+            (need > has + SLACK).then_some((label, need, has))
+        })
+        .collect();
+    let (label, need, has) = cut.iter().max_by_key(|(_, need, has)| need - has)?;
+    Some(format!(
+        "{} row label(s) cut off in the first column, worst `{label}` needs {need} px, has {has}",
+        cut.len()
+    ))
+}
+
+/// `list`'s column `col` title.
+unsafe fn column_title(list: HWND, col: i32) -> String {
+    let mut buf = [0u16; 256];
+    let mut c = LVCOLUMNW {
+        mask: LVCF_TEXT,
+        pszText: PWSTR(buf.as_mut_ptr()),
+        cchTextMax: buf.len() as i32,
+        ..Default::default()
+    };
+    SendMessageW(
+        list,
+        LVM_GETCOLUMNW,
+        Some(WPARAM(col as usize)),
+        Some(LPARAM(&mut c as *mut _ as isize)),
+    );
+    wide_until_nul(&buf)
+}
+
+/// `list`'s row `row` first-column text.
+unsafe fn item_label(list: HWND, row: i32) -> String {
+    let mut buf = [0u16; 512];
+    let mut it = LVITEMW {
+        iSubItem: 0,
+        pszText: PWSTR(buf.as_mut_ptr()),
+        cchTextMax: buf.len() as i32,
+        ..Default::default()
+    };
+    SendMessageW(
+        list,
+        LVM_GETITEMTEXTW,
+        Some(WPARAM(row as usize)),
+        Some(LPARAM(&mut it as *mut _ as isize)),
+    );
+    wide_until_nul(&buf)
+}
+
+fn wide_until_nul(buf: &[u16]) -> String {
+    let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    String::from_utf16_lossy(&buf[..n])
 }
 
 /// DrawText flags, horizontal padding and whether the text wraps, for a BUTTON; `None` for a
@@ -405,6 +551,60 @@ mod tests {
         unsafe { DefWindowProcW(h, m, w, l) }
     }
 
+    /// A report-view checkbox list whose one 40 px column holds a long row and a divider row.
+    unsafe fn narrow_checkbox_list(parent: HWND, hinst: HINSTANCE, id: i32) -> HWND {
+        use windows::Win32::UI::Controls::{
+            InitCommonControlsEx, ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX, LVIF_TEXT,
+            LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE, LVS_EX_CHECKBOXES,
+            LVS_REPORT, WC_LISTVIEWW,
+        };
+        let icc = INITCOMMONCONTROLSEX {
+            dwSize: core::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+            dwICC: ICC_LISTVIEW_CLASSES,
+        };
+        let _ = InitCommonControlsEx(&icc);
+        let style = WS_VISIBLE | WINDOW_STYLE(LVS_REPORT);
+        let list = ctl(parent, WC_LISTVIEWW, "", style, 16, 40, 200, 100, id, hinst);
+        SendMessageW(
+            list,
+            LVM_SETEXTENDEDLISTVIEWSTYLE,
+            Some(WPARAM(0)),
+            Some(LPARAM(LVS_EX_CHECKBOXES as isize)),
+        );
+        let mut title: Vec<u16> = "Ext".encode_utf16().chain(Some(0)).collect();
+        let mut col = LVCOLUMNW {
+            mask: windows::Win32::UI::Controls::LVCF_WIDTH | LVCF_TEXT,
+            cx: dpi_scale(list, 40),
+            pszText: PWSTR(title.as_mut_ptr()),
+            ..Default::default()
+        };
+        SendMessageW(
+            list,
+            LVM_INSERTCOLUMNW,
+            Some(WPARAM(0)),
+            Some(LPARAM(&mut col as *mut _ as isize)),
+        );
+        for (row, label) in ["a row label far wider than its column", "──────────"]
+            .into_iter()
+            .enumerate()
+        {
+            let mut text: Vec<u16> = label.encode_utf16().chain(Some(0)).collect();
+            let mut it = LVITEMW {
+                mask: LVIF_TEXT,
+                iItem: row as i32,
+                pszText: PWSTR(text.as_mut_ptr()),
+                ..Default::default()
+            };
+            SendMessageW(
+                list,
+                LVM_INSERTITEMW,
+                Some(WPARAM(0)),
+                Some(LPARAM(&mut it as *mut _ as isize)),
+            );
+        }
+        list
+    }
+
     /// The sweep over every window and language only means something if the auditor sees what
     /// it is looking for: a control past the client edge, and a label too small for its text.
     /// Without this, an auditor that quietly stopped reporting would read as "all clean".
@@ -443,8 +643,15 @@ mod tests {
                 2,
                 hinst,
             );
+            let list = narrow_checkbox_list(hwnd, hinst, 3);
             let found = audit_layout(hwnd);
             let _ = DestroyWindow(hwnd);
+            let column = found.iter().find(|f| f.kind == "column" && f.id == 3);
+            assert!(
+                column.is_some_and(|f| f.detail.starts_with("1 row label(s)")),
+                "the checkbox row cut off by its column is reported, and the divider row drawn \
+                 as a rule is not: {found:?} ({list:?})"
+            );
             assert!(
                 found.iter().any(|f| f.kind == "clipped" && f.id == 1),
                 "the button below the edge is reported: {found:?} ({past:?})"

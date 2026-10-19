@@ -462,9 +462,10 @@ pub(in super::super) unsafe fn apply_v3_layout(hwnd: HWND, hinst: HINSTANCE) {
     place(IDCANCEL, client_w - 200, footer_y, 88, 28);
     place(IDOK, client_w - 104, footer_y, 96, 28);
 
-    // The file-types list is now PANE_W wide — refit its Description column to fill.
+    // The file-types list is now PANE_W wide and holds every row — size its columns to their
+    // content and let Description fill the rest.
     if let Ok(list) = GetDlgItem(Some(hwnd), ID_LIST) {
-        fit_columns(list);
+        size_columns(list);
     }
 
     NAV.with(|n| {

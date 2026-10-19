@@ -98,17 +98,20 @@ pub(super) unsafe fn build_file_types(hwnd: HWND, hinst: HINSTANCE, sty: &Styles
     // Lift the list onto SURFACE() (a card) so the zebra alternates against it —
     // theme-aware: a white card in light, a near-black one in dark.
     theme_checkbox_list(list);
+    // Room for the checkbox glyph the custom draw paints, so it never covers the extension.
+    super::super::restyle::reserve_check_gutter(list);
     let header = HWND(SendMessageW(list, LVM_GETHEADER, None, None).0 as *mut c_void);
     // COLUMNS ARE DRAG-RESIZABLE. This used to OR in `HDS_NOSIZING`, on the reasoning that
     // `fit_columns` already sized Description to exactly fill the list so a drag could only
     // truncate it or open a dead gap. That reasoning covered the LAST column and quietly took
-    // the other two with it: Extension and Category are fixed at 64 and 92 px, which is not
-    // enough for their own labels in a long language, and no amount of window resizing helps
+    // the other two with it: Extension and Category were fixed widths, which is not enough
+    // for their own labels in a long language, and no amount of window resizing helps
     // because only Description grows. The reporter of issue #26.3 could read neither.
     //
     // Sizing is back on for THE FIRST THREE, and `fit_columns` now measures them instead of
     // assuming their widths, so widening Extension reflows Description and the total still
-    // exactly fills the list.
+    // exactly fills the list. Their starting widths come from their content
+    // (`size_columns`, once the list is placed), not from the numbers below.
     //
     // DESCRIPTION ITSELF IS REFUSED, in `list::list_subclass` via HDN_BEGINTRACK. It is the last
     // column and it is auto-fitted to fill, so a drag can only shrink it and leave dead space
@@ -130,9 +133,8 @@ pub(super) unsafe fn build_file_types(hwnd: HWND, hinst: HINSTANCE, sty: &Styles
     // list naturally clusters: Images, then Camera RAW, then Ebooks & comics —
     // and the Category column labels each (robust in dark mode, unlike native
     // ListView group headers, which the dark theme refuses to render). "How" (audit E03)
-    // names the capability's source kind (`settings_dlg::capability_label`) - Extension
-    // and Category keep their existing widths; the room comes out of Description, which
-    // `fit_columns` auto-sizes to fill whatever is left.
+    // names the capability's source kind (`settings_dlg::capability_label`). These widths
+    // are placeholders until `size_columns` fits each column to its content.
     insert_column(list, 0, t("col_extension"), 64);
     insert_column(list, 1, t("col_category"), 92);
     insert_column(list, 2, t("col_capability"), 110);

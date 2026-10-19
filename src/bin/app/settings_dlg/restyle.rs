@@ -464,6 +464,50 @@ unsafe fn list_item_prepaint(lv: &mut NMLVCUSTOMDRAW) -> isize {
     (CDRF_NOTIFYSUBITEMDRAW | CDRF_NOTIFYPOSTPAINT) as isize
 }
 
+/// The strip at the left of each format-list row that holds its checkbox, and the glyph drawn
+/// in it, in design px.
+const CHECK_GUTTER: i32 = 20;
+const CHECK_GLYPH: i32 = 14;
+
+/// Make the format list keep exactly [`CHECK_GUTTER`] for each row's checkbox, by giving it a
+/// blank state image list that wide. The control starts a row's text right after its state
+/// images, and its own checkbox images are sized by the control, not by the scaling this
+/// window paints at: at 150% under `--dpi` the gutter painted by [`list_item_postpaint`] ran
+/// past them and covered the start of the extension (`☑ai` for `.ai`). Clicks still toggle:
+/// the control cycles state images 1 and 2 whatever they look like.
+pub(super) unsafe fn reserve_check_gutter(list: HWND) {
+    use windows::Win32::Graphics::Gdi::CreateBitmap;
+    use windows::Win32::UI::Controls::{
+        ImageList_Add, ImageList_Create, ImageList_Destroy, HIMAGELIST, ILC_COLOR32, ILC_MASK,
+        LVM_SETIMAGELIST, LVSIL_STATE,
+    };
+    let (w, h) = (s(list, CHECK_GUTTER), s(list, CHECK_GLYPH));
+    let il = ImageList_Create(w, h, ILC_COLOR32 | ILC_MASK, 2, 0);
+    if il.0 == 0 {
+        return;
+    }
+    // Two images side by side (unchecked, checked): zero pixels with zero alpha, and an
+    // all-ones mask, so both are transparent and nothing shows before the post-paint.
+    let pixels = vec![0u8; (2 * w * h * 4) as usize];
+    let mask_bits = vec![0xFFu8; (((2 * w + 15) / 16 * 2) * h) as usize];
+    let image = CreateBitmap(2 * w, h, 1, 32, Some(pixels.as_ptr().cast()));
+    let mask = CreateBitmap(2 * w, h, 1, 1, Some(mask_bits.as_ptr().cast()));
+    ImageList_Add(il, image, Some(mask));
+    let _ = DeleteObject(HGDIOBJ(image.0));
+    let _ = DeleteObject(HGDIOBJ(mask.0));
+    // The list owns its state image list (no LVS_SHAREIMAGELISTS) and destroys it with itself;
+    // what this replaces is the control's own, which it no longer frees.
+    let old = SendMessageW(
+        list,
+        LVM_SETIMAGELIST,
+        Some(WPARAM(LVSIL_STATE as usize)),
+        Some(LPARAM(il.0)),
+    );
+    if old.0 != 0 {
+        let _ = ImageList_Destroy(Some(HIMAGELIST(old.0)));
+    }
+}
+
 /// Format-list `CDDS_ITEMPOSTPAINT`: replace the native square system-accent checkbox with
 /// our rounded accent glyph, so the per-row switch matches the panel checkboxes.
 unsafe fn list_item_postpaint(lv: &mut NMLVCUSTOMDRAW) {
@@ -482,11 +526,12 @@ unsafe fn list_item_postpaint(lv: &mut NMLVCUSTOMDRAW) {
         Some(WPARAM(row as usize)),
         Some(LPARAM(&mut rr as *mut _ as isize)),
     );
-    // Erase the native checkbox gutter, then draw ours centered in it.
+    // Erase the checkbox gutter (`reserve_check_gutter` made the control keep exactly this
+    // much), then draw ours in it.
     let gutter = RECT {
         left: rr.left,
         top: rr.top,
-        right: rr.left + s(list, 20),
+        right: rr.left + s(list, CHECK_GUTTER),
         bottom: rr.bottom,
     };
     fill(hdc, &gutter, bg);
@@ -497,7 +542,7 @@ unsafe fn list_item_postpaint(lv: &mut NMLVCUSTOMDRAW) {
         rr.left + s(list, 4),
         rr.top,
         rr.bottom,
-        s(list, 14),
+        s(list, CHECK_GLYPH),
         s(list, 4),
         on,
         false,

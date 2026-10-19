@@ -74,6 +74,26 @@ fn idok_arm_blocks_on_hotkey_conflict_before_apply_settings() {
     );
 }
 
+/// The File types list's starting widths: Extension always gets everything it needs, however
+/// wide (a cut-off extension is what a user at 150% reported, 2026-10-19), while Category and
+/// How are held to a quarter and a third of the list, so a long translation of either cannot
+/// leave Description a sliver.
+#[test]
+fn extension_is_never_capped_and_long_labels_leave_description_room() {
+    assert_eq!(
+        leading_column_widths([60, 80, 120], 600),
+        [60, 80, 120],
+        "columns that fit are given exactly what they need"
+    );
+    let [ext, cat, how] = leading_column_widths([260, 400, 400], 600);
+    assert_eq!(ext, 260, "Extension is never cut short");
+    assert_eq!(
+        (cat, how),
+        (150, 200),
+        "Category and How stop at their shares"
+    );
+}
+
 /// Every top-level menu item but Settings has a row in Settings' menu list, so it can be
 /// hidden and moved like the rest. Compress to size and Save frame as image shipped without
 /// one: nobody could hide them, and any saved order dumped them at the bottom (2026-10-07).

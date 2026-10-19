@@ -20,6 +20,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **3D models no longer look see-through**
 - **Bambu Studio and OrcaSlicer 3MF files show their picture**
 - **Backup and template files name the right thumbnail source**
+- **The File types list shows every extension in full**
 
 **Everything in Unreleased**
 
@@ -43,6 +44,12 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   (`.skb`), Photoshop `.psdt` and `.pdd` files and Affinity templates (`.aftemplate`) were fully
   decoded. Like the files they are copies of, they show the preview stored inside, and they now
   say so. The thumbnails themselves are unchanged.
+- **The File types list shows every extension in full.** Its columns had fixed widths that did
+  not grow with Windows display scaling, so at 150% or 200% the checkbox took up most of the
+  Extension column and extensions were cut to `.ap…` or `b…`. Each column now sizes itself to
+  what it holds, in every language and at every scaling, and Description gets the rest. You
+  can still drag the dividers between columns, and double-clicking one fits that column to its
+  contents.
 
 ## 3.7.4
 

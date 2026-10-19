@@ -251,6 +251,8 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         // used to) would leave every row's "How" text in the old language until the user
         // typed something.
         populate_list(list, &get_edit_text(hwnd, ID_SEARCH));
+        // New headers and "How" labels need new widths.
+        size_columns(list);
     }
     // The preview-placement combo holds translated items: rebuild, keep selection.
     rebuild_combo(

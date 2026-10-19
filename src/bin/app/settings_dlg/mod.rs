@@ -504,6 +504,63 @@ pub(super) unsafe fn populate_list(list: HWND, filter: &str) {
     fit_columns(list);
 }
 
+/// Widths for the Extension, Category and How columns, from what each needs to show every row
+/// and its header in full (`need`, device px, measured by the list itself) and the list's
+/// client width.
+///
+/// Extension always gets everything it needs: it is what names the row, and an extension cut
+/// to `.ap…` is exactly what a user at 150% scaling reported (feedback, 2026-10-19). Category
+/// and How get theirs up to a share of the width each, so a long translation of either can
+/// never squeeze Description down to nothing.
+pub(super) fn leading_column_widths(need: [i32; 3], client_w: i32) -> [i32; 3] {
+    let [ext, cat, how] = need;
+    [ext, cat.min(client_w / 4), how.min(client_w / 3)]
+}
+
+/// Size every column to its content: the three leading columns to what their rows and headers
+/// need (within [`leading_column_widths`]), then Description to fill the rest.
+///
+/// The list measures its own text (LVSCW_AUTOSIZE for the rows, _USEHEADER for the header), so
+/// the widths follow the font, the language and the display scaling. They used to be fixed
+/// 64 / 92 / 110 px handed straight to LVM_INSERTCOLUMN, which takes DEVICE px: at 150% the
+/// checkbox alone filled most of the Extension column.
+///
+/// Run once the list has its final width and rows (`navrail::place`), and after a language
+/// change relabels them. NOT from `populate_list`: that runs on every search keystroke and
+/// would throw away a width the user dragged.
+pub(super) unsafe fn size_columns(list: HWND) {
+    use windows::Win32::UI::Controls::{
+        LVM_GETCOLUMNWIDTH, LVSCW_AUTOSIZE, LVSCW_AUTOSIZE_USEHEADER,
+    };
+    let measure = |col: usize, how: i32| {
+        SendMessageW(
+            list,
+            LVM_SETCOLUMNWIDTH,
+            Some(WPARAM(col)),
+            Some(LPARAM(how as isize)),
+        );
+        SendMessageW(list, LVM_GETCOLUMNWIDTH, Some(WPARAM(col)), None).0 as i32
+    };
+    let mut need = [0i32; 3];
+    for (col, n) in need.iter_mut().enumerate() {
+        *n = measure(col, LVSCW_AUTOSIZE).max(measure(col, LVSCW_AUTOSIZE_USEHEADER));
+    }
+    let mut crc = RECT::default();
+    let _ = GetClientRect(list, &mut crc);
+    for (col, w) in leading_column_widths(need, crc.right - crc.left)
+        .into_iter()
+        .enumerate()
+    {
+        SendMessageW(
+            list,
+            LVM_SETCOLUMNWIDTH,
+            Some(WPARAM(col)),
+            Some(LPARAM(w as isize)),
+        );
+    }
+    fit_columns(list);
+}
+
 /// Size the Description column to fill the list's current visible width — no dead
 /// gap, no horizontal scroll. Re-run after a filter (the scrollbar may toggle), and
 /// after the user drags any of the columns to its left.

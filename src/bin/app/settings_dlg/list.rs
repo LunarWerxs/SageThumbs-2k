@@ -429,7 +429,7 @@ pub(super) unsafe extern "system" fn list_subclass(
             let _ = RemoveWindowSubclass(h, Some(list_subclass), uid);
         }
         WM_NOTIFY => {
-            if let Some(res) = on_notify(h, l) {
+            if let Some(res) = on_notify(h, l).or_else(|| on_divider_dblclick(h, msg, w, l)) {
                 return res;
             }
         }
@@ -540,6 +540,21 @@ unsafe fn on_notify(h: HWND, l: LPARAM) -> Option<LRESULT> {
     None
 }
 
+/// A double-click on a file-types header divider: the control fits that column to its content
+/// itself, then Description has to take up the difference. `None` for any other notification.
+unsafe fn on_divider_dblclick(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> Option<LRESULT> {
+    let nmhdr = l.0 as *const NMHDR;
+    let ours = (*nmhdr).code == windows::Win32::UI::Controls::HDN_DIVIDERDBLCLICKW
+        && (*nmhdr).hwndFrom == list_header(h)
+        && GetDlgCtrlID(h) == ID_LIST;
+    if !ours {
+        return None;
+    }
+    let res = DefSubclassProc(h, msg, w, l);
+    super::fit_columns(h);
+    Some(res)
+}
+
 /// `on_notify`'s `HDN_ENDTRACKW`: floor the just-dragged column at a usable minimum, then refit
 /// the other columns to fill the list.
 unsafe fn on_notify_header_endtrack(h: HWND, hdn: *const windows::Win32::UI::Controls::NMHEADERW) {
@@ -595,8 +610,8 @@ unsafe fn on_notify_header_customdraw(nmcd: *const NMCUSTOMDRAW, header: HWND) -
     if stage == CDDS_ITEMPOSTPAINT {
         // Kill the LAST column's right-hand divider. The theme draws it as a
         // bright vertical line against the dark header — it reads as a drag
-        // grabber, and since HDS_NOSIZING the columns can't be dragged at all.
-        // The inner dividers stay: those separate real columns.
+        // grabber, and Description refuses a drag (`refuses_header_drag`).
+        // The inner dividers stay: those separate real columns and do drag.
         let cols = SendMessageW(
             header,
             windows::Win32::UI::Controls::HDM_GETITEMCOUNT,
