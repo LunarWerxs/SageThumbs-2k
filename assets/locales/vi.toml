@@ -172,9 +172,6 @@ chk_sort = "Sắp xếp trang tệp nén theo thứ tự tự nhiên"
 chk_prefer_cover = "Ưu tiên ảnh \"cover\""
 chk_skip_scanlation = "Bỏ qua trang đệm scanlation (ghi công/logo)"
 chk_archive_sheet = "Hình thu nhỏ dạng ghép ảnh cho ZIP/RAR/7z"
-grp_images = "Hình ảnh"
-grp_camera_raw = "RAW máy ảnh"
-grp_ebooks_comics = "Ebook & truyện tranh"
 
 # --- Added 2026-06-12: Convert / Files-to-folder / Tags-to-folders dialogs ---
 # Checkerboard checkbox + tooltip (Settings)
@@ -848,3 +845,11 @@ shot_tip_save = "Lưu vào tệp (Ctrl+S)"
 grp_shot_files = "Lưu ảnh chụp màn hình"
 nav_shotfiles = "Tệp ảnh chụp"
 blurb_shotfiles = "Cách lưu ảnh chụp: định dạng, tên, thư mục."
+
+cat_image = "Hình ảnh"
+cat_raw = "RAW máy ảnh"
+cat_ebook = "Sách điện tử"
+cat_document = "Tài liệu"
+cat_audio = "Âm thanh"
+cat_video = "Video"
+cat_archive = "Tệp nén"

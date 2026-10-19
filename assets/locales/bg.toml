@@ -169,9 +169,6 @@ chk_sort = "Подреждай страниците на архива естес
 chk_prefer_cover = "Предпочитай изображение \"cover\""
 chk_skip_scanlation = "Пропускай пълнежа на сканлейшън (благодарности/лога)"
 chk_archive_sheet = "Миниатюри тип контактен лист за ZIP/RAR/7z"
-grp_images = "Изображения"
-grp_camera_raw = "RAW от камера"
-grp_ebooks_comics = "Е-книги и комикси"
 msg_admin_required = "Промяната на това кои типове файлове получават миниатюри изисква администраторски права.\r\n\r\nСписъкът с формати остана непроменен. Другите ви настройки бяха запазени."
 
 # --- Added 2026-06-12: Convert / Files-to-folder / Tags-to-folders dialogs + extras ---
@@ -843,3 +840,11 @@ shot_tip_save = "Запази във файл (Ctrl+S)"
 grp_shot_files = "Запазване на екранна снимка"
 nav_shotfiles = "Файлове на снимки"
 blurb_shotfiles = "Запис на екранни снимки: формат, име, папка."
+
+cat_image = "Изображение"
+cat_raw = "RAW от камера"
+cat_ebook = "Е-книга"
+cat_document = "Документ"
+cat_audio = "Аудио"
+cat_video = "Видео"
+cat_archive = "Архив"

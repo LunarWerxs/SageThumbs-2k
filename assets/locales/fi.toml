@@ -172,9 +172,6 @@ chk_sort = "Lajittele arkiston sivut luonnollisesti"
 chk_prefer_cover = "Suosi \"cover\"-kuvaa"
 chk_skip_scanlation = "Ohita scanlation-täytesivut (tekijät/logot)"
 chk_archive_sheet = "Kontaktivedos-pikkukuvat ZIP/RAR/7z-tiedostoille"
-grp_images = "Kuvat"
-grp_camera_raw = "Kamera-RAW"
-grp_ebooks_comics = "E-kirjat ja sarjakuvat"
 
 # --- Added 2026-06-12: Convert dialog, Files-to-folder, Tags-to-folders, misc ---
 # Generic "OK" button (used by the small popups)
@@ -841,3 +838,11 @@ shot_tip_save = "Tallenna tiedostoon (Ctrl+S)"
 grp_shot_files = "Kuvakaappauksen tallennus"
 nav_shotfiles = "Kaappaustiedostot"
 blurb_shotfiles = "Kuvakaappausten tallennus: muoto, nimi, kansio."
+
+cat_image = "Kuva"
+cat_raw = "Kameran RAW"
+cat_ebook = "E-kirja"
+cat_document = "Asiakirja"
+cat_audio = "Ääni"
+cat_video = "Video"
+cat_archive = "Arkisto"

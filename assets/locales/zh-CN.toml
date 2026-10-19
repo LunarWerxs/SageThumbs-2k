@@ -172,9 +172,6 @@ chk_sort = "按自然顺序排列压缩包页面"
 chk_prefer_cover = "优先使用 \"cover\" 图片"
 chk_skip_scanlation = "跳过汉化扫图的填充页（致谢/标志）"
 chk_archive_sheet = "ZIP/RAR/7z 的拼贴缩略图"
-grp_images = "图像"
-grp_camera_raw = "相机 RAW"
-grp_ebooks_comics = "电子书与漫画"
 
 # --- Added 2026-06-12: Convert / Files-to-folder / Tags-to-folders dialogs ---
 # Checkerboard checkbox + tooltip (Settings)
@@ -848,3 +845,11 @@ shot_tip_save = "保存到文件（Ctrl+S）"
 grp_shot_files = "保存截图"
 nav_shotfiles = "截图文件"
 blurb_shotfiles = "截图保存方式：格式、名称、文件夹。"
+
+cat_image = "图片"
+cat_raw = "相机 RAW"
+cat_ebook = "电子书"
+cat_document = "文档"
+cat_audio = "音频"
+cat_video = "视频"
+cat_archive = "压缩包"

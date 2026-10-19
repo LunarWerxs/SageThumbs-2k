@@ -11,7 +11,8 @@
 //!
 //! FORMATS is ordered by category (Images, then Camera RAW, then Ebooks &
 //! comics) so the Options list groups naturally; `category()` classifies an
-//! extension and `category_label()` names it for the list's Category column.
+//! extension and `category_label()` names it in English (`st2k formats`; the Settings list
+//! shows the translated `cat_*` string instead).
 
 /// Coarse category for grouping the Options format list.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -141,7 +142,8 @@ pub fn category(ext: &str) -> Category {
     }
 }
 
-/// Short label for the Options list's Category column.
+/// Short English label for a category: what `st2k formats` prints, and what the Settings list's
+/// search also matches. The list's Category column shows the translated `cat_*` string.
 pub fn category_label(cat: Category) -> &'static str {
     match cat {
         Category::Image => "Image",

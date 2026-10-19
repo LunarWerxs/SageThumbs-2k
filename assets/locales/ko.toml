@@ -172,9 +172,6 @@ chk_sort = "압축 파일 페이지를 자연스럽게 정렬"
 chk_prefer_cover = "\"cover\" 이미지 우선"
 chk_skip_scanlation = "스캔레이션 군더더기 건너뛰기 (크레딧/로고)"
 chk_archive_sheet = "ZIP/RAR/7z용 콘택트 시트 썸네일"
-grp_images = "이미지"
-grp_camera_raw = "카메라 RAW"
-grp_ebooks_comics = "전자책·만화"
 
 # --- Added 2026-06-13: Convert / Files-to-folder / Tags-to-folders dialogs ---
 # Generic "OK" button + checkerboard checkbox
@@ -851,3 +848,11 @@ shot_tip_save = "파일로 저장 (Ctrl+S)"
 grp_shot_files = "스크린샷 저장"
 nav_shotfiles = "스크린샷 파일"
 blurb_shotfiles = "스크린샷 저장 방식: 형식, 이름, 폴더."
+
+cat_image = "이미지"
+cat_raw = "카메라 RAW"
+cat_ebook = "전자책"
+cat_document = "문서"
+cat_audio = "오디오"
+cat_video = "비디오"
+cat_archive = "압축 파일"

@@ -172,9 +172,6 @@ chk_sort = "以自然順序排列壓縮檔頁面"
 chk_prefer_cover = "優先使用 \"cover\" 圖片"
 chk_skip_scanlation = "略過掃譯的填充頁（致謝/標誌）"
 chk_archive_sheet = "ZIP/RAR/7z 的拼貼縮圖"
-grp_images = "影像"
-grp_camera_raw = "相機 RAW"
-grp_ebooks_comics = "電子書與漫畫"
 
 # --- Added 2026-06-12: Convert / Files-to-folder / Tags-to-folders dialogs ---
 # Checkerboard checkbox + tooltip (Settings)
@@ -848,3 +845,11 @@ shot_tip_save = "儲存至檔案（Ctrl+S）"
 grp_shot_files = "儲存螢幕擷取畫面"
 nav_shotfiles = "螢幕擷取檔案"
 blurb_shotfiles = "螢幕擷取的儲存方式：格式、檔名、資料夾。"
+
+cat_image = "影像"
+cat_raw = "相機 RAW"
+cat_ebook = "電子書"
+cat_document = "文件"
+cat_audio = "音訊"
+cat_video = "影片"
+cat_archive = "壓縮檔"

@@ -76,7 +76,7 @@ fn idok_arm_blocks_on_hotkey_conflict_before_apply_settings() {
 
 /// The File types list's starting widths: Extension always gets everything it needs, however
 /// wide (a cut-off extension is what a user at 150% reported, 2026-10-19), while Category and
-/// How are held to a quarter and a third of the list, so a long translation of either cannot
+/// How are held to 3/10 and a third of the list, so a long translation of either cannot
 /// leave Description a sliver.
 #[test]
 fn extension_is_never_capped_and_long_labels_leave_description_room() {
@@ -89,9 +89,26 @@ fn extension_is_never_capped_and_long_labels_leave_description_room() {
     assert_eq!(ext, 260, "Extension is never cut short");
     assert_eq!(
         (cat, how),
-        (150, 200),
+        (180, 200),
         "Category and How stop at their shares"
     );
+}
+
+/// The File types search matches a row's category in English AND in the window's language, so
+/// typing "image" still finds pictures after switching to Chinese, and so does 图片 (2026-10-19,
+/// when the Category column stopped being English in every language).
+#[test]
+fn format_search_matches_the_category_in_english_and_in_the_shown_language() {
+    let png =
+        |needle: &str| row_matches(needle, "png", "Image", "图片", "Portable Network Graphics");
+    assert!(png("image"), "the English category still finds the row");
+    assert!(png("图片"), "the translated category finds the row");
+    assert!(
+        png(".png") && png("network"),
+        "extension and description still match"
+    );
+    assert!(png(""), "an empty search shows every row");
+    assert!(!png("video"), "another category does not match");
 }
 
 /// Every top-level menu item but Settings has a row in Settings' menu list, so it can be

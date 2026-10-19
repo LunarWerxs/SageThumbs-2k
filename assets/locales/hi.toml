@@ -169,9 +169,6 @@ chk_sort = "संग्रह के पन्ने स्वाभावि�
 chk_prefer_cover = "\"cover\" छवि को प्राथमिकता दें"
 chk_skip_scanlation = "स्कैनलेशन के अतिरिक्त पन्ने छोड़ें (क्रेडिट/लोगो)"
 chk_archive_sheet = "ZIP/RAR/7z के लिए संपर्क-शीट थंबनेल"
-grp_images = "छवियाँ"
-grp_camera_raw = "कैमरा RAW"
-grp_ebooks_comics = "ई-बुक और कॉमिक्स"
 msg_admin_required = "किन फ़ाइल प्रकारों को थंबनेल मिलें, यह बदलने के लिए प्रशासक अधिकार चाहिए।\r\n\r\nफ़ॉर्मैट सूची अपरिवर्तित रही। आपकी अन्य सेटिंग्स सहेज ली गईं।"
 
 # --- Added 2026-06-12: Settings checkbox, Convert / Files-to-folder / Tags-to-folders dialogs, eyedropper hint ---
@@ -850,3 +847,11 @@ shot_tip_save = "फ़ाइल में सहेजें (Ctrl+S)"
 grp_shot_files = "स्क्रीनशॉट सहेजना"
 nav_shotfiles = "स्क्रीनशॉट फ़ाइलें"
 blurb_shotfiles = "स्क्रीनशॉट कैसे सहेजे जाते हैं: प्रारूप, नाम, फ़ोल्डर।"
+
+cat_image = "छवि"
+cat_raw = "कैमरा RAW"
+cat_ebook = "ई-बुक"
+cat_document = "दस्तावेज़"
+cat_audio = "ऑडियो"
+cat_video = "वीडियो"
+cat_archive = "संग्रह"

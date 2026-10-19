@@ -172,9 +172,6 @@ chk_sort = "Archivseiten natürlich sortieren"
 chk_prefer_cover = "\"Cover\"-Bild bevorzugen"
 chk_skip_scanlation = "Scanlation-Füllseiten überspringen (Credits/Logos)"
 chk_archive_sheet = "Kontaktabzug-Miniaturansichten für ZIP/RAR/7z"
-grp_images = "Bilder"
-grp_camera_raw = "Kamera-RAW"
-grp_ebooks_comics = "E-Books & Comics"
 
 # --- Added 2026-06-12: Convert / Files-to-folder / Tags-to-folders dialogs + extras ---
 # Generic "OK" button (used by the small popups)
@@ -845,3 +842,11 @@ shot_tip_save = "In eine Datei speichern (Ctrl+S)"
 grp_shot_files = "Screenshot speichern"
 nav_shotfiles = "Screenshot-Dateien"
 blurb_shotfiles = "Screenshots speichern: Format, Name, Ordner."
+
+cat_image = "Bild"
+cat_raw = "Kamera-RAW"
+cat_ebook = "E-Book"
+cat_document = "Dokument"
+cat_audio = "Audio"
+cat_video = "Video"
+cat_archive = "Archiv"

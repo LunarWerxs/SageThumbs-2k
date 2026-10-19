@@ -172,9 +172,6 @@ chk_sort = "Сортировать страницы архива естеств�
 chk_prefer_cover = "Предпочитать изображение \"cover\""
 chk_skip_scanlation = "Пропускать вставки сканлейта (титры/логотипы)"
 chk_archive_sheet = "Эскизы-коллажи для ZIP/RAR/7z"
-grp_images = "Изображения"
-grp_camera_raw = "RAW камеры"
-grp_ebooks_comics = "Книги и комиксы"
 
 # --- Added 2026-06-12: Convert / Files-to-folder / Tags-to-folders dialogs, eyedropper hint, checkerboard ---
 # Generic "OK" button (used by the small popups)
@@ -845,3 +842,11 @@ shot_tip_save = "Сохранить в файл (Ctrl+S)"
 grp_shot_files = "Сохранение скриншота"
 nav_shotfiles = "Файлы скриншотов"
 blurb_shotfiles = "Как сохраняются скриншоты: формат, имя, папка."
+
+cat_image = "Изображение"
+cat_raw = "RAW камеры"
+cat_ebook = "Электронная книга"
+cat_document = "Документ"
+cat_audio = "Аудио"
+cat_video = "Видео"
+cat_archive = "Архив"

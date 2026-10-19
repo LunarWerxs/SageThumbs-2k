@@ -172,9 +172,6 @@ chk_sort = "Sorter arkivsider naturlig"
 chk_prefer_cover = "Foretrekk et \"cover\"-bilde"
 chk_skip_scanlation = "Hopp over scanlation-fyll (krediteringer/logoer)"
 chk_archive_sheet = "Kontaktark-miniatyrer for ZIP/RAR/7z"
-grp_images = "Bilder"
-grp_camera_raw = "Kamera-RAW"
-grp_ebooks_comics = "E-bøker og tegneserier"
 
 # --- Added 2026-06-12: Convert / Files-to-folder / Tags-to-folders dialogs + eyedropper + checkerboard ---
 # Settings additions
@@ -851,3 +848,11 @@ shot_tip_save = "Lagre til en fil (Ctrl+S)"
 grp_shot_files = "Lagre et skjermbilde"
 nav_shotfiles = "Skjermbildefiler"
 blurb_shotfiles = "Hvordan skjermbilder lagres: format, navn, mappe."
+
+cat_image = "Bilde"
+cat_raw = "Kamera-RAW"
+cat_ebook = "E-bok"
+cat_document = "Dokument"
+cat_audio = "Lyd"
+cat_video = "Video"
+cat_archive = "Arkiv"

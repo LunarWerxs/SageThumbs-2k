@@ -172,9 +172,6 @@ chk_sort = "Sortera arkivsidor naturligt"
 chk_prefer_cover = "Föredra en \"cover\"-bild"
 chk_skip_scanlation = "Hoppa över scanlation-utfyllnad (credits/logotyper)"
 chk_archive_sheet = "Kollage-miniatyrer för ZIP/RAR/7z"
-grp_images = "Bilder"
-grp_camera_raw = "Kamera-RAW"
-grp_ebooks_comics = "E-böcker & serier"
 
 # --- Added 2026-06-12: Convert / Files-to-folder / Tags-to-folders dialogs, eyedropper hint, checkerboard ---
 # Generic "OK" button (used by the small popups)
@@ -845,3 +842,11 @@ shot_tip_save = "Spara till en fil (Ctrl+S)"
 grp_shot_files = "Spara en skärmbild"
 nav_shotfiles = "Skärmbildsfiler"
 blurb_shotfiles = "Hur skärmbilder sparas: format, namn, mapp."
+
+cat_image = "Bild"
+cat_raw = "Kamera-RAW"
+cat_ebook = "E-bok"
+cat_document = "Dokument"
+cat_audio = "Ljud"
+cat_video = "Video"
+cat_archive = "Arkiv"

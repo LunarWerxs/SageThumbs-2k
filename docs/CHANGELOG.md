@@ -21,6 +21,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **Bambu Studio and OrcaSlicer 3MF files show their picture**
 - **Backup and template files name the right thumbnail source**
 - **The File types list shows every extension in full**
+- **The File types list's Category column is in your language**
 
 **Everything in Unreleased**
 
@@ -46,10 +47,15 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   say so. The thumbnails themselves are unchanged.
 - **The File types list shows every extension in full.** Its columns had fixed widths that did
   not grow with Windows display scaling, so at 150% or 200% the checkbox took up most of the
-  Extension column and extensions were cut to `.ap…` or `b…`. Each column now sizes itself to
-  what it holds, in every language and at every scaling, and Description gets the rest. You
-  can still drag the dividers between columns, and double-clicking one fits that column to its
-  contents.
+  Extension column and extensions were cut to `.ap…` or `b…`. Extensions now always show in
+  full, in every language and at every scaling. Category and How size themselves to what they
+  hold, up to a share of the list so Description always keeps room, and Description gets the
+  rest. You can still drag the dividers between columns, and double-clicking one fits that
+  column to its contents.
+- **The File types list's Category column is in your language.** It said Image, Ebook, Audio
+  and so on in English whatever language SageThumbs was set to. It is now translated into all
+  36 languages, and the search box above the list finds a format by its category in your
+  language or in English.
 
 ## 3.7.4
 

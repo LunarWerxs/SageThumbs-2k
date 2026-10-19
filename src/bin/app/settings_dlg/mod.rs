@@ -422,6 +422,9 @@ pub(super) unsafe fn set_subitem(list: HWND, row: i32, col: i32, text: &str) {
 thread_local! {
     static FMT_STATE: core::cell::RefCell<Vec<bool>> = const { core::cell::RefCell::new(Vec::new()) };
     static POPULATING: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+    /// `size_columns` found the format list empty (a language change while the search box
+    /// matched nothing), so the columns are sized by the next rebuild that has rows.
+    static SIZE_PENDING: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
     /// Last normalized search needle the list was rebuilt for — lets the EN_CHANGE
     /// handler skip an identical rebuild. Cleared on a live language change (rows may
     /// re-localize) so the next search re-filters.
@@ -461,6 +464,37 @@ pub(super) fn capability_label(ext: &str) -> String {
     }
 }
 
+/// Localized label for the Settings format list's Category column. `formats::category_label`
+/// stays the English name (the CLI and `st2k formats --json` print it); this is presentation
+/// only, so a Chinese window no longer says "Image" on every row.
+pub(super) fn category_text(cat: formats::Category) -> &'static str {
+    t(match cat {
+        formats::Category::Image => "cat_image",
+        formats::Category::Raw => "cat_raw",
+        formats::Category::Ebook => "cat_ebook",
+        formats::Category::Document => "cat_document",
+        formats::Category::Audio => "cat_audio",
+        formats::Category::Video => "cat_video",
+        formats::Category::Archive => "cat_archive",
+    })
+}
+
+/// Does a format row match the search box? `needle` is already trimmed and lowercased; an
+/// empty one matches everything. The category is matched in English AND in the window's
+/// language, so "image" keeps finding pictures after switching to Chinese, and so does 图片.
+pub(super) fn row_matches(
+    needle: &str,
+    ext: &str,
+    cat_en: &str,
+    cat_shown: &str,
+    desc: &str,
+) -> bool {
+    needle.is_empty()
+        || format!(".{ext} {cat_en} {cat_shown} {desc}")
+            .to_lowercase()
+            .contains(needle)
+}
+
 /// Rebuild the list to show the formats matching `filter` (extension / category /
 /// description, case-insensitive; empty = all), each row's checkbox from FMT_STATE.
 pub(super) unsafe fn populate_list(list: HWND, filter: &str) {
@@ -473,12 +507,10 @@ pub(super) unsafe fn populate_list(list: HWND, filter: &str) {
     SendMessageW(list, LVM_DELETEALLITEMS, None, None);
     let mut row = 0i32;
     for (i, &(ext, desc)) in formats::FORMATS.iter().enumerate() {
-        let cat = formats::category_label(formats::category(ext));
-        if !needle.is_empty() {
-            let hay = format!(".{ext} {cat} {desc}").to_lowercase();
-            if !hay.contains(&needle) {
-                continue;
-            }
+        let category = formats::category(ext);
+        let cat = category_text(category);
+        if !row_matches(&needle, ext, formats::category_label(category), cat, desc) {
+            continue;
         }
         let elabel = wide(&format!(".{ext}"));
         let mut item = LVITEMW {
@@ -501,7 +533,11 @@ pub(super) unsafe fn populate_list(list: HWND, filter: &str) {
         set_check(list, row, *state.get(i).unwrap_or(&false));
         row += 1;
     }
-    fit_columns(list);
+    if row > 0 && SIZE_PENDING.with(|p| p.replace(false)) {
+        size_columns(list);
+    } else {
+        fit_columns(list);
+    }
 }
 
 /// Widths for the Extension, Category and How columns, from what each needs to show every row
@@ -511,10 +547,49 @@ pub(super) unsafe fn populate_list(list: HWND, filter: &str) {
 /// Extension always gets everything it needs: it is what names the row, and an extension cut
 /// to `.ap…` is exactly what a user at 150% scaling reported (feedback, 2026-10-19). Category
 /// and How get theirs up to a share of the width each, so a long translation of either can
-/// never squeeze Description down to nothing.
+/// never squeeze Description down to nothing. Category's share is 3/10: its longest
+/// translations (Persian "e-book", Portuguese and Spanish "archive") need a quarter of the
+/// list plus the cell's padding.
 pub(super) fn leading_column_widths(need: [i32; 3], client_w: i32) -> [i32; 3] {
     let [ext, cat, how] = need;
-    [ext, cat.min(client_w / 4), how.min(client_w / 3)]
+    [ext, cat.min(client_w * 3 / 10), how.min(client_w / 3)]
+}
+
+/// The width the Extension column needs for every row's label to show in full: the room the
+/// list keeps left of a label (the checkbox gutter), the widest `.ext`, and the 3 x SM_CXEDGE
+/// it keeps beside a label (the rule `layoutaudit` holds every checkbox list to). LVSCW_AUTOSIZE
+/// alone left `.pspselection` 2 px short on CI's runners at every scaling while fitting here
+/// (2026-10-19), so the column is held to this too. Needs a row to measure the gutter on
+/// (`size_columns` only calls it when there is one).
+unsafe fn extension_column_need(list: HWND) -> i32 {
+    use windows::Win32::UI::Controls::{LVIR_LABEL, LVM_GETCOLUMNWIDTH, LVM_GETSTRINGWIDTHW};
+    let mut label = RECT {
+        left: LVIR_LABEL as i32,
+        ..Default::default()
+    };
+    SendMessageW(
+        list,
+        LVM_GETITEMRECT,
+        Some(WPARAM(0)),
+        Some(LPARAM(&mut label as *mut _ as isize)),
+    );
+    let gutter = SendMessageW(list, LVM_GETCOLUMNWIDTH, Some(WPARAM(0)), None).0 as i32
+        - (label.right - label.left);
+    let widest = formats::FORMATS
+        .iter()
+        .map(|&(ext, _)| {
+            let label = wide(&format!(".{ext}"));
+            SendMessageW(
+                list,
+                LVM_GETSTRINGWIDTHW,
+                None,
+                Some(LPARAM(label.as_ptr() as isize)),
+            )
+            .0 as i32
+        })
+        .max()
+        .unwrap_or(0);
+    gutter + widest + 3 * GetSystemMetrics(SM_CXEDGE)
 }
 
 /// Size every column to its content: the three leading columns to what their rows and headers
@@ -527,11 +602,20 @@ pub(super) fn leading_column_widths(need: [i32; 3], client_w: i32) -> [i32; 3] {
 ///
 /// Run once the list has its final width and rows (`navrail::place`), and after a language
 /// change relabels them. NOT from `populate_list`: that runs on every search keystroke and
-/// would throw away a width the user dragged.
+/// would throw away a width the user dragged (it only does when a sizing on an empty list is
+/// still owed, `SIZE_PENDING`).
 pub(super) unsafe fn size_columns(list: HWND) {
     use windows::Win32::UI::Controls::{
         LVM_GETCOLUMNWIDTH, LVSCW_AUTOSIZE, LVSCW_AUTOSIZE_USEHEADER,
     };
+    // An empty list (the search matches nothing) measures as just its headers and would shrink
+    // Extension to its title: keep the widths and let the next rebuild with rows size them.
+    let empty = SendMessageW(list, LVM_GETITEMCOUNT, None, None).0 == 0;
+    SIZE_PENDING.with(|p| p.set(empty));
+    if empty {
+        fit_columns(list);
+        return;
+    }
     let measure = |col: usize, how: i32| {
         SendMessageW(
             list,
@@ -545,6 +629,7 @@ pub(super) unsafe fn size_columns(list: HWND) {
     for (col, n) in need.iter_mut().enumerate() {
         *n = measure(col, LVSCW_AUTOSIZE).max(measure(col, LVSCW_AUTOSIZE_USEHEADER));
     }
+    need[0] = need[0].max(extension_column_need(list));
     let mut crc = RECT::default();
     let _ = GetClientRect(list, &mut crc);
     for (col, w) in leading_column_widths(need, crc.right - crc.left)

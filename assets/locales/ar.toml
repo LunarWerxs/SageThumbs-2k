@@ -172,9 +172,6 @@ chk_sort = "فرز صفحات الأرشيف فرزًا طبيعيًا"
 chk_prefer_cover = "تفضيل صورة \"cover\""
 chk_skip_scanlation = "تخطي حشو السكانليشن (الشكر/الشعارات)"
 chk_archive_sheet = "صور مصغّرة بنمط \"لوحة التلامس\" لملفات ZIP/RAR/7z"
-grp_images = "الصور"
-grp_camera_raw = "‏RAW الكاميرا"
-grp_ebooks_comics = "كتب إلكترونية وقصص مصورة"
 
 # --- Added 2026-06-12: Convert / Files-to-folder / Tags-to-folders dialogs + extras ---
 # Generic "OK" button (used by the small popups)
@@ -845,3 +842,11 @@ shot_tip_save = "حفظ إلى ملف (Ctrl+S)"
 grp_shot_files = "حفظ لقطة الشاشة"
 nav_shotfiles = "ملفات اللقطات"
 blurb_shotfiles = "كيف تُحفظ لقطات الشاشة: التنسيق، الاسم، المجلد."
+
+cat_image = "صورة"
+cat_raw = "RAW الكاميرا"
+cat_ebook = "كتاب إلكتروني"
+cat_document = "مستند"
+cat_audio = "صوت"
+cat_video = "فيديو"
+cat_archive = "أرشيف"

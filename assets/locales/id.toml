@@ -172,9 +172,6 @@ chk_sort = "Urutkan halaman arsip secara alami"
 chk_prefer_cover = "Utamakan gambar \"cover\""
 chk_skip_scanlation = "Lewati halaman tambahan scanlation (kredit/logo)"
 chk_archive_sheet = "Thumbnail contact-sheet untuk ZIP/RAR/7z"
-grp_images = "Gambar"
-grp_camera_raw = "RAW kamera"
-grp_ebooks_comics = "Ebook & komik"
 
 # --- Added 2026-06-13: Convert / Files-to-folder / Tags-to-folders dialogs ---
 # Generic "OK" button + checkerboard checkbox
@@ -851,3 +848,11 @@ shot_tip_save = "Simpan ke file (Ctrl+S)"
 grp_shot_files = "Menyimpan tangkapan layar"
 nav_shotfiles = "File tangkapan"
 blurb_shotfiles = "Tangkapan layar disimpan: format, nama, folder."
+
+cat_image = "Gambar"
+cat_raw = "RAW Kamera"
+cat_ebook = "Ebook"
+cat_document = "Dokumen"
+cat_audio = "Audio"
+cat_video = "Video"
+cat_archive = "Arsip"

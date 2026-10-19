@@ -172,9 +172,6 @@ chk_sort = "مرتب‌سازی طبیعی صفحه‌های آرشیو"
 chk_prefer_cover = "ترجیح تصویر \"cover\""
 chk_skip_scanlation = "رد کردن صفحات اضافی اسکنلیشن (تشکر/لوگوها)"
 chk_archive_sheet = "بندانگشتی‌های سبک برگه تماس برای ZIP/RAR/7z"
-grp_images = "تصاویر"
-grp_camera_raw = "‏RAW دوربین"
-grp_ebooks_comics = "کتاب‌های الکترونیکی و کمیک‌ها"
 
 # --- Added 2026-06-12: Convert dialog, Files-to-folder, Tags-to-folders, misc ---
 # Generic "OK" button (used by the small popups)
@@ -841,3 +838,11 @@ shot_tip_save = "ذخیره در یک پرونده (Ctrl+S)"
 grp_shot_files = "ذخیره نماگرفت"
 nav_shotfiles = "فایل‌های نماگرفت"
 blurb_shotfiles = "ذخیرهٔ نماگرفت: قالب، نام، پوشه."
+
+cat_image = "تصویر"
+cat_raw = "RAW دوربین"
+cat_ebook = "کتاب الکترونیکی"
+cat_document = "سند"
+cat_audio = "صدا"
+cat_video = "ویدیو"
+cat_archive = "آرشیو"

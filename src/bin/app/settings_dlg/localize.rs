@@ -245,11 +245,11 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         set_column_text(list, 1, t("col_category"));
         set_column_text(list, 2, t("col_capability"));
         set_column_text(list, 3, t("col_description"));
-        // Unlike Category/Description (always English format names), the "How" cell TEXT
-        // itself is localized (`capability_label` -> `t("cap_*")`), so the rows have to be
-        // rebuilt here too - waiting for the next search keystroke (as the header-only path
-        // used to) would leave every row's "How" text in the old language until the user
-        // typed something.
+        // Unlike Description (always the English format name), the Category and "How" cell
+        // TEXT is localized (`category_text` -> `t("cat_*")`, `capability_label` ->
+        // `t("cap_*")`), so the rows have to be rebuilt here too - waiting for the next
+        // search keystroke (as the header-only path used to) would leave every row's
+        // Category and "How" text in the old language until the user typed something.
         populate_list(list, &get_edit_text(hwnd, ID_SEARCH));
         // New headers and "How" labels need new widths.
         size_columns(list);

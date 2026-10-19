@@ -172,9 +172,6 @@ chk_sort = "Сортувати сторінки архіву природно"
 chk_prefer_cover = "Віддавати перевагу зображенню \"cover\""
 chk_skip_scanlation = "Пропускати вставки сканлейту (титри/логотипи)"
 chk_archive_sheet = "Ескізи-колажі для ZIP/RAR/7z"
-grp_images = "Зображення"
-grp_camera_raw = "RAW камери"
-grp_ebooks_comics = "Книжки й комікси"
 
 # --- Added 2026-06-12: Convert / Files-to-folder / Tags-to-folders dialogs ---
 # Checkerboard checkbox + tooltip (Settings)
@@ -848,3 +845,11 @@ shot_tip_save = "Зберегти у файл (Ctrl+S)"
 grp_shot_files = "Збереження знімка"
 nav_shotfiles = "Файли знімків"
 blurb_shotfiles = "Як зберігаються знімки: формат, назва, тека."
+
+cat_image = "Зображення"
+cat_raw = "RAW камери"
+cat_ebook = "Електронна книга"
+cat_document = "Документ"
+cat_audio = "Аудіо"
+cat_video = "Відео"
+cat_archive = "Архів"

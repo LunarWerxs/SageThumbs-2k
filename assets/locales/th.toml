@@ -172,9 +172,6 @@ chk_sort = "เรียงหน้าไฟล์บีบอัดแบบ�
 chk_prefer_cover = "ใช้รูปชื่อ \"cover\" ก่อน"
 chk_skip_scanlation = "ข้ามหน้าแถมของ scanlation (เครดิต/โลโก้)"
 chk_archive_sheet = "รูปขนาดย่อแบบคอลลาจสำหรับ ZIP/RAR/7z"
-grp_images = "รูปภาพ"
-grp_camera_raw = "RAW จากกล้อง"
-grp_ebooks_comics = "อีบุ๊กและการ์ตูน"
 
 # --- Added 2026-06-12: Convert / Files-to-folder / Tags-to-folders dialogs, eyedropper hint, checkerboard ---
 # Generic "OK" button (used by the small popups)
@@ -845,3 +842,11 @@ shot_tip_save = "บันทึกเป็นไฟล์ (Ctrl+S)"
 grp_shot_files = "การบันทึกภาพหน้าจอ"
 nav_shotfiles = "ไฟล์ภาพหน้าจอ"
 blurb_shotfiles = "วิธีบันทึกภาพหน้าจอ: รูปแบบ ชื่อ โฟลเดอร์"
+
+cat_image = "รูปภาพ"
+cat_raw = "RAW จากกล้อง"
+cat_ebook = "อีบุ๊ก"
+cat_document = "เอกสาร"
+cat_audio = "เสียง"
+cat_video = "วิดีโอ"
+cat_archive = "ไฟล์บีบอัด"

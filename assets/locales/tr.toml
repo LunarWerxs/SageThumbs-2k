@@ -172,9 +172,6 @@ chk_sort = "Arşiv sayfalarını doğal sırala"
 chk_prefer_cover = "\"cover\" görüntüsünü tercih et"
 chk_skip_scanlation = "Scanlation dolgularını atla (jenerik/logolar)"
 chk_archive_sheet = "ZIP/RAR/7z için kolaj küçük resimler"
-grp_images = "Görüntüler"
-grp_camera_raw = "Kamera RAW"
-grp_ebooks_comics = "E-kitaplar ve çizgi romanlar"
 
 # --- Added 2026-06-12: Convert / Files-to-folder / Tags-to-folders dialogs ---
 # Checkerboard checkbox + tooltip (Settings)
@@ -850,3 +847,11 @@ shot_tip_save = "Dosyaya kaydet (Ctrl+S)"
 grp_shot_files = "Ekran görüntüsü kaydetme"
 nav_shotfiles = "Görüntü dosyaları"
 blurb_shotfiles = "Ekran görüntüsü kaydı: biçim, ad, klasör."
+
+cat_image = "Görüntü"
+cat_raw = "Kamera RAW"
+cat_ebook = "E-kitap"
+cat_document = "Belge"
+cat_audio = "Ses"
+cat_video = "Video"
+cat_archive = "Arşiv"

@@ -172,9 +172,6 @@ chk_sort = "アーカイブのページを自然順で並べ替え"
 chk_prefer_cover = "\"cover\" 画像を優先"
 chk_skip_scanlation = "スキャンレーションの前付け（クレジット/ロゴ）をスキップ"
 chk_archive_sheet = "ZIP/RAR/7z のコンタクトシート サムネイル"
-grp_images = "画像"
-grp_camera_raw = "カメラ RAW"
-grp_ebooks_comics = "電子書籍・コミック"
 
 # --- Added 2026-06-13: Convert / Files-to-folder / Tags-to-folders dialogs ---
 # Generic "OK" button + checkerboard checkbox
@@ -851,3 +848,11 @@ shot_tip_save = "ファイルに保存 (Ctrl+S)"
 grp_shot_files = "スクリーンショットの保存"
 nav_shotfiles = "ファイル保存"
 blurb_shotfiles = "スクリーンショットの保存方法: 形式、ファイル名、フォルダー。"
+
+cat_image = "画像"
+cat_raw = "カメラRAW"
+cat_ebook = "電子書籍"
+cat_document = "ドキュメント"
+cat_audio = "音声"
+cat_video = "動画"
+cat_archive = "アーカイブ"

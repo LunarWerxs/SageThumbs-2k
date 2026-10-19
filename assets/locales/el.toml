@@ -172,9 +172,6 @@ chk_sort = "Φυσική ταξινόμηση σελίδων αρχείου"
 chk_prefer_cover = "Προτίμηση εικόνας \"cover\""
 chk_skip_scanlation = "Παράλειψη γεμισμάτων scanlation (συντελεστές/λογότυπα)"
 chk_archive_sheet = "Μικρογραφίες τύπου φύλλου επαφών για ZIP/RAR/7z"
-grp_images = "Εικόνες"
-grp_camera_raw = "RAW κάμερας"
-grp_ebooks_comics = "E-books & κόμικς"
 
 # --- Added 2026-06-12: Convert dialog, Files-to-folder, Tags-to-folders, misc ---
 # Generic "OK" button (used by the small popups)
@@ -841,3 +838,11 @@ shot_tip_save = "Αποθήκευση σε αρχείο (Ctrl+S)"
 grp_shot_files = "Αποθήκευση στιγμιότυπου"
 nav_shotfiles = "Αρχεία στιγμιοτύπων"
 blurb_shotfiles = "Πώς αποθηκεύονται: μορφή, όνομα, φάκελος."
+
+cat_image = "Εικόνα"
+cat_raw = "RAW κάμερας"
+cat_ebook = "E-book"
+cat_document = "Έγγραφο"
+cat_audio = "Ήχος"
+cat_video = "Βίντεο"
+cat_archive = "Συμπιεσμένο αρχείο"

@@ -172,9 +172,6 @@ chk_sort = "Strani arhiva razvrščaj naravno"
 chk_prefer_cover = "Daj prednost sliki \"cover\""
 chk_skip_scanlation = "Preskoči polnila scanlation (zasluge/logotipi)"
 chk_archive_sheet = "Kolažne sličice za ZIP/RAR/7z"
-grp_images = "Slike"
-grp_camera_raw = "RAW fotoaparata"
-grp_ebooks_comics = "E-knjige in stripi"
 
 # --- Added 2026-06-12: Convert / Files-to-folder / Tags-to-folders dialogs, eyedropper hint, checkerboard ---
 # Generic "OK" button (used by the small popups)
@@ -845,3 +842,11 @@ shot_tip_save = "Shrani v datoteko (Ctrl+S)"
 grp_shot_files = "Shranjevanje posnetka zaslona"
 nav_shotfiles = "Datoteke posnetkov"
 blurb_shotfiles = "Kako se shranjujejo posnetki: oblika, ime, mapa."
+
+cat_image = "Slika"
+cat_raw = "RAW fotoaparata"
+cat_ebook = "E-knjiga"
+cat_document = "Dokument"
+cat_audio = "Zvok"
+cat_video = "Video"
+cat_archive = "Arhiv"

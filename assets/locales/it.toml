@@ -172,9 +172,6 @@ chk_sort = "Ordina le pagine dell'archivio in modo naturale"
 chk_prefer_cover = "Preferisci un'immagine \"cover\""
 chk_skip_scanlation = "Salta riempitivi scanlation (crediti/loghi)"
 chk_archive_sheet = "Miniature a foglio di contatto per ZIP/RAR/7z"
-grp_images = "Immagini"
-grp_camera_raw = "RAW fotocamera"
-grp_ebooks_comics = "Ebook e fumetti"
 
 # --- Added 2026-06-13: Convert / Files-to-folder / Tags-to-folders dialogs ---
 # Generic "OK" button + checkerboard checkbox
@@ -851,3 +848,11 @@ shot_tip_save = "Salva su file (Ctrl+S)"
 grp_shot_files = "Salvataggio degli screenshot"
 nav_shotfiles = "File screenshot"
 blurb_shotfiles = "Salvataggio degli screenshot: formato, nome, cartella."
+
+cat_image = "Immagine"
+cat_raw = "RAW fotocamera"
+cat_ebook = "Ebook"
+cat_document = "Documento"
+cat_audio = "Audio"
+cat_video = "Video"
+cat_archive = "Archivio"

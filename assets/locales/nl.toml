@@ -172,9 +172,6 @@ chk_sort = "Archiefpagina's natuurlijk sorteren"
 chk_prefer_cover = "Een \"cover\"-afbeelding verkiezen"
 chk_skip_scanlation = "Scanlation-vulling overslaan (credits/logo's)"
 chk_archive_sheet = "Contactvel-miniaturen voor ZIP/RAR/7z"
-grp_images = "Afbeeldingen"
-grp_camera_raw = "Camera-RAW"
-grp_ebooks_comics = "E-books & strips"
 
 # --- Added 2026-06-12: Convert / Files-to-folder / Tags-to-folders dialogs + eyedropper + checkerboard ---
 # Settings additions
@@ -851,3 +848,11 @@ shot_tip_save = "Opslaan naar een bestand (Ctrl+S)"
 grp_shot_files = "Een schermafbeelding opslaan"
 nav_shotfiles = "Bestanden opslaan"
 blurb_shotfiles = "Hoe ze worden opgeslagen: indeling, naam, map."
+
+cat_image = "Afbeelding"
+cat_raw = "Camera-RAW"
+cat_ebook = "E-book"
+cat_document = "Document"
+cat_audio = "Audio"
+cat_video = "Video"
+cat_archive = "Archief"

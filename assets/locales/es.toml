@@ -172,9 +172,6 @@ chk_sort = "Ordenar páginas del archivo de forma natural"
 chk_prefer_cover = "Preferir una imagen \"cover\""
 chk_skip_scanlation = "Omitir relleno de scanlation (créditos/logos)"
 chk_archive_sheet = "Miniaturas tipo hoja de contactos para ZIP/RAR/7z"
-grp_images = "Imágenes"
-grp_camera_raw = "RAW de cámara"
-grp_ebooks_comics = "Ebooks y cómics"
 
 # --- Added 2026-06-12: Convert dialog, Files-to-folder, Tags-to-folders, misc ---
 # Generic "OK" button (used by the small popups)
@@ -841,3 +838,11 @@ shot_tip_save = "Guardar en un archivo (Ctrl+S)"
 grp_shot_files = "Guardar una captura"
 nav_shotfiles = "Archivos de captura"
 blurb_shotfiles = "Cómo se guardan: formato, nombre, carpeta."
+
+cat_image = "Imagen"
+cat_raw = "RAW de cámara"
+cat_ebook = "Libro electrónico"
+cat_document = "Documento"
+cat_audio = "Audio"
+cat_video = "Vídeo"
+cat_archive = "Archivo comprimido"

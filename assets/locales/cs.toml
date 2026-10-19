@@ -172,9 +172,6 @@ chk_sort = "Řadit stránky archivu přirozeně"
 chk_prefer_cover = "Upřednostnit obrázek \"cover\""
 chk_skip_scanlation = "Přeskakovat vatu scanlation (titulky/loga)"
 chk_archive_sheet = "Miniatury typu kontaktní list pro ZIP/RAR/7z"
-grp_images = "Obrázky"
-grp_camera_raw = "RAW z fotoaparátu"
-grp_ebooks_comics = "E-knihy a komiksy"
 
 # --- Added 2026-06-12: Convert / Files-to-folder / Tags-to-folders dialogs + extras ---
 # Generic "OK" button (used by the small popups)
@@ -845,3 +842,11 @@ shot_tip_save = "Uložit do souboru (Ctrl+S)"
 grp_shot_files = "Ukládání snímku obrazovky"
 nav_shotfiles = "Soubory snímků"
 blurb_shotfiles = "Ukládání snímků: formát, název, složka."
+
+cat_image = "Obrázek"
+cat_raw = "RAW z fotoaparátu"
+cat_ebook = "E-kniha"
+cat_document = "Dokument"
+cat_audio = "Zvuk"
+cat_video = "Video"
+cat_archive = "Archiv"
