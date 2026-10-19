@@ -400,10 +400,24 @@ fn percent_decoded(name: &str) -> Option<String> {
 /// The root model part: the target of `_rels/.rels`'s 3D-model relationship, else
 /// [`ROOT_DEFAULT`]. `None` when the package has neither, which is to say it is not a 3MF.
 pub(super) fn root_part<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Option<String> {
+    if !has_model_part(zip) {
+        return None;
+    }
     let named = super::zipfmt::read_named(zip, "_rels/.rels").and_then(|rels| rels_root(&rels));
     named
         .and_then(|n| entry_name(zip, &n))
         .or_else(|| entry_name(zip, ROOT_DEFAULT))
+}
+
+/// Whether any entry is named `*.model`, as every 3MF writer names its model parts (the spec's
+/// `/3D/3dmodel.model`, the production extension's `/3D/Objects/*.model`). Read off the central
+/// directory, so every other OPC zip (a `.docx`, a `.nupkg`) is turned away before its
+/// `_rels/.rels` is read: the zip dispatch asks this of every zip it sees.
+fn has_model_part<R: Read + Seek>(zip: &ZipArchive<R>) -> bool {
+    zip.file_names()
+        .take(super::MAX_LIST_ENTRIES)
+        .flatten()
+        .any(|n| n.len() >= 6 && n.as_bytes()[n.len() - 6..].eq_ignore_ascii_case(b".model"))
 }
 
 /// The `Target` of the relationship whose `Type` is the 3MF model's.
