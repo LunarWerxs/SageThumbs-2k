@@ -765,6 +765,9 @@ unsafe fn last_rescues(
     if let Some(src) = mesh_stream(stream, head, who) {
         return Some(src);
     }
+    if let Some(src) = threemf_stream(stream, head, who) {
+        return Some(src);
+    }
     if let Some(src) = raw_raster(stream, head, target_edge, who) {
         return Some(src);
     }
@@ -825,6 +828,30 @@ unsafe fn mesh_stream(stream: &IStream, head: &StreamHead, who: &str) -> Option<
     let img = img?;
     safety::log_debugf!(
         "{who}: mesh read off the stream -> {}x{}",
+        img.width(),
+        img.height()
+    );
+    Some(StreamSource::Frame(img))
+}
+
+/// A 3MF too big to hold that carries no picture: its model drawn off the stream (see
+/// `container::threemf`), the zip read through its central directory, one part at a time.
+unsafe fn threemf_stream(stream: &IStream, head: &StreamHead, who: &str) -> Option<StreamSource> {
+    if !head.bytes().starts_with(b"PK\x03\x04") {
+        return None;
+    }
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    let reader = std::io::BufReader::with_capacity(
+        1 << 20,
+        IStreamReader {
+            stream: stream.clone(),
+        },
+    );
+    let img = crate::container::draw_3mf_from_reader(reader);
+    let _ = stream.Seek(0, STREAM_SEEK_SET, None);
+    let img = img?;
+    safety::log_debugf!(
+        "{who}: 3MF model drawn off the stream -> {}x{}",
         img.width(),
         img.height()
     );

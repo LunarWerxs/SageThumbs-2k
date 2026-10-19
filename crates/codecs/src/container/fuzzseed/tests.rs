@@ -144,6 +144,11 @@ fn every_seed_reaches_its_parser() {
             zip::ZipArchive::new(std::io::Cursor::new(by("spla"))).expect("valid zip seed");
         assert!(spla::extract(&mut zip).is_some(), "spla frame-0 render");
     }
+    {
+        let mut zip =
+            zip::ZipArchive::new(std::io::Cursor::new(by("3mf-model"))).expect("valid zip seed");
+        assert!(threemf::draw(&mut zip, 16).is_some(), "3mf model draw");
+    }
     for (label, why) in [
         ("mcworld", "minecraft world_icon.jpeg at the root"),
         ("mcaddon", "minecraft pack_icon.png one folder down"),

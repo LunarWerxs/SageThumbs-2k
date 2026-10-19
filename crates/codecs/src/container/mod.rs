@@ -99,6 +99,8 @@ mod sixel;
 mod skp;
 mod spla;
 mod tarfmt;
+// 3MF packages with no picture: the model drawn like an STL.
+mod threemf;
 pub mod util;
 // Valve Texture Format (.vtf) - the full-resolution level through the DDS decoders.
 mod vtf;
@@ -347,6 +349,24 @@ fn blend_compressed_head(bytes: &[u8]) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+/// A 3MF package with no picture of its own, its model drawn (`threemf`); `None` for anything
+/// else. This rasterizes geometry, so it runs where the STL/OBJ/PLY render does, in the
+/// isolated hosts and the CLI, never in the in-process menu preview.
+pub(crate) fn draw_3mf(bytes: &[u8]) -> Option<DynamicImage> {
+    if !is_zip(bytes) {
+        return None;
+    }
+    draw_3mf_from_reader(std::io::Cursor::new(bytes))
+}
+
+/// [`draw_3mf`] off a seekable reader: the shell's stream over a package too big to hold.
+pub(crate) fn draw_3mf_from_reader<R: std::io::Read + std::io::Seek>(
+    reader: R,
+) -> Option<DynamicImage> {
+    let mut zip = zipguard::open(reader).ok()?;
+    threemf::draw(&mut zip, crate::decode::MESH_RENDER_EDGE)
 }
 
 /// If `bytes` is a recognized ebook/comic container, return its cover image.

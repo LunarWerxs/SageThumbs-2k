@@ -439,8 +439,9 @@ plus these viewer-only extras:
 - **A per-extension blocklist** (**Settings ▸ Quick preview**): list the extensions you never
   want previewed at all. Empty by default, and deliberately separate from the File types page,
   which governs Explorer thumbnails rather than the preview window.
-- **3D-print models** (`.stl`, `.obj`, `.ply`): these carry no picture inside them, so one is
-  drawn. The model is rendered shaded from a consistent three-quarter angle above and in front
+- **3D-print models** (`.stl`, `.obj`, `.ply`, and a `.3mf` that carries no slicer picture,
+  Bambu Studio's and OrcaSlicer's multi-part files included): these carry no picture inside
+  them, so one is drawn. The model is rendered shaded from a consistent three-quarter angle above and in front
   of it, the way a slicer shows it, in Explorer
   thumbnails and at full size in the preview, on a transparent background like any other
   thumbnail. A folder of prints becomes something you can tell apart at a glance. A scan of

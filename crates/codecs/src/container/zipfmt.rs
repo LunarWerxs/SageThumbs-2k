@@ -79,6 +79,13 @@ fn dedicated_preview<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Dedicated {
     if let Some(preview) = super::project::extract(zip) {
         return Dedicated::Final(Some(preview));
     }
+    // A 3MF with no picture of its own (a CAD export, a bare model) owns the answer too: no cover
+    // here. Its model is drawn by the image tiers' mesh prelude (`container::draw_3mf`), which the
+    // in-process menu preview never runs; the generic pick would hand back a texture or a
+    // slicer's selection mask instead.
+    if super::threemf::root_part(zip).is_some() {
+        return Dedicated::Final(None);
+    }
 
     // SpriteLoop `.spla` animation packages: no baked preview at all, a rig of part PNGs
     // plus a JSON manifest, so frame 0 is RENDERED (`container::spla`). Before the generic

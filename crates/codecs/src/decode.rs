@@ -242,7 +242,9 @@ pub(crate) use fits::{decode_scaled as fits_scaled_from_reader, is_fits};
 pub(crate) use jp2::fuzzapi as jp2_fuzzapi;
 #[cfg(test)]
 pub(crate) use mesh::fuzzapi as mesh_fuzzapi;
-pub(crate) use mesh::{mesh_from_reader, mesh_kind, MESH_SNIFF_BYTES};
+pub(crate) use mesh::{
+    draw_triangles, mesh_from_reader, mesh_kind, MESH_SNIFF_BYTES, RENDER_EDGE as MESH_RENDER_EDGE,
+};
 pub(crate) use rawraster::{decode_scaled as raw_raster_scaled_from_reader, is_raw_raster};
 pub(crate) use readers::effective_input_cap;
 pub use readers::{

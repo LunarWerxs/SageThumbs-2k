@@ -408,6 +408,13 @@
    "source": "bambulab/BambuStudio@79df7ae3  resources/calib/pressure_advance/pa_pattern.3mf"
   },
   {
+   "file": "real-nopicture.3mf",
+   "url": "https://raw.githubusercontent.com/SoftFever/OrcaSlicer/da4d766d467cb90274393523c8ba68dea74bb3c2/resources/handy_models/OrcaBadge.3mf",
+   "sha256": "04573823874F90A8B46778EF35A78A210422BFEF0051A53D296B3364ADE56F93",
+   "bytes": 817091,
+   "source": "SoftFever/OrcaSlicer@da4d766d  resources/handy_models/OrcaBadge.3mf"
+  },
+  {
    "file": "real.stl",
    "url": "https://raw.githubusercontent.com/apache/tika/3d4262da49b0edcd871d59fb36169eb339799e2c/tika-parsers/tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testSTL-ascii.stl",
    "sha256": "66087D5B82F32068647583D1FA26FBF7C73331182CAC3A8AD001CE944CD02EE7",
@@ -2007,7 +2014,8 @@
   ],
   "3mf": [
    "real.3mf",
-   "real-bambu.3mf"
+   "real-bambu.3mf",
+   "real-nopicture.3mf"
   ],
   "7z": [
    "archive-sample.7z",

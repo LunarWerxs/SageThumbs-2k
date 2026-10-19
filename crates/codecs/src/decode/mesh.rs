@@ -40,7 +40,7 @@ const MAX_VERTS: usize = 16_000_000;
 const RASTER_BUDGET_CANVAS_MULTIPLE: u64 = 64;
 /// Rendered edge, before the pipeline's fit-to-box. Big enough that the preview window
 /// gets a crisp image; small enough that the z-buffer stays a transient few MB.
-const RENDER_EDGE: u32 = 1024;
+pub(crate) const RENDER_EDGE: u32 = 1024;
 /// Supersample factor (render at N×, box-average down) — cheap anti-aliasing.
 const SS: u32 = 2;
 /// How much of a text mesh's head the sniffers look at.
@@ -119,34 +119,87 @@ fn read_mesh<R: std::io::BufRead + std::io::Seek>(
     }
 }
 
-/// A mesh rendered off `r`, standing at the start of the file. The first read holds up to
-/// `limits.tris` triangles and measures the bounds of all of them; a model with more is read once
-/// more, holding no triangle, to draw each one as it passes. It is not sampled, because a dense
-/// scan (a fine grid of coplanar triangles, each smaller than a pixel) sampled to a few million
-/// leaves most of its surface see-through. `r` must seek for that.
+/// A mesh rendered off `r`, standing at the start of the file, which [`draw`] may read twice:
+/// `r` must seek for that.
 fn mesh_image<R: std::io::BufRead + std::io::Seek>(
     r: &mut R,
     kind: MeshKind,
     limits: Limits,
 ) -> Option<image::RgbaImage> {
     let start = r.stream_position().ok()?;
-    let mut first = FirstRead {
+    draw(limits, |sink| {
+        r.seek(std::io::SeekFrom::Start(start)).ok()?;
+        read_mesh(r, kind, limits.verts, sink)
+    })
+}
+
+/// A model `read` hands to the sink it is given, a triangle at a time. The first read holds up to
+/// `limits.tris` triangles and measures the bounds of all of them; a model with more is read once
+/// more, holding no triangle, to draw each one as it passes. It is not sampled, because a dense
+/// scan (a fine grid of coplanar triangles, each smaller than a pixel) sampled to a few million
+/// leaves most of its surface see-through.
+fn draw(limits: Limits, mut read: impl FnMut(&mut Pass) -> Option<()>) -> Option<image::RgbaImage> {
+    let mut pass = Pass::First(FirstRead {
         held: Collector::new(limits.tris),
         bounds: Bounds::new(),
+    });
+    read(&mut pass)?;
+    let Pass::First(first) = pass else {
+        return None;
     };
-    read_mesh(r, kind, limits.verts, &mut first)?;
     if !first.held.past() {
         let tris = first.held.into_tris();
         return (!tris.is_empty()).then(|| render(&tris, limits.edge));
     }
     drop(first.held);
-    let Some(mut raster) = Rasterizer::new(&first.bounds, limits.edge) else {
+    let Some(raster) = Rasterizer::new(&first.bounds, limits.edge) else {
         // fully transparent, as for a small model with no extent
         return Some(image::RgbaImage::new(limits.edge, limits.edge));
     };
-    r.seek(std::io::SeekFrom::Start(start)).ok()?;
-    read_mesh(r, kind, limits.verts, &mut raster)?;
+    let mut pass = Pass::Draw(raster);
+    read(&mut pass)?;
+    let Pass::Draw(raster) = pass else {
+        return None;
+    };
     Some(raster.finish())
+}
+
+/// The sink of one read in [`draw`]: the first, which holds and measures, or the second, which
+/// draws.
+enum Pass {
+    First(FirstRead),
+    Draw(Rasterizer),
+}
+
+impl TriSink for Pass {
+    fn push(&mut self, t: [f32; 9]) {
+        match self {
+            Pass::First(first) => first.push(t),
+            Pass::Draw(raster) => raster.push(t),
+        }
+    }
+
+    fn full(&self) -> bool {
+        matches!(self, Pass::Draw(raster) if raster.full())
+    }
+}
+
+/// A model held somewhere else (a 3MF package's parts, `container::threemf`), drawn at `edge` px
+/// like any mesh here. `emit` hands every triangle to the function it is given, which answers
+/// `false` once it wants no more; it is called a second time for a model past the triangle cap.
+pub(crate) fn draw_triangles(
+    edge: u32,
+    mut emit: impl FnMut(&mut dyn FnMut([f32; 9]) -> bool),
+) -> Option<DynamicImage> {
+    let limits = Limits { edge, ..LIMITS };
+    draw(limits, |sink| {
+        emit(&mut |t: [f32; 9]| {
+            sink.push(t);
+            !sink.full()
+        });
+        Some(())
+    })
+    .map(DynamicImage::ImageRgba8)
 }
 
 /// The first read of [`mesh_image`]: the triangles up to the cap, and the bounds of every one, so

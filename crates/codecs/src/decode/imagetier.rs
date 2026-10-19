@@ -30,6 +30,11 @@ pub(super) fn decode_image_with_raw_order(
     if let Some(img) = decode_mesh_sniffed(bytes) {
         return Ok(img); // rendered; no EXIF to apply
     }
+    // A 3MF with no picture of its own: its model drawn the same way, and kept out of the
+    // menu preview for the same reason (`container::threemf`).
+    if let Some(img) = crate::container::draw_3mf(bytes) {
+        return Ok(img);
+    }
     // `inner` is only `Some` when `bytes` was gzip-wrapped and inflated but wasn't SVG
     // (e.g. `.emz`) — decode THAT, so a gzip-in-gzip payload still can't recurse.
     if let Some(inner) = inner {

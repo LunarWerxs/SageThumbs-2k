@@ -545,6 +545,7 @@ pub(crate) fn seeds() -> Vec<(&'static str, Vec<u8>)> {
         ("project", synthetic_project()),
         ("pxo", synthetic_pxo()),
         ("spla", synthetic_spla()),
+        ("3mf-model", threemf::seed()),
         ("mcworld", synthetic_mcworld()),
         ("mcaddon", synthetic_mcaddon()),
         ("aseprite", synthetic_aseprite()),

@@ -11,6 +11,10 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 **TL;DR**
 
+**New**
+
+- **3MF files without a saved picture show their model**
+
 **Fixed**
 
 - **3D models no longer look see-through**
@@ -19,6 +23,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 **Everything in Unreleased**
 
+- **3MF files without a saved picture show their model.** A 3MF from a CAD program, or a bare
+  model file, carries only the 3D model and no picture of it, so it got no thumbnail, or a
+  texture or other stray image from inside the file. The model is now drawn, the same way STL
+  files are, including the multi-part files Bambu Studio and OrcaSlicer write. When the file
+  does carry a slicer's picture, that picture is still what you see.
 - **3D models no longer look see-through.** STL, OBJ and PLY thumbnails were drawn from below
   the model, and mirrored, so a solid print showed its underside and read as a hollow,
   see-through shell. They are now drawn from above and in front, the way a slicer shows them,
