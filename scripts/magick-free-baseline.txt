@@ -24,6 +24,7 @@ real-32bit-nopreview.psd
 real-32bit.psb
 real-32bit.psd
 real-artboards.ai
+real-bambu.3mf
 real-bc2.ktx
 real-bgra8888.vtf
 real-bricscad.dxf
@@ -63,6 +64,7 @@ real-nocomposite-nopreview.psb
 real-nocomposite-nopreview.psd
 real-nocomposite.psb
 real-nocomposite.psd
+real-nopicture.3mf
 real-nopreview.eps
 real-nopreview.psb
 real-nopreview.psd
@@ -324,6 +326,10 @@ sample-dds-bc6hs.dds
 sample-dds-bc7-real.dds
 sample-dds-bgra8.dds
 sample-dds-rgba16f.dds
+sample-decoy-comic-covers.cb7
+sample-decoy-comic-covers.cbz
+sample-decoy-comic-named.cbz
+sample-decoy-comic-word.cbz
 sample-decoy-frames.gif
 sample-decoy-frames.webp
 sample-decoy-multipage.pdf
