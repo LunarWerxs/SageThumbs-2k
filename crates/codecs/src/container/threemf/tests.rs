@@ -134,3 +134,128 @@ fn a_component_is_placed_before_its_item() {
     let p = apply(&then(&scale_x2, &move_x3), [1., 1., 1.]);
     assert_eq!(p, [5., 1., 1.]);
 }
+
+/// A walk pays for every visit, the depth cap included. An object placing itself 100,000 times
+/// made each visit at the cap call 100,000 more for nothing, so a few-MB file held a thumbnail
+/// host for hours (the 3.8.0 release review, 2026-10-19). Given 100,000 units the walk must stop
+/// at once; before, it ran on for some ten billion free calls.
+#[test]
+fn a_fan_out_at_the_depth_cap_spends_the_walks_work() {
+    let fan = Object {
+        components: (0..100_000)
+            .map(|_| Placement {
+                part: None,
+                id: 1,
+                m: IDENTITY,
+            })
+            .collect(),
+        ..Object::default()
+    };
+    let root = Part {
+        objects: HashMap::from([(1, fan)]),
+        build: vec![Placement {
+            part: None,
+            id: 1,
+            m: IDENTITY,
+        }],
+    };
+    let model = Model {
+        root: "r".to_owned(),
+        parts: HashMap::from([("r".to_owned(), root)]),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut push = |_: [f32; 9]| true;
+        let mut walk = Walk {
+            model: &model,
+            push: &mut push,
+            left: 100_000,
+        };
+        let _ = tx.send(walk.place("r", &model.parts["r"].build[0], &IDENTITY, 0));
+    });
+    let finished = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the walk must stop once its work is spent, not run on for free");
+    assert!(!finished, "a walk that ran out of work says so");
+}
+
+/// Objects are counted like vertices and triangles: past the cap an `<object>` is not held. A
+/// run of bare `<object id="N">` tags, millions of them in a few tens of MB, filled a map of
+/// several GB in the thumbnail host (the 3.8.0 release review, 2026-10-19).
+#[test]
+fn objects_past_the_cap_are_not_held() {
+    let objects: String = (1..=5).map(|i| format!(r#"<object id="{i}">"#)).collect();
+    let root = format!("<model><resources>{objects}</resources></model>");
+    let bytes = package(&[("_rels/.rels", RELS), ("3D/3dmodel.model", root.as_str())]);
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let caps = Caps {
+        objects: 3,
+        ..Caps::package()
+    };
+    let model = Model::load_capped(&mut zip, ROOT_DEFAULT.to_owned(), caps);
+    assert_eq!(model.parts[ROOT_DEFAULT].objects.len(), 3);
+}
+
+/// Every placement keeps its own copy of the part path it names, so those bytes are capped too,
+/// and a path longer than any real part name drops its placement (the 3.8.0 release review).
+#[test]
+fn placement_paths_are_capped_in_length_and_in_total() {
+    let long = "a".repeat(MAX_PATH + 1);
+    let root = format!(
+        r#"<model><resources><object id="1"><components><component objectid="2" path="/3D/a.model"/><component objectid="2" path="/3D/b.model"/><component objectid="2" path="/{long}"/><component objectid="2"/></components></object></resources></model>"#
+    );
+    let bytes = package(&[("_rels/.rels", RELS), ("3D/3dmodel.model", root.as_str())]);
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    // Room for one ten-byte path ("3D/a.model"), not two.
+    let caps = Caps {
+        path_bytes: 15,
+        ..Caps::package()
+    };
+    let model = Model::load_capped(&mut zip, ROOT_DEFAULT.to_owned(), caps);
+    let named: Vec<Option<&str>> = model.parts[ROOT_DEFAULT].objects[&1]
+        .components
+        .iter()
+        .map(|c| c.part.as_deref())
+        .collect();
+    assert_eq!(
+        named,
+        [Some("3D/a.model"), None],
+        "the first path fits, the second is past the byte cap, the long one is dropped, and a \
+         placement with no path costs nothing"
+    );
+}
+
+/// What a package inflates is capped as well as what it inflates to: a part that inflates to
+/// nothing spends none of the XML budget, and many entries may point at the same data, so once
+/// the cap is crossed no further part is read (the 3.8.0 release review).
+#[test]
+fn parts_past_the_inflate_cap_are_not_read() {
+    let root = r#"<model><resources><object id="1"><components><component objectid="2" path="/3D/Objects/a.model"/></components></object></resources><build><item objectid="1"/></build></model>"#;
+    let other = format!(
+        r#"<model><resources><object id="2">{}</object></resources></model>"#,
+        cube_mesh()
+    );
+    let bytes = package(&[
+        ("_rels/.rels", RELS),
+        ("3D/3dmodel.model", root),
+        ("3D/Objects/a.model", other.as_str()),
+    ]);
+    let load = |packed| {
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes.clone())).unwrap();
+        let caps = Caps {
+            packed,
+            ..Caps::package()
+        };
+        Model::load_capped(&mut zip, ROOT_DEFAULT.to_owned(), caps)
+    };
+    assert!(
+        !load(MAX_PACKED_BYTES).parts["3D/Objects/a.model"]
+            .objects
+            .is_empty(),
+        "with room, the part the component names is read"
+    );
+    assert!(
+        load(1).parts["3D/Objects/a.model"].objects.is_empty(),
+        "the root part crosses a one-byte cap, so no part after it is read"
+    );
+}

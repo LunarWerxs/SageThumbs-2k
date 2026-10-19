@@ -9,10 +9,12 @@
 //! `p:path`; those parts are read too.
 //!
 //! Hostile bytes, as everywhere here: the XML is scanned as a stream and never held whole, every
-//! count is capped, and the component graph is walked to a fixed depth with a fixed amount of
-//! work, so a cycle or a fan-out bomb costs a bounded amount and draws what it reached. A vertex
-//! that is not a finite number keeps its index (the triangles after it must not shift) and only
-//! the triangles that use it are dropped.
+//! count is capped (objects, vertices, triangles, placements and the bytes of their part paths),
+//! so are the bytes inflated and the bytes they inflate to, and the component graph is walked to
+//! a fixed depth with a fixed amount of work, every visit paid for, so a cycle or a fan-out bomb
+//! costs a bounded amount and draws what it reached. A vertex that is not a finite number keeps
+//! its index (the triangles after it must not shift) and only the triangles that use it are
+//! dropped.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Seek};
@@ -26,8 +28,19 @@ const MAX_VERTS: usize = 16_000_000;
 const MAX_TRIS: usize = 8_000_000;
 /// Component and build-item placements held across every part.
 const MAX_PLACEMENTS: usize = 1_000_000;
+/// Objects held across every part (each one a map entry, geometry or not).
+const MAX_OBJECTS: usize = 100_000;
+/// The longest part path a placement may name; a longer one names no real part, and the
+/// placement is dropped.
+const MAX_PATH: usize = 1024;
+/// Bytes of part paths held across every part: each placement keeps its own copy.
+const MAX_PATH_BYTES: usize = 16 * 1024 * 1024;
 /// Decompressed XML scanned across every part; past it the model is drawn as far as it was read.
 const MAX_XML_BYTES: u64 = 512 * 1024 * 1024;
+/// Compressed bytes inflated across every part, the part that crosses it read whole: a part that
+/// inflates to nothing spends none of [`MAX_XML_BYTES`], and many directory entries may point at
+/// the same data.
+const MAX_PACKED_BYTES: u64 = 256 * 1024 * 1024;
 /// Distinct model parts read: the root and the ones components point at.
 const MAX_PARTS: usize = 256;
 /// How deep components may nest.
@@ -94,10 +107,27 @@ struct Part {
 
 /// What one package may still hold and read.
 struct Caps {
+    objects: usize,
     verts: usize,
     tris: usize,
     placements: usize,
+    path_bytes: usize,
     bytes: u64,
+    packed: u64,
+}
+
+impl Caps {
+    fn package() -> Caps {
+        Caps {
+            objects: MAX_OBJECTS,
+            verts: MAX_VERTS,
+            tris: MAX_TRIS,
+            placements: MAX_PLACEMENTS,
+            path_bytes: MAX_PATH_BYTES,
+            bytes: MAX_XML_BYTES,
+            packed: MAX_PACKED_BYTES,
+        }
+    }
 }
 
 /// The tags of an XML stream, one at a time, in `buf` (what lies between `<` and `>`). Text,
@@ -258,16 +288,26 @@ fn transform(v: &[u8]) -> Mat {
     }
 }
 
-/// A `<component>`'s or build `<item>`'s placement; `None` without an object id.
-fn placement(rest: &[u8]) -> Option<Placement> {
-    let (mut id, mut part, mut m) = (None, None, IDENTITY);
+/// A `<component>`'s or build `<item>`'s placement; `None` without an object id, with a path
+/// past [`MAX_PATH`], or once the path bytes are spent.
+fn placement(rest: &[u8], caps: &mut Caps) -> Option<Placement> {
+    let (mut id, mut path, mut m) = (None, None, IDENTITY);
     for_each_attr(rest, |name, value| match name {
         b"objectid" => id = num(value),
-        b"path" => part = part_name(value),
+        b"path" => path = Some(value),
         b"transform" => m = transform(value),
         _ => {}
     });
-    Some(Placement { part, id: id?, m })
+    let id = id?;
+    let part = match path {
+        Some(v) if v.len() > MAX_PATH => return None,
+        Some(v) => part_name(v),
+        None => None,
+    };
+    if let Some(p) = &part {
+        caps.path_bytes = caps.path_bytes.checked_sub(p.len())?;
+    }
+    Some(Placement { part, id, m })
 }
 
 fn object_id(rest: &[u8]) -> Option<u32> {
@@ -292,13 +332,15 @@ impl PartReader {
         match split_tag(t) {
             (false, b"object", rest) => {
                 self.finish_object();
-                self.current = object_id(rest).map(|id| (id, Object::default()));
+                self.current = object_id(rest)
+                    .filter(|_| take(&mut caps.objects).is_some())
+                    .map(|id| (id, Object::default()));
             }
             (true, b"object", _) => self.finish_object(),
             (false, b"build", rest) => self.in_build = !rest.ends_with(b"/"),
             (true, b"build", _) => self.in_build = false,
             (false, b"item", rest) if self.in_build => {
-                if let Some(p) = take(&mut caps.placements).and_then(|()| placement(rest)) {
+                if let Some(p) = take(&mut caps.placements).and_then(|()| placement(rest, caps)) {
                     self.part.build.push(p);
                 }
             }
@@ -320,7 +362,7 @@ impl PartReader {
                 }
             }
             b"component" => {
-                if let Some(p) = take(&mut caps.placements).and_then(|()| placement(rest)) {
+                if let Some(p) = take(&mut caps.placements).and_then(|()| placement(rest, caps)) {
                     obj.components.push(p);
                 }
             }
@@ -339,6 +381,16 @@ impl PartReader {
 fn take(left: &mut usize) -> Option<()> {
     *left = left.checked_sub(1)?;
     Some(())
+}
+
+/// Spend `n` of a byte cap; `false` once it is gone. What is left need not cover `n`: the
+/// spending that crosses the cap goes ahead, so the most spent is the cap plus one `n`.
+fn spend_bytes(left: &mut u64, n: u64) -> bool {
+    if *left == 0 {
+        return false;
+    }
+    *left = left.saturating_sub(n);
+    true
 }
 
 /// Read one model part off `r`, spending `caps`.
@@ -449,22 +501,18 @@ struct Model {
 
 impl Model {
     fn load<R: Read + Seek>(zip: &mut ZipArchive<R>, root: String) -> Model {
-        let mut caps = Caps {
-            verts: MAX_VERTS,
-            tris: MAX_TRIS,
-            placements: MAX_PLACEMENTS,
-            bytes: MAX_XML_BYTES,
-        };
+        Model::load_capped(zip, root, Caps::package())
+    }
+
+    fn load_capped<R: Read + Seek>(zip: &mut ZipArchive<R>, root: String, mut caps: Caps) -> Model {
         let mut parts = HashMap::new();
         let mut seen = HashSet::from([root.clone()]);
         let mut queue = vec![root.clone()];
         while let Some(name) = queue.pop() {
             let part = entry_name(zip, &name)
-                .and_then(|entry| {
-                    zip.by_name(&entry)
-                        .ok()
-                        .map(|f| read_part(BufReader::new(f), &mut caps))
-                })
+                .and_then(|entry| zip.by_name(&entry).ok())
+                .filter(|f| spend_bytes(&mut caps.packed, f.compressed_size()))
+                .map(|f| read_part(BufReader::new(f), &mut caps))
                 .unwrap_or_default();
             for path in part.paths() {
                 if seen.len() < MAX_PARTS && seen.insert(path.to_owned()) {
@@ -489,7 +537,7 @@ impl Model {
         if root.build.is_empty() {
             // No build list (not valid 3MF, but written): every object of the root, as it is.
             for obj in root.objects.values() {
-                if !walk.mesh(obj, &IDENTITY) {
+                if !(walk.spend() && walk.mesh(obj, &IDENTITY)) {
                     return;
                 }
             }
@@ -521,16 +569,25 @@ struct Walk<'m, 'p> {
 }
 
 impl Walk<'_, '_> {
-    /// Draw the object `p` places, inside `parent`, from the part `here`; `false` once the
-    /// walk must stop (the sink is full or the work is spent).
-    fn place(&mut self, here: &str, p: &Placement, parent: &Mat, depth: u32) -> bool {
-        if depth > MAX_DEPTH {
-            return true;
+    /// Spend one unit of the walk's work; `false` once it is gone.
+    fn spend(&mut self) -> bool {
+        match self.left.checked_sub(1) {
+            Some(left) => {
+                self.left = left;
+                true
+            }
+            None => false,
         }
-        let Some(left) = self.left.checked_sub(1) else {
+    }
+
+    /// Draw the object `p` places, inside `parent`, from the part `here`; `false` once the
+    /// walk must stop (the sink is full or the work is spent). Every visit is paid for before
+    /// anything else: a visit that cost nothing could be made without end (an object placing
+    /// itself a million times kept a thumbnail host busy for hours at the depth cap).
+    fn place(&mut self, here: &str, p: &Placement, parent: &Mat, depth: u32) -> bool {
+        if !self.spend() {
             return false;
-        };
-        self.left = left;
+        }
         let model = self.model;
         let part = p.part.as_deref().unwrap_or(here);
         let Some(obj) = model.parts.get(part).and_then(|q| q.objects.get(&p.id)) else {
@@ -540,17 +597,19 @@ impl Walk<'_, '_> {
         if !self.mesh(obj, &m) {
             return false;
         }
-        obj.components
-            .iter()
-            .all(|c| self.place(part, c, &m, depth + 1))
+        // An object at the depth cap is drawn, its components are not followed.
+        depth >= MAX_DEPTH
+            || obj
+                .components
+                .iter()
+                .all(|c| self.place(part, c, &m, depth + 1))
     }
 
     fn mesh(&mut self, obj: &Object, m: &Mat) -> bool {
         for t in &obj.tris {
-            let Some(left) = self.left.checked_sub(1) else {
+            if !self.spend() {
                 return false;
-            };
-            self.left = left;
+            }
             if let Some(tri) = placed(obj, t, m) {
                 if !(self.push)(tri) {
                     return false;

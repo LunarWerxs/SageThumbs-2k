@@ -190,9 +190,10 @@ pub(crate) fn targets() -> Vec<Target> {
         // 3MF models with no picture (2026-10-18): the rels lookup, the streaming tag scan of
         // every model part a component points at, the transforms and the placement walk, then
         // the draw on a toy canvas, on a structurally valid zip whose XML is what gets mutated.
+        // Opened through `zipguard::open`, as `draw_3mf` opens it in the shell.
         ("threemf::draw", |b| {
-            let _ = zip::ZipArchive::new(std::io::Cursor::new(b))
-                .map(|mut zip| threemf::draw(&mut zip, 16));
+            let _ =
+                zipguard::open(std::io::Cursor::new(b)).map(|mut zip| threemf::draw(&mut zip, 16));
         }),
         // Aseprite: the chunk walk plus the layer/cel composite, including the zlib cel path.
         ("aseprite::extract", |b| {

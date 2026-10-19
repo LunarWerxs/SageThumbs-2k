@@ -180,7 +180,7 @@ unsafe fn read_archive_covers(
 /// `IStream::Read`: a crafted 101 MB CBR of 100,000 empty blocks cost ~52 GB of reads, and a
 /// zeroed 7z start header ~240 GB (Dredd, 2026-09-23). The cache reads each 1 MiB block once,
 /// stops after 192 MiB of distinct reads, and ends at the deadline.
-unsafe fn walk_reader(stream: &IStream, size: u64) -> IStreamReader {
+pub(super) unsafe fn walk_reader(stream: &IStream, size: u64) -> IStreamReader {
     let deadline = std::time::Instant::now() + super::OFFSET_COVER_BUDGET;
     let cached: IStream =
         crate::vstream::BlockCacheStream::new(stream.clone(), size, deadline).into();
