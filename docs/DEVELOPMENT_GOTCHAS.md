@@ -1355,7 +1355,10 @@ tests, and diffs the survivors against `scripts/magick-free-baseline.txt`; a fil
 stand on our own decoders and now needs ImageMagick has silently changed tier. `check-staged-sample.ps1`
 flattens the staged bundle the way the installer lays it out, because the stage keeps magick in a
 SUBDIRECTORY that `magick_exe()` cannot see - run in place, it would fall back to Program Files
-and mask the very thing being measured.
+and mask the very thing being measured. It refuses a CLI built before the newest `.rs` edit (a
+stale stage once passed a fix it did not contain); for decoder work since the last stage, build
+just the CLI and pass it with `-Cli <target>\release\st2k.exe`, which still runs beside the
+staged ImageMagick bundle.
 
 **The rule that generalises past these two:** when the product ships its own copy of a dependency
 and the developer box has a fatter one installed, "it works here" is not evidence. Test against

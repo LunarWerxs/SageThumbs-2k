@@ -20,6 +20,14 @@
 
   ⚠ IT USES THE LAST STAGED BUILD. Run it after scripts\build-release.ps1 (or after any
   release run) so the stage matches your source. It says which stage it used and how old it is.
+  For decoder code written since, build just the CLI and pass it with -Cli: it runs beside the
+  staged ImageMagick bundle, the part a real install differs in.
+
+      cargo build --release --bin st2k
+      pwsh scripts\check-staged-sample.ps1 -Cli <target dir>\release\st2k.exe real.3mf
+
+  A CLI built before the newest .rs edit is REFUSED, not run (2026-10-18): it cannot hold that
+  edit, and a stale stage had passed a 3MF fix it predated, through the old zip-image pick.
 
   RULE OF THUMB, earned the hard way: every NEW pinned corpus sample gets run through here
   before it is committed, and so does any file whose decode tier just changed. Ten seconds
@@ -35,6 +43,8 @@ param(
     [string]$StagePath,
     [string]$Corpus = "$PSScriptRoot\..\..\test-corpus",
     [int]$Size = 96,
+    # Render with this st2k.exe instead of the staged one, still beside the staged ImageMagick.
+    [string]$Cli,
     # Leave the flattened runtime in place and print its path (handy for poking at it by hand).
     [switch]$KeepRuntime
 )
@@ -47,7 +57,7 @@ if (-not $Sample -or -not $Sample.Count) {
 $root = Split-Path $PSScriptRoot -Parent
 if (-not $StagePath) { $StagePath = Join-Path $root 'scripts\packaging\stage\x64' }
 $stage = (Resolve-Path -LiteralPath $StagePath -ErrorAction Stop).Path
-$stagedCli = Join-Path $stage 'st2k.exe'
+$stagedCli = if ($Cli) { (Resolve-Path -LiteralPath $Cli -ErrorAction Stop).Path } else { Join-Path $stage 'st2k.exe' }
 $stagedMagick = Join-Path $stage 'magick'
 if (-not (Test-Path -LiteralPath $stagedCli -PathType Leaf)) {
     throw "staged CLI not found: $stagedCli (build it first: pwsh scripts\build-release.ps1)"
@@ -55,8 +65,16 @@ if (-not (Test-Path -LiteralPath $stagedCli -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath (Join-Path $stagedMagick 'magick.exe') -PathType Leaf)) {
     throw "staged ImageMagick bundle not found: $stagedMagick (build it first: pwsh scripts\build-release.ps1)"
 }
-$stagedAge = [int]((Get-Date) - (Get-Item -LiteralPath $stagedCli).LastWriteTime).TotalMinutes
-Write-Host ("[staged-sample] payload: {0} (staged {1} minute(s) ago)" -f $stage, $stagedAge) -ForegroundColor DarkGray
+$cliBuilt = (Get-Item -LiteralPath $stagedCli).LastWriteTime
+$newest = Get-ChildItem -LiteralPath (Join-Path $root 'crates'), (Join-Path $root 'src') -Recurse -File -Filter *.rs |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if ($newest -and $newest.LastWriteTime -gt $cliBuilt) {
+    throw ("{0} was built {1:yyyy-MM-dd HH:mm}, before {2} changed ({3:yyyy-MM-dd HH:mm}), so a PASS would say nothing about that change. " +
+        "Build the CLI (cargo build --release --bin st2k) and pass it with -Cli, or re-stage (pwsh scripts\build-release.ps1).") -f
+        $stagedCli, $cliBuilt, $newest.FullName.Substring($root.Length + 1), $newest.LastWriteTime
+}
+$stagedAge = [int]((Get-Date) - $cliBuilt).TotalMinutes
+Write-Host ("[staged-sample] payload: {0} (CLI {1}, built {2} minute(s) ago)" -f $stage, $stagedCli, $stagedAge) -ForegroundColor DarkGray
 
 # Resolve each argument: an existing path wins, otherwise treat it as a name/glob in the corpus.
 $corpusPath = if (Test-Path -LiteralPath $Corpus) { (Resolve-Path -LiteralPath $Corpus).Path } else { $null }
