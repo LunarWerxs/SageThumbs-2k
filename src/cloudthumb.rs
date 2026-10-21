@@ -8,7 +8,9 @@
 //!      handler that would draw it anywhere else on disk: ours for our formats, run in this
 //!      process, or whichever handler Windows has for the type;
 //!   2. otherwise, or when that drew nothing, hands the file to the provider it replaced
-//!      (OneDrive's own, which serves the cloud's thumbnails for online-only files).
+//!      (OneDrive's own, which serves the cloud's thumbnails for online-only files). For one of
+//!      our formats, our format mark goes on that picture too, so a folder's tiles carry it
+//!      whether or not the file is downloaded.
 //!
 //! It never reads an online-only file: that would download it, which is the one thing a
 //! thumbnail must not cause. Hosted out of process by the COM surrogate (`dllhost.exe`), like
@@ -18,7 +20,7 @@ use core::cell::{Cell, RefCell};
 
 use windows::core::{Error, Interface, Ref, Result, GUID, HSTRING};
 use windows::Win32::Foundation::{E_FAIL, E_POINTER};
-use windows::Win32::Graphics::Gdi::HBITMAP;
+use windows::Win32::Graphics::Gdi::{DeleteObject, HBITMAP};
 use windows::Win32::Storage::FileSystem::GetFileAttributesW;
 use windows::Win32::System::Com::{
     CLSIDFromString, CoCreateInstance, CoTaskMemFree, CLSCTX, CLSCTX_INPROC_SERVER,
@@ -28,14 +30,14 @@ use windows::Win32::UI::Shell::PropertiesSystem::{IInitializeWithFile, IInitiali
 use windows::Win32::UI::Shell::{
     AssocQueryStringW, IInitializeWithItem, IInitializeWithItem_Impl, IShellItem,
     IThumbnailProvider, IThumbnailProvider_Impl, SHCreateStreamOnFileEx, ASSOCF_INIT_DEFAULTTOSTAR,
-    ASSOCSTR_SHELLEXTENSION, SIGDN_FILESYSPATH, WTSAT_UNKNOWN, WTS_ALPHATYPE,
+    ASSOCSTR_SHELLEXTENSION, SIGDN_FILESYSPATH, WTSAT_ARGB, WTSAT_UNKNOWN, WTS_ALPHATYPE,
 };
 use windows_implement::implement;
 
 use st2k_base::guids::{
     CLSID_CLOUD_THUMB_PROVIDER, CLSID_THUMBNAIL_PROVIDER, THUMB_HANDLER_CATEGORY,
 };
-use st2k_base::{safety, settings};
+use st2k_base::{dib, safety, settings};
 
 use crate::thumbprovider::ThumbnailProvider;
 
@@ -190,6 +192,9 @@ impl CloudThumbnailProvider_Impl {
                 },
             };
             match got {
+                Ok(t) if gets_our_mark(&attempt, type_handler) => {
+                    return Ok(unsafe { with_our_mark(t, path.as_deref(), cx) })
+                }
                 Ok(t) => return Ok(t),
                 Err(e) => safety::log_debugf!(
                     "CloudThumbnail: {attempt:?} failed hr={:#010x}",
@@ -198,6 +203,42 @@ impl CloudThumbnailProvider_Impl {
             }
         }
         Err(Error::from(E_FAIL))
+    }
+}
+
+/// Whether a thumbnail another provider drew for this file still gets our format mark: yes for
+/// one of our formats (outside a sync folder it would be ours, and marked), whose picture came
+/// from the folder's own provider because the file is online-only or ours failed. Our own
+/// pipeline marks its tiles itself; a type that is not ours gets no mark anywhere.
+pub(crate) fn gets_our_mark(attempt: &Attempt, type_handler: Option<GUID>) -> bool {
+    *attempt != Attempt::Ours && type_handler == Some(CLSID_THUMBNAIL_PROVIDER)
+}
+
+/// `t` with the format mark drawn on it when the mark is on, as a new bitmap that replaces it;
+/// `t` itself when the mark is off or the bitmap cannot be read or rebuilt.
+unsafe fn with_our_mark(
+    t: (HBITMAP, WTS_ALPHATYPE),
+    path: Option<&str>,
+    cx: u32,
+) -> (HBITMAP, WTS_ALPHATYPE) {
+    let cfg = settings::thumb_settings();
+    let name = path
+        .and_then(|p| std::path::Path::new(p).file_name())
+        .and_then(|n| n.to_str());
+    let (Some(name), true) = (name, cfg.format_badge) else {
+        return t;
+    };
+    let Some((rgba, w, h)) = dib::read_rgba(t.0, t.1 == WTSAT_ARGB) else {
+        return t;
+    };
+    let (rgba, w, h) =
+        crate::badge::mark_tile(rgba, w, h, cx, name, cfg.badge_style, cfg.badge_size);
+    match dib::create_premultiplied_dib(w as i32, h as i32, &rgba) {
+        Ok(marked) => {
+            let _ = DeleteObject(t.0.into());
+            (marked, WTSAT_ARGB)
+        }
+        Err(_) => t,
     }
 }
 
@@ -360,6 +401,18 @@ mod tests {
             Some(CLSID_CLOUD_THUMB_PROVIDER)
         )
         .is_empty());
+    }
+
+    /// The format mark follows the file type, not who drew the picture: one of our formats
+    /// drawn by the folder's own provider (online-only, or ours failed) gets it; our own
+    /// pipeline already drew it; a type Windows or another program handles never does.
+    #[test]
+    fn our_formats_keep_their_mark_when_the_folders_provider_draws_them() {
+        let ours = Some(CLSID_THUMBNAIL_PROVIDER);
+        assert!(gets_our_mark(&Attempt::Replaced(ONEDRIVE), ours));
+        assert!(!gets_our_mark(&Attempt::Ours, ours));
+        assert!(!gets_our_mark(&Attempt::Replaced(ONEDRIVE), Some(PHOTOS)));
+        assert!(!gets_our_mark(&Attempt::TypeHandler(PHOTOS), Some(PHOTOS)));
     }
 
     /// Only a file whose data is here may be read: an online-only or partly downloaded

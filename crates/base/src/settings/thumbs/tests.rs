@@ -2,6 +2,30 @@
 
 use super::*;
 
+/// The corner picked on setup's wizard page (HKLM) counts until the user picks one in
+/// Settings, and the pre-2.5 pair only when neither exists. `thumb_settings` once skipped the
+/// setup step, so a badge chosen at install was drawn on no file.
+#[test]
+fn a_corner_mark_picked_at_setup_counts_until_the_user_picks_one() {
+    let not_read = || -> (bool, bool) { panic!("legacy pair read although a CornerMark exists") };
+    assert_eq!(
+        resolve_corner_mark(None, || Some(1), not_read),
+        CornerMark::Badge
+    );
+    assert_eq!(
+        resolve_corner_mark(Some(0), || Some(1), not_read),
+        CornerMark::SystemIcon
+    );
+    assert_eq!(
+        resolve_corner_mark(None, || None, || (true, false)),
+        CornerMark::Badge
+    );
+    assert_eq!(
+        resolve_corner_mark(None, || None, || (false, true)),
+        CornerMark::None
+    );
+}
+
 /// A188: [`FormatEnabledSnapshot`]'s portable arm must agree with [`format_enabled`] for
 /// every case that matters — an explicit `0` (disabled), any other stored value (enabled),
 /// and an extension nobody configured at all (enabled by default) — since it exists purely

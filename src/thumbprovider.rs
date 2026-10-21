@@ -365,24 +365,23 @@ impl ThumbnailProvider_Impl {
         // rendered after it — the Settings dialog clears the thumbnail cache when the
         // option changes, otherwise turning it on looks like it did nothing.
         if cfg.format_badge {
-            let label = {
+            let name = {
                 let borrow = self.stream.borrow();
                 borrow
                     .as_ref()
                     .and_then(|s| unsafe { st2k_base::host::stream_name(s) })
-                    .and_then(|n| crate::badge::label_for(&n))
             };
-            if let Some(label) = label {
-                // Explorer lays its film strip over a landscape video tile (issue #51).
-                let frame = crate::badge::Frame::explorer_draws_over(&label, img.width, img.height);
-                crate::badge::stamp(
-                    &mut img.rgba,
+            if let Some(name) = name {
+                // A picture too small for the mark comes back centred on a `cx` tile.
+                let rgba = std::mem::take(&mut img.rgba);
+                (img.rgba, img.width, img.height) = crate::badge::mark_tile(
+                    rgba,
                     img.width,
                     img.height,
-                    &label,
+                    cx,
+                    &name,
                     cfg.badge_style,
                     cfg.badge_size,
-                    frame,
                 );
             }
         }

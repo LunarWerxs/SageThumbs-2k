@@ -279,12 +279,16 @@ fn sweep_format_hooks(classes: &Key, fmt: &FormatEnabledSnapshot) -> bool {
 /// Doing nothing is the default answer, not a no-op: `hide_type_overlay()` is false for
 /// `CornerMark::SystemIcon`, and `typeoverlay::sync(false)` REMOVES any suppression previously
 /// written rather than skipping. That is what makes switching back to Windows' icon work.
-pub fn sync_user_shell() -> Result<()> {
+///
+/// `Ok(true)` when it took thumbnail slots that were not ours before
+/// ([`crate::progidslot::sync`]): the tiles Explorer cached for those types lack our mark until
+/// the cache is rebuilt.
+pub fn sync_user_shell() -> Result<bool> {
     crate::foldermenu::sync(settings::folder_prebuild_verb());
     crate::typeoverlay::sync(settings::hide_type_overlay());
-    crate::progidslot::sync(crate::progidslot::wanted());
+    let newly_taken = crate::progidslot::sync(crate::progidslot::wanted());
     notify_shell();
-    Ok(())
+    Ok(newly_taken > 0)
 }
 
 /// Undo everything [`sync_user_shell`] wrote for the CURRENT user, regardless of the settings.
@@ -615,7 +619,8 @@ fn remove_if_ours_preview(classes: &Key, path: &str) {
     }
 }
 
-fn notify_shell() {
+/// Tell Explorer file-type handlers changed (`SHCNE_ASSOCCHANGED`).
+pub fn notify_shell() {
     unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None) };
 }
 

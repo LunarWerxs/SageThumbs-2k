@@ -1,5 +1,10 @@
 use super::*;
 
+/// The label `mark_tile` stamps for a file name, or `None` when it draws none.
+fn label_for(file_name: &str) -> Option<String> {
+    ext_of(file_name).and_then(label_of_ext)
+}
+
 /// The box `stamp` actually painted on a transparent `w` x `h` tile, as (x0, y0, x1, y1)
 /// inclusive, or `None` when it drew nothing.
 fn drawn_box(
@@ -63,10 +68,88 @@ fn store_app_icon_pictures_get_no_label_but_dotted_names_do() {
 fn refuses_labels_it_cannot_draw() {
     assert_eq!(label_for("no-extension"), None);
     assert_eq!(label_for("trailing."), None);
-    // Longer than MAX_LABEL, and characters with no glyph.
-    assert_eq!(label_for("x.toolongext"), None);
+    // Characters with no glyph.
     assert_eq!(label_for("x.p-d"), None);
     assert_eq!(label_for("x.日本語"), None);
+}
+
+/// A long extension is shortened, never left unmarked: its format's short name, else without
+/// a backup number, else its first five letters.
+#[test]
+fn long_extensions_get_a_short_label() {
+    for (name, want) in [
+        ("a.aseprite", "ASE"),
+        ("a.pspimage", "PSP"),
+        ("a.farbfeld", "FF"),
+        ("scene.blend12", "BLEND"),
+        ("part.fcstd1", "FCSTD"),
+        ("scan.tiff64", "TIFF"),
+        ("bracket.sldprt", "SLDPR"),
+        ("x.toolongext", "TOOLO"),
+    ] {
+        assert_eq!(label_for(name).as_deref(), Some(want), "{name}");
+    }
+}
+
+/// Every format we register gets a mark: a label of at most five letters the font can draw.
+#[test]
+fn every_registered_format_has_a_label() {
+    for (ext, _) in st2k_base::formats::FORMATS {
+        let label = label_for(&format!("x.{ext}")).unwrap_or_else(|| panic!(".{ext}: no label"));
+        assert!(label.len() <= MAX_LABEL, ".{ext}: {label}");
+    }
+}
+
+/// A picture too small or too thin for the mark (a 10x12 PSD, a 256x5 strip) comes back on a
+/// transparent square of the requested edge, the picture in the middle and the mark in the
+/// corner; a picture the mark fits on keeps its size; Explorer's small views stay unmarked.
+#[test]
+fn a_picture_too_small_for_the_mark_is_marked_on_the_tile() {
+    let opaque = |w: u32, h: u32| vec![200u8; (w * h * 4) as usize];
+    let alpha = |px: &[u8], side: u32, x: u32, y: u32| px[((y * side + x) * 4 + 3) as usize];
+    for (w, h) in [(10u32, 12u32), (256, 5)] {
+        let (px, tw, th) = mark_tile(
+            opaque(w, h),
+            w,
+            h,
+            256,
+            "a.psd",
+            BadgeStyle::Icon,
+            BadgeSize::Medium,
+        );
+        assert_eq!((tw, th), (256, 256), "{w}x{h}");
+        assert_eq!(
+            alpha(&px, 256, 128, 128),
+            200,
+            "{w}x{h}: picture in the middle"
+        );
+        assert_eq!(alpha(&px, 256, 2, 2), 0, "{w}x{h}: rest transparent");
+        let marked = (192..256).flat_map(|y| (160..256).map(move |x| (x, y)));
+        assert!(
+            marked.into_iter().any(|(x, y)| alpha(&px, 256, x, y) != 0),
+            "{w}x{h}: no mark in the corner"
+        );
+    }
+    let (_, tw, th) = mark_tile(
+        opaque(256, 170),
+        256,
+        170,
+        256,
+        "a.psd",
+        BadgeStyle::Icon,
+        BadgeSize::Medium,
+    );
+    assert_eq!((tw, th), (256, 170));
+    let (px, tw, th) = mark_tile(
+        opaque(10, 12),
+        10,
+        12,
+        32,
+        "a.psd",
+        BadgeStyle::Icon,
+        BadgeSize::Medium,
+    );
+    assert_eq!((tw, th, px.len()), (10, 12, 480));
 }
 
 /// The badge must land in the BOTTOM-RIGHT and leave the rest of the picture alone —

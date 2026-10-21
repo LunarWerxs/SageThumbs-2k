@@ -288,6 +288,12 @@ fn main() {
         // The same moment for the cloud sync folders: if a cloud client put its own thumbnail
         // provider back since sign-in, opening Settings puts ours in front of it again.
         crate::cloud_folders::relink();
+        // And for the thumbnail slots (issue #66): a default program picked since the last
+        // sync can route a type through a ProgID Windows draws itself, without the mark.
+        if sagethumbs2k_core::progidslot::sync(sagethumbs2k_core::progidslot::wanted()) > 0 {
+            sagethumbs2k_core::register::notify_shell();
+            st2k_base::shellcmd::queue_cache_rebuild();
+        }
 
         // `--tab N` on the NORMAL launch, not just inside `--shot`: the Quick preview viewer's
         // caption gear opens Settings straight on the Quick preview page. It used to be parsed

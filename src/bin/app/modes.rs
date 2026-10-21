@@ -667,15 +667,7 @@ pub(super) unsafe fn offer_thumbnail_refresh() {
 /// elevated installer itself the value would land in whichever admin's hive answered the
 /// UAC prompt, not the user's.
 pub(super) fn queue_cache_rebuild() {
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-    let cmd = format!("\"{}\" --rebuild-thumbnail-cache", exe.display());
-    if let Ok(k) =
-        windows_registry::CURRENT_USER.create(r"Software\Microsoft\Windows\CurrentVersion\RunOnce")
-    {
-        let _ = k.set_string("SageThumbs2KRebuildCache", &cmd);
-    }
+    st2k_base::shellcmd::queue_cache_rebuild();
 }
 
 /// `--sync-user-shell` / `--remove-user-shell` (register.rs's per-user shell hooks, run
@@ -691,8 +683,13 @@ pub(super) fn queue_cache_rebuild() {
 /// return).
 pub(super) unsafe fn dispatch_user_state_modes(args: &[String]) -> bool {
     if args.iter().any(|a| a == "--sync-user-shell") {
-        if let Err(e) = sagethumbs2k_core::register::sync_user_shell() {
-            st2k_base::safety::log(&format!("--sync-user-shell failed: {e}"));
+        match sagethumbs2k_core::register::sync_user_shell() {
+            // Explorer's cache holds tiles Windows drew for the types just taken, without the
+            // mark (issue #66): rebuild it at sign-in unless setup's box or the update toast
+            // rebuilds it first.
+            Ok(true) => st2k_base::shellcmd::queue_cache_rebuild(),
+            Ok(false) => {}
+            Err(e) => st2k_base::safety::log(&format!("--sync-user-shell failed: {e}")),
         }
         // The installer's run as the signed-in user: their sync folders and their sign-in task.
         crate::cloud_folders::sync(st2k_base::settings::cloud_thumbs());

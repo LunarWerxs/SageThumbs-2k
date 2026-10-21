@@ -36,8 +36,13 @@ mod font;
 use st2k_base::settings::{BadgeSize, BadgeStyle};
 use tiny_skia::{FillRule, Paint, Path, PathBuilder, Pixmap, Stroke, Transform};
 
-/// Longest label we will draw. Keeps the badge from eating the tile on a silly extension.
+/// Longest label we will draw: five letters already take about half a 256 px tile. A longer
+/// extension is shortened to fit ([`label_of_ext`]) rather than left unmarked.
 const MAX_LABEL: usize = 5;
+
+/// Long extensions whose format also goes by a short one: the badge says the short name.
+const SHORT_LABELS: &[(&str, &str)] =
+    &[("FARBFELD", "FF"), ("ASEPRITE", "ASE"), ("PSPIMAGE", "PSP")];
 
 /// A thumbnail whose long side is under this gets NO badge: below ~64px the label would
 /// cover a meaningful share of the image and be unreadable anyway. Explorer's smallest tile
@@ -121,25 +126,92 @@ fn blend_to_white(rgb: (u8, u8, u8), n: u32) -> (u8, u8, u8) {
     (f(rgb.0), f(rgb.1), f(rgb.2))
 }
 
-/// The label to stamp for a file name, or `None` when there is nothing sensible to draw.
-///
-/// Uppercased, `.`-stripped, and limited to characters the font has. A name with no
-/// extension, or an extension too long or full of unrenderable characters, gets no badge
-/// rather than a mangled one. Neither does a Store app's own icon picture
-/// ([`is_app_icon_asset`]).
-pub fn label_for(file_name: &str) -> Option<String> {
+/// The extension of `file_name` the badge is about, or `None` for a name with none and for a
+/// Store app's own icon picture ([`is_app_icon_asset`]). A name with no extension, or one with
+/// characters the font has no glyph for ([`label_of_ext`]), gets no badge rather than a
+/// mangled one.
+fn ext_of(file_name: &str) -> Option<&str> {
     if is_app_icon_asset(file_name) {
         return None;
     }
     let ext = file_name.rsplit_once('.')?.1;
-    if ext.is_empty() || ext.len() > MAX_LABEL {
+    (!ext.is_empty()).then_some(ext)
+}
+
+/// The badge's text for an extension: uppercased, and at most [`MAX_LABEL`] letters. A longer
+/// extension takes its format's short name ([`SHORT_LABELS`]), else drops a trailing number
+/// (`.blend12` is a Blender backup, `BLEND`), else keeps its first letters (`.sldprt` reads
+/// `SLDPR`); such formats used to get no badge at all. `None` when a character has no glyph.
+fn label_of_ext(ext: &str) -> Option<String> {
+    let up = ext.to_ascii_uppercase();
+    if up.is_empty() || !up.bytes().all(|b| font::glyph(b).is_some()) {
         return None;
     }
-    let up: String = ext.to_ascii_uppercase();
-    if !up.bytes().all(|b| font::glyph(b).is_some()) {
+    if up.len() <= MAX_LABEL {
+        return Some(up);
+    }
+    if let Some((_, short)) = SHORT_LABELS.iter().find(|(long, _)| *long == up) {
+        return Some((*short).to_string());
+    }
+    let stem = up.trim_end_matches(|c: char| c.is_ascii_digit());
+    if !stem.is_empty() && stem.len() <= MAX_LABEL {
+        return Some(stem.to_string());
+    }
+    // Every byte is an ASCII glyph (checked above), so this cut lands on a character boundary.
+    Some(up[..MAX_LABEL].to_string())
+}
+
+/// The finished tile with `file_name`'s format mark on it, as (pixels, width, height).
+///
+/// The picture as it is when the mark fits on it. A picture too small or too thin to carry
+/// one (a 32x16 PPM, a 10x12 PSD, a 256x5 strip) is centred on a transparent square of
+/// `edge`, the size Explorer asked for, and the mark goes in that square's corner: Explorer
+/// shows the picture exactly where it would have, and the badge the same size as on every
+/// other tile of the folder. Explorer's own small views (`edge` under [`MIN_BADGED_EDGE`])
+/// stay unmarked. `rgba` is straight RGBA8, `w * h * 4` bytes.
+pub fn mark_tile(
+    mut rgba: Vec<u8>,
+    w: u32,
+    h: u32,
+    edge: u32,
+    file_name: &str,
+    style: BadgeStyle,
+    size: BadgeSize,
+) -> (Vec<u8>, u32, u32) {
+    let Some((ext, label)) = ext_of(file_name).and_then(|e| Some((e, label_of_ext(e)?))) else {
+        return (rgba, w, h);
+    };
+    let frame = Frame::explorer_draws_over(ext, w, h);
+    if badge_geometry(w, h, &label, style, size, frame).is_some() {
+        stamp(&mut rgba, w, h, ext, style, size, frame);
+        return (rgba, w, h);
+    }
+    let side = w.max(h).max(edge);
+    if badge_geometry(side, side, &label, style, size, Frame::NONE).is_none() {
+        return (rgba, w, h);
+    }
+    let Some(mut square) = centred_on_square(&rgba, w, h, side) else {
+        return (rgba, w, h);
+    };
+    stamp(&mut square, side, side, ext, style, size, Frame::NONE);
+    (square, side, side)
+}
+
+/// `rgba` (`w` x `h`) in the middle of a transparent `side` x `side` square, or `None` when
+/// the buffer is shorter than its size says or does not fit.
+fn centred_on_square(rgba: &[u8], w: u32, h: u32, side: u32) -> Option<Vec<u8>> {
+    let (w, h, side) = (w as usize, h as usize, side as usize);
+    let row = w.checked_mul(4)?;
+    if w > side || h > side || rgba.len() < row.checked_mul(h)? {
         return None;
     }
-    Some(up)
+    let mut out = vec![0u8; side.checked_mul(side)?.checked_mul(4)?];
+    let (x0, y0) = ((side - w) / 2, (side - h) / 2);
+    for (y, src) in rgba.chunks_exact(row).take(h).enumerate() {
+        let at = ((y0 + y) * side + x0) * 4;
+        out[at..at + row].copy_from_slice(src);
+    }
+    Some(out)
 }
 
 /// Whether `file_name` is a packaged (Store) app's resource picture, named the way the
@@ -183,7 +255,9 @@ fn is_icon_qualifier(part: &str) -> bool {
     }
 }
 
-/// Stamp `label` into the bottom-right of an RGBA8 image, in place.
+/// Stamp the format mark for extension `ext` (any case) into the bottom-right of an RGBA8
+/// image, in place. The letters are [`label_of_ext`]'s, the tint is the extension's own
+/// category's, so a shortened label keeps its format's colour.
 ///
 /// Drawn as a dark rounded chip with light text: a bare glyph would vanish against matching
 /// image content, and a thumbnail is arbitrary content by definition. The chip is
@@ -199,18 +273,20 @@ pub fn stamp(
     rgba: &mut [u8],
     w: u32,
     h: u32,
-    label: &str,
+    ext: &str,
     style: BadgeStyle,
     size: BadgeSize,
     frame: Frame,
 ) {
-    let Some(g) = badge_geometry(w, h, label, style, size, frame) else {
+    let Some(label) = label_of_ext(ext) else {
+        return;
+    };
+    let Some(g) = badge_geometry(w, h, &label, style, size, frame) else {
         return; // too small to badge legibly, or the chip would not fit
     };
-    // The label's own category decides the tint. `label` is the uppercased extension, and
-    // `formats::category` matches lowercase tables, so fold the case back down here.
-    let tint = category_rgb(&label.to_ascii_lowercase());
-    let Some(chip) = render_chip(&g, label, tint, style) else {
+    // `formats::category` matches lowercase tables, so fold the case down here.
+    let tint = category_rgb(&ext.to_ascii_lowercase());
+    let Some(chip) = render_chip(&g, &label, tint, style) else {
         return;
     };
     composite(rgba, w, h, &chip, g.x0, g.y0);
@@ -236,7 +312,7 @@ struct BadgeGeom {
 }
 
 /// Advance width of `label` in font units, without letter spacing. Every character is known to
-/// [`font`] (`label_for` refuses the rest); an unknown one counts as nothing.
+/// [`font`] (`label_of_ext` refuses the rest); an unknown one counts as nothing.
 fn label_units(label: &str) -> f32 {
     label
         .bytes()

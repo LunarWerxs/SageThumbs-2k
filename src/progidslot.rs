@@ -206,27 +206,44 @@ fn sync_into(
 
 /// Take (or give back) the ProgID-level slots for every enabled format. Called wherever
 /// `typeoverlay::sync` is: after registration, when Settings changes the corner mark or the
-/// checkerboard, from setup's badge box and from Repair. The caller tells the shell (a
-/// thumbnail-cache rebuild or `SHCNE_ASSOCCHANGED`), as it already does for the overlay.
-pub fn sync(take: bool) {
+/// checkerboard, from setup's badge box and from Repair, and when Settings opens (a changed
+/// default program). The caller tells the shell (a thumbnail-cache rebuild or
+/// `SHCNE_ASSOCCHANGED`), as it already does for the overlay.
+///
+/// Returns how many slots it took that were not ours before this call: Explorer's cache still
+/// holds the tiles Windows drew for those types, without our mark.
+pub fn sync(take: bool) -> usize {
     let Ok(classes) = CURRENT_USER.create(r"Software\Classes") else {
-        return;
+        return 0;
     };
     // Read the ProgIDs before giving anything back: the list comes from associations, which
     // our slot values do not change.
     let progids = enabled_progids();
-    let taken = sync_into(
+    let ours_before: Vec<&String> = progids.iter().filter(|p| is_ours(&classes, p)).collect();
+    sync_into(
         &classes,
         take,
         &progids,
         slot_handler,
         is_windows_own_handler,
     );
-    if taken > 0 {
+    let newly = progids
+        .iter()
+        .filter(|p| !ours_before.contains(p) && is_ours(&classes, p))
+        .count();
+    if newly > 0 {
         st2k_base::safety::log(&format!(
-            "progidslot: took {taken} ProgID thumbnail slot(s) from Windows' own thumbnailer"
+            "progidslot: took {newly} ProgID thumbnail slot(s) from Windows' own thumbnailer"
         ));
     }
+    newly
+}
+
+/// Whether `progid`'s slot in the user hive `classes` is one we took.
+fn is_ours(classes: &Key, progid: &str) -> bool {
+    classes
+        .open(slot_path(progid))
+        .is_ok_and(|k| k.get_string(MARK).is_ok())
 }
 
 /// Give back every slot we ever took, regardless of the settings. For uninstall.

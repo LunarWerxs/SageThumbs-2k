@@ -22,6 +22,8 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 **Fixed**
 
 - **The format badge and checkerboard show on every file type**
+- **The format badge shows on long extensions, tiny pictures and cloud files**
+- **A format badge picked during setup shows on thumbnails**
 - **Explorer comes back after Rebuild thumbnail cache and Repair file associations**
 - **The desktop no longer flashes during setup**
 - **`st2k doctor` no longer flags .ico files by mistake**
@@ -57,8 +59,21 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   (PNG on some PCs, JPEG on others), because the file type's own entry named Windows' built-in
   thumbnailer and Windows asks that entry first. While the badge or checkerboard is on,
   SageThumbs now takes that entry over for your account only, and gives it back when you turn
-  both off or uninstall. `st2k doctor` says when a type is still drawn by Windows and how to fix
-  it (#66).
+  both off or uninstall, and pictures Explorer had already cached without the badge are redrawn
+  (at your next sign-in, or straight away from the refresh offer after an update). Opening
+  Settings checks again, so a default program you pick later is covered too. `st2k doctor` says
+  when a type is still drawn by Windows and how to fix it (#66).
+- **The format badge shows on long extensions, tiny pictures and cloud files.** Measured over
+  every format SageThumbs reads, three kinds of file still went without the badge. A file
+  whose extension is longer than five letters got none: it now gets a short label (`.aseprite`
+  reads ASE, `.blend12` BLEND, `.sldprt` SLDPR). A picture too small or too thin for the badge
+  (a 32 by 16 PPM, a tiny PSD, a narrow strip) got none: it now sits in the middle of its tile
+  with the badge in the tile's corner. And in OneDrive and other sync folders, a file kept only
+  online showed the cloud's thumbnail without the badge: the badge now goes on that too.
+- **A format badge picked during setup shows on thumbnails.** Choosing "A SageThumbs format
+  mark" on setup's Thumbnail corner page turned off Windows' own type icon but drew no badge,
+  so every thumbnail had an empty corner until the setting was changed in Settings.
+  Thumbnails now follow the choice made in setup.
 - **Explorer comes back after Rebuild thumbnail cache and Repair file associations.** Now and
   then the taskbar and desktop disappeared and stayed gone: Explorer had only half closed, so it
   was never started again. SageThumbs now gives Explorer a few seconds, finishes closing it

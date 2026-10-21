@@ -185,23 +185,39 @@ pub(super) fn hklm_corner_mark() -> Option<u32> {
         .ok()
 }
 
-/// `CornerMark` — see [`CornerMark`]. Resolution order: the user's own HKCU choice; failing
-/// that, the installer's wizard choice recorded in HKLM (item C3); failing that, the pre-2.5
-/// legacy pair, so an upgrading install keeps the corner it already had.
-pub fn corner_mark() -> CornerMark {
-    match get_dword_opt("CornerMark") {
+/// The corner mark the stored values add up to: the user's own `CornerMark`; failing that, the
+/// installer's wizard choice (`machine`, [`hklm_corner_mark`], item C3); failing that, the
+/// pre-2.5 legacy pair, so an upgrading install keeps the corner it already had.
+///
+/// The one derivation [`corner_mark`] and `thumb_settings` both use. The snapshot in
+/// `thumb_settings` used to keep its own copy without the machine step, so a badge picked on
+/// setup's corner page reached Settings and the overlay suppression but never the thumbnail:
+/// every tile came back with nothing in the corner.
+pub(super) fn resolve_corner_mark(
+    user: Option<u32>,
+    machine: impl FnOnce() -> Option<u32>,
+    legacy: impl FnOnce() -> (bool, bool),
+) -> CornerMark {
+    match user.or_else(machine) {
         Some(v) => CornerMark::from_dword(v),
-        None => match hklm_corner_mark() {
-            Some(v) => CornerMark::from_dword(v),
-            // The legacy pair is READ here and never written again. Leaving the old values in
-            // place rather than deleting them costs nothing (this branch stops being reached
-            // the moment `CornerMark` exists somewhere) and keeps a downgrade working.
-            None => CornerMark::from_legacy(
-                get_dword("FormatBadge", 0) != 0,
-                get_dword("HideTypeOverlay", 0) != 0,
-            ),
-        },
+        // The legacy pair is READ here and never written again. Leaving the old values in
+        // place rather than deleting them costs nothing (this branch stops being reached the
+        // moment `CornerMark` exists somewhere) and keeps a downgrade working.
+        None => {
+            let (badge, overlay_hidden) = legacy();
+            CornerMark::from_legacy(badge, overlay_hidden)
+        }
     }
+}
+
+/// `CornerMark` — see [`CornerMark`] and [`resolve_corner_mark`].
+pub fn corner_mark() -> CornerMark {
+    resolve_corner_mark(get_dword_opt("CornerMark"), hklm_corner_mark, || {
+        (
+            get_dword("FormatBadge", 0) != 0,
+            get_dword("HideTypeOverlay", 0) != 0,
+        )
+    })
 }
 
 pub fn set_corner_mark(m: CornerMark) -> windows_registry::Result<()> {

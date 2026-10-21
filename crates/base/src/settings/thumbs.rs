@@ -231,20 +231,14 @@ pub fn thumb_settings() -> ThumbSettings {
     // path takes the same shape: one section snapshot, not one file read per value.
     let gopt = snapshot_u32_getter();
     // `gopt` is the primitive; `g` is it with a default applied. Both are needed because
-    // `CornerMark` has to tell ABSENT from 0 to know whether to fall back to the legacy pair,
-    // and doing that with a sentinel default would make 0 (the real "system icon" value)
-    // indistinguishable from "never set".
+    // `CornerMark` has to tell ABSENT from 0 to know whether to fall back to setup's choice
+    // and the legacy pair, and doing that with a sentinel default would make 0 (the real
+    // "system icon" value) indistinguishable from "never set".
     let g = |name: &str, default: u32| gopt(name).unwrap_or(default);
-    // Same derivation as `corner_mark()`, off this one snapshot rather than re-opening the key.
-    // It has to agree with that function exactly, which is what
-    // `thumb_settings_agrees_with_the_individual_accessors` asserts.
-    let mark = match gopt("CornerMark") {
-        Some(v) => crate::settings::CornerMark::from_dword(v),
-        None => crate::settings::CornerMark::from_legacy(
-            g("FormatBadge", 0) != 0,
-            g("HideTypeOverlay", 0) != 0,
-        ),
-    };
+    // `corner_mark()`'s own derivation, fed from this one snapshot.
+    let mark = badges::resolve_corner_mark(gopt("CornerMark"), badges::hklm_corner_mark, || {
+        (g("FormatBadge", 0) != 0, g("HideTypeOverlay", 0) != 0)
+    });
     let mb = g("MaxSize", DEFAULT_MAX_FILE_MB) as u64;
     ThumbSettings {
         enabled: g("EnableThumbs", 1) != 0,

@@ -8,8 +8,8 @@
 use windows::core::{Error, Result};
 use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, DeleteDC, SelectObject, SetStretchBltMode, StretchBlt, HALFTONE, HBITMAP,
-    HDC, SRCCOPY,
+    CreateCompatibleDC, DeleteDC, GetDC, GetDIBits, GetObjectW, ReleaseDC, SelectObject,
+    SetStretchBltMode, StretchBlt, BITMAP, DIB_RGB_COLORS, HALFTONE, HBITMAP, HDC, SRCCOPY,
 };
 
 /// `rgba` is straight (non-premultiplied) RGBA8, row-major, top row first,
@@ -71,6 +71,53 @@ pub unsafe fn create_premultiplied_dib(width: i32, height: i32, rgba: &[u8]) -> 
     }
 
     Ok(hbmp)
+}
+
+/// The pixels of `hbmp` as straight RGBA8, top row first, with its width and height: the
+/// inverse of [`create_premultiplied_dib`], for a bitmap another thumbnail provider returned.
+/// `premultiplied` is how to read the alpha byte: a `WTSAT_ARGB` bitmap carries colour
+/// premultiplied by it, anything else is opaque whatever the byte holds. `None` when GDI
+/// cannot read the bitmap.
+///
+/// # Safety
+///
+/// `hbmp` must be a valid bitmap that is not selected into a device context. It is only read.
+pub unsafe fn read_rgba(hbmp: HBITMAP, premultiplied: bool) -> Option<(Vec<u8>, u32, u32)> {
+    let mut bm = BITMAP::default();
+    let got = GetObjectW(
+        hbmp.into(),
+        core::mem::size_of::<BITMAP>() as i32,
+        Some(core::ptr::addr_of_mut!(bm).cast()),
+    );
+    let (w, h) = (bm.bmWidth, bm.bmHeight.checked_abs()?);
+    if got == 0 || w <= 0 || h <= 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; (w as usize).checked_mul(h as usize)?.checked_mul(4)?];
+    let mut bmi = crate::safety::top_down_bmi(w, h);
+    let screen = GetDC(None);
+    let rows = GetDIBits(
+        screen,
+        hbmp,
+        0,
+        h as u32,
+        Some(buf.as_mut_ptr().cast()),
+        &mut bmi,
+        DIB_RGB_COLORS,
+    );
+    ReleaseDC(None, screen);
+    if rows != h {
+        return None;
+    }
+    for px in buf.as_chunks_mut::<4>().0.iter_mut() {
+        let a = if premultiplied { px[3] } else { 255 };
+        let un = |c: u8| match a {
+            0 | 255 => c,
+            _ => ((c as u16 * 255 + a as u16 / 2) / a as u16).min(255) as u8,
+        };
+        *px = [un(px[2]), un(px[1]), un(px[0]), a];
+    }
+    Some((buf, w as u32, h as u32))
 }
 
 /// `HALFTONE`-scaled `SRCCOPY` blit of the whole `src` (`width`, `height`) of `hbmp` into the
@@ -181,6 +228,39 @@ mod tests {
     /// squared times 4 stays under `u64::MAX`), so the length check already caught this
     /// input before the `checked_mul` above existed - it is defense-in-depth, not a
     /// behavior change. This test locks in the shared contract regardless.
+    /// A bitmap another provider handed the shell comes back as the picture it shows: channel
+    /// order and the premultiplied alpha undone, so a badge drawn on it and written back with
+    /// `create_premultiplied_dib` leaves the rest of the picture as it was (to within rounding).
+    #[test]
+    fn read_rgba_gives_back_what_create_premultiplied_dib_wrote() {
+        let rgba = [
+            200u8, 100, 50, 255, 200, 100, 50, 128, 10, 20, 30, 0, 0, 255, 0, 64,
+        ];
+        unsafe {
+            let hbmp = create_premultiplied_dib(2, 2, &rgba).expect("dib");
+            let as_argb = read_rgba(hbmp, true);
+            let as_opaque = read_rgba(hbmp, false);
+            let _ = windows::Win32::Graphics::Gdi::DeleteObject(hbmp.into());
+            let (px, w, h) = as_argb.expect("read back");
+            assert_eq!((w, h), (2, 2));
+            let pairs = px.as_chunks::<4>().0.iter().zip(rgba.as_chunks::<4>().0);
+            for (i, (got, want)) in pairs.enumerate() {
+                assert_eq!(got[3], want[3], "alpha of pixel {i}");
+                if want[3] != 0 {
+                    for c in 0..3 {
+                        assert!(
+                            got[c].abs_diff(want[c]) <= 2,
+                            "pixel {i}: {got:?} vs {want:?}"
+                        );
+                    }
+                }
+            }
+            // An opaque provider's bitmap: the alpha byte is ignored, every pixel is solid.
+            let opaque = as_opaque.expect("read back").0;
+            assert!(opaque.as_chunks::<4>().0.iter().all(|p| p[3] == 255));
+        }
+    }
+
     #[test]
     fn create_premultiplied_dib_rejects_bad_dims_without_panicking() {
         unsafe {

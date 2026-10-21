@@ -380,6 +380,26 @@ fn wait_for_shell(is_up: &impl Fn() -> bool) -> bool {
     false
 }
 
+/// This user's `RunOnce` key, and the value in it that rebuilds their thumbnail cache at their
+/// next sign-in.
+const RUN_ONCE: &str = r"Software\Microsoft\Windows\CurrentVersion\RunOnce";
+const QUEUED_REBUILD: &str = "SageThumbs2KRebuildCache";
+
+/// Queue a one-shot `--rebuild-thumbnail-cache` of the running EXE for this user's next
+/// sign-in: when setup's DLL swap waits on a restart, and when `--sync-user-shell` took
+/// thumbnail slots whose types Explorer has tiles of, drawn without our mark, in its cache. A
+/// rebuild that runs before then ([`restart_explorer_clearing_cache`]) drops it, so one change
+/// never restarts the shell twice.
+pub fn queue_cache_rebuild() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let cmd = format!("\"{}\" --rebuild-thumbnail-cache", exe.display());
+    if let Ok(k) = windows_registry::CURRENT_USER.create(RUN_ONCE) {
+        let _ = k.set_string(QUEUED_REBUILD, &cmd);
+    }
+}
+
 /// Restart Explorer + clear the thumbnail cache (the "Rebuild thumbnail cache" and "Repair
 /// file associations" buttons, setup's "Restart File Explorer" box, the post-update toast),
 /// then CHECK THE SHELL CAME BACK.
@@ -403,6 +423,12 @@ pub fn restart_explorer_clearing_cache() -> bool {
     let settle = std::time::Duration::from_secs(3);
 
     let cycled = cycle_explorer(&thumbcache_files());
+    if cycled {
+        // The rebuild a sign-in was queued for has just happened.
+        if let Ok(k) = windows_registry::CURRENT_USER.create(RUN_ONCE) {
+            let _ = k.remove_value(QUEUED_REBUILD);
+        }
+    }
     if wait_for_shell(&shell_is_up) {
         folders::reopen_missing(open, settle);
         return cycled;
