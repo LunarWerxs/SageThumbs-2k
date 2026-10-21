@@ -25,7 +25,8 @@ impl Scratch {
             r"Software\SageThumbs2K\__test_menu_items_{}_{case}",
             std::process::id()
         );
-        let dir = std::env::temp_dir().join(format!("st2k_menu_items_{}_{case}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("st2k_menu_items_{}_{case}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("scratch dir");
         Self { root, dir }
     }
@@ -55,7 +56,12 @@ impl Scratch {
             let f: Vec<&str> = l.split(' ').collect();
             match f.as_slice() {
                 ["row", _, param, checked] => {
-                    rows.push((param.parse().unwrap(), *checked == "1"));
+                    let checked = match *checked {
+                        "1" => true,
+                        "0" => false,
+                        c => panic!("bad check state {c:?} in {l:?}"),
+                    };
+                    rows.push((param.parse().unwrap(), checked));
                 }
                 ["saved", order] => saved = Some(order.to_string()),
                 ["saved"] => saved = Some(String::new()),
@@ -79,10 +85,17 @@ fn factory_rows(s: &Scratch) -> Vec<(i64, bool)> {
     let (rows, saved) = s.shot(&[]);
     assert_eq!(saved, None, "nothing is saved without Done");
     let tokens = default_menu_tokens();
-    assert_eq!(rows.len(), tokens.len(), "one row per factory token: {rows:?}");
+    assert_eq!(
+        rows.len(),
+        tokens.len(),
+        "one row per factory token: {rows:?}"
+    );
     for (row, tok) in rows.iter().zip(&tokens) {
         assert_eq!(row.0 == -1, *tok == MENU_SEP_TOKEN, "{tok} vs row {row:?}");
-        assert!(row.1, "every factory row starts ticked, dividers too: {row:?}");
+        assert!(
+            row.1,
+            "every factory row starts ticked, dividers too: {row:?}"
+        );
     }
     rows
 }
@@ -113,12 +126,18 @@ fn a_dragged_row_moves_and_done_saves_it() {
 fn a_divider_can_be_switched_off_and_done_saves_it_off() {
     let s = Scratch::new("divider");
     let before = factory_rows(&s);
-    let div = before.iter().position(|r| r.0 == -1).expect("a divider row");
+    let div = before
+        .iter()
+        .position(|r| r.0 == -1)
+        .expect("a divider row");
 
     let (after, saved) = s.shot(&["--space", &div.to_string(), "--done"]);
     let mut want = before.clone();
     want[div].1 = false;
-    assert_eq!(after, want, "Space on a divider clears its box and nothing else");
+    assert_eq!(
+        after, want,
+        "Space on a divider clears its box and nothing else"
+    );
 
     let mut tokens = default_menu_tokens();
     tokens[div] = MENU_SEP_OFF_TOKEN;

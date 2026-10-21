@@ -111,17 +111,28 @@ fn command_budget(idcmdfirst: u32, idcmdlast: u32, leaves_n: usize) -> (u32, usi
 ///
 /// No divider is added here: the quick verbs flow straight into the "SageThumbs 2K" entry
 /// so the whole group reads as one block; the separator goes below THAT entry instead.
+///
+/// Returns the position after them and the titles that actually went on: only those leave
+/// the SageThumbs submenu, so a verb whose main-menu copy could not be added stays there.
 unsafe fn insert_quick_verb_groups(
     hmenu: HMENU,
     mut pos: u32,
     idcmdfirst: u32,
     budget: u32,
     vis: &settings::MenuVisibility,
-) -> u32 {
+) -> (u32, Vec<&'static str>) {
+    let mut on_main = Vec::new();
     for item in verbs::quick_items() {
-        pos = insert_quick_verb_item(hmenu, pos, idcmdfirst, budget, vis, item);
+        let title = match &item {
+            verbs::QuickItem::Group(t, _, _) | verbs::QuickItem::Leaf(t, _) => *t,
+        };
+        let next = insert_quick_verb_item(hmenu, pos, idcmdfirst, budget, vis, item);
+        if next != pos {
+            on_main.push(title);
+        }
+        pos = next;
     }
-    pos
+    (pos, on_main)
 }
 
 /// Insert ONE quick-verb item at `pos` and report the position after it: a group becomes a
@@ -172,15 +183,17 @@ unsafe fn insert_quick_verb_item(
         verbs::QuickItem::Leaf(title, idx) => {
             // A top-level leaf reusing its submenu command id: same global leaf
             // index → same id_for() id → same action.
-            if idx < budget {
-                let cmd = verbs::id_for(verbs::CmdSlot::Leaf(verbs::LeafId(idx)), idcmdfirst);
-                let _ = InsertMenuW(
+            let cmd = verbs::id_for(verbs::CmdSlot::Leaf(verbs::LeafId(idx)), idcmdfirst);
+            if idx < budget
+                && InsertMenuW(
                     hmenu,
                     pos,
                     MF_BYPOSITION | MF_STRING,
                     cmd as usize,
                     &HSTRING::from(st2k_base::i18n::t(title)),
-                );
+                )
+                .is_ok()
+            {
                 pos + 1
             } else {
                 pos
@@ -296,23 +309,14 @@ impl ContextMenu_Impl {
 
         // 2) Quick-verb groups (see `insert_quick_verb_groups`). Image-only
         //    (Convert/Resize/Rotate), so dropped for audio AND video, same as the condensed set.
-        let quick_on_main =
-            quick_verbs && !kinds.condensed && !kinds.audio_only && !kinds.video_only;
-        if quick_on_main {
-            pos = insert_quick_verb_groups(hmenu, pos, idcmdfirst, budget, &vis);
+        let mut on_main = Vec::new();
+        if quick_verbs && !kinds.condensed && !kinds.audio_only && !kinds.video_only {
+            (pos, on_main) = insert_quick_verb_groups(hmenu, pos, idcmdfirst, budget, &vis);
         }
 
         // 3) The full "SageThumbs 2K" submenu (see `insert_sagethumbs_submenu`).
-        let sub_preview_inserted = self.insert_sagethumbs_submenu(
-            hmenu,
-            pos,
-            idcmdfirst,
-            budget,
-            mode,
-            kinds,
-            quick_on_main,
-            &vis,
-        );
+        let sub_preview_inserted = self
+            .insert_sagethumbs_submenu(hmenu, pos, idcmdfirst, budget, mode, kinds, &on_main, &vis);
         preview_inserted | sub_preview_inserted
     }
 
@@ -320,8 +324,9 @@ impl ContextMenu_Impl {
     /// at its top in mode 1). This is the brand entry with every verb + Settings — kept
     /// cohesive with the preview above it, never "off on its own." We ship ONLY this
     /// classic handler (no packaged modern command), so "SageThumbs 2K" is listed exactly
-    /// once. `quick_on_main`: Convert, Resize and Rotate already sit on the main menu above,
-    /// so the submenu leaves them out. Returns whether the preview was actually inserted.
+    /// once. `on_main`: the quick verbs (Convert, Resize, Rotate) that went onto the main
+    /// menu above, which the submenu leaves out. Returns whether the preview was actually
+    /// inserted.
     #[allow(clippy::too_many_arguments)] // one call site; a struct would only rename these
     unsafe fn insert_sagethumbs_submenu(
         &self,
@@ -331,7 +336,7 @@ impl ContextMenu_Impl {
         budget: u32,
         mode: u32,
         kinds: Kinds,
-        quick_on_main: bool,
+        on_main: &[&str],
         vis: &settings::MenuVisibility,
     ) -> bool {
         let mut preview_inserted = false;
@@ -368,9 +373,7 @@ impl ContextMenu_Impl {
         }
         // Listed twice they only cluttered the submenu (Discord, 2026-10-21). The main-menu
         // copies carry the same command ids, so nothing about dispatch changes.
-        if quick_on_main {
-            top.retain(|(item, _)| !verbs::QUICK_KEYS.contains(&item.title()));
-        }
+        top.retain(|(item, _)| !on_main.contains(&item.title()));
         // All at once, not one item per call: the dividers between groups need one shared
         // state (`Dividers`), or every one of them reads as leading and is dropped.
         build_top_level_into(hsub, &top, idcmdfirst, budget, vis);

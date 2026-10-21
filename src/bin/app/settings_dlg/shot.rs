@@ -95,12 +95,14 @@ pub(crate) unsafe fn run_shot_driven(
         st2k_appkit::win::pump_msgs(4);
     }
     // Space over every row of the File types list at once, the bulk check a user does with
-    // Ctrl+A then Space; the report then counts the ticked rows.
-    let space_all = args.iter().any(|a| a == "--space-all-formats");
-    if space_all {
+    // Ctrl+A then Space; the report then counts the ticked rows against the state Space
+    // sets them to (the focused row's opposite).
+    let mut space_target = String::new();
+    if args.iter().any(|a| a == "--space-all-formats") {
         if let Ok(list) = GetDlgItem(Some(hwnd), ID_LIST) {
             set_row_state(list, -1, LVIS_SELECTED, true);
             set_row_state(list, 0, LVIS_FOCUSED, true);
+            space_target = format!("formats_space_target={}\n", !is_checked(list, 0) as u8);
             SendMessageW(
                 list,
                 WM_KEYDOWN,
@@ -117,14 +119,14 @@ pub(crate) unsafe fn run_shot_driven(
         }
     }
     if let Some(file) = arg_after(args, "--report") {
-        write_controls_report(hwnd, file);
+        write_controls_report(hwnd, file, &space_target);
     }
     st2k_appkit::win::capture_and_destroy(hwnd, out)
 }
 
 /// `--report`: each [`SHOT_CONTROLS`] entry's state, then what Save would store for the
-/// custom action's hotkey.
-unsafe fn write_controls_report(hwnd: HWND, file: &str) {
+/// custom action's hotkey, then `extra`.
+unsafe fn write_controls_report(hwnd: HWND, file: &str, extra: &str) {
     let mut report = String::new();
     for &(name, id) in SHOT_CONTROLS {
         let Ok(c) = GetDlgItem(Some(hwnd), id) else {
@@ -146,6 +148,7 @@ unsafe fn write_controls_report(hwnd: HWND, file: &str) {
         let ticked = (0..count).filter(|&r| is_checked(list, r)).count();
         report.push_str(&format!("formats_checked={ticked} of {count}\n"));
     }
+    report.push_str(extra);
     let _ = std::fs::write(file, report);
 }
 

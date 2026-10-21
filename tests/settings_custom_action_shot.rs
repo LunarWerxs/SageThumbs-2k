@@ -25,10 +25,8 @@ impl Scratch {
             r"Software\SageThumbs2K\__test_custom_action_{}_{case}",
             std::process::id()
         );
-        let dir = std::env::temp_dir().join(format!(
-            "st2k_custom_action_{}_{case}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("st2k_custom_action_{}_{case}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("scratch dir");
         CURRENT_USER
             .create(&root)

@@ -43,9 +43,21 @@ fn space_over_every_selected_format_sets_them_all_alike() {
         .unwrap_or_else(|| panic!("no formats_checked in the report:\n{text}"));
     let (ticked, count) = line.split_once(" of ").expect("ticked of count");
     let (ticked, count): (usize, usize) = (ticked.parse().unwrap(), count.parse().unwrap());
-    assert!(count > 100, "the File types list should hold every format: {count}");
     assert!(
-        ticked == 0 || ticked == count,
-        "Space over all {count} selected rows left {ticked} ticked: some rows were skipped"
+        count > 100,
+        "the File types list should hold every format: {count}"
+    );
+    let target = text
+        .lines()
+        .find_map(|l| l.strip_prefix("formats_space_target="))
+        .unwrap_or_else(|| panic!("no formats_space_target in the report:\n{text}"));
+    let want = match target {
+        "1" => count,
+        "0" => 0,
+        t => panic!("formats_space_target={t:?}"),
+    };
+    assert_eq!(
+        ticked, want,
+        "Space over all {count} selected rows must set every one to {target}: {ticked} ticked"
     );
 }
