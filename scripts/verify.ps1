@@ -566,6 +566,14 @@ exit `$code
             exit 1
         }
         Write-Host "  installed == built (SHA256 $($a.Substring(0,12))...)"
+        # The modern-menu packaged verbs only surface reliably from a SIGNED sparse package, and
+        # an unsigned one looks fine everywhere else, so the install has to prove it signed.
+        $package = Get-AppxPackage SageThumbs2K
+        if (-not $package -or $package.SignatureKind -eq 'None') {
+            Write-Host "[verify] the modern-menu package is missing or unsigned after the install (SignatureKind '$($package.SignatureKind)')" -ForegroundColor Red
+            exit 1
+        }
+        Write-Host "  modern-menu package signed (SignatureKind $($package.SignatureKind))"
         # Leave the machine as it was found: a helper that was running must be running again.
         if ($helperBefore) {
             $deadline = (Get-Date).AddSeconds(20)
