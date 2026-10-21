@@ -383,15 +383,8 @@ fn normalize_rows_tracking(
     let mut out: Vec<(isize, bool)> = Vec::with_capacity(rows.len());
     let mut tracked = None;
     for (i, &(p, c)) in rows.iter().enumerate() {
-        if p == SEP_PARAM {
-            match out.last_mut() {
-                None => continue, // dropped: a leading divider
-                Some(last) if last.0 == SEP_PARAM => {
-                    last.1 |= c;
-                    continue; // dropped: merged into the divider just before it
-                }
-                Some(_) => {}
-            }
+        if !keep_row(&mut out, p, c) {
+            continue;
         }
         if track == Some(i) {
             tracked = Some(out.len());
@@ -405,6 +398,22 @@ fn normalize_rows_tracking(
         out.pop();
     }
     (out, tracked)
+}
+
+/// Whether row `(p, c)` goes after `out`: a leading divider is dropped, and a divider right
+/// after another is merged into it (ticked if either was).
+fn keep_row(out: &mut [(isize, bool)], p: isize, c: bool) -> bool {
+    if p != SEP_PARAM {
+        return true;
+    }
+    match out.last_mut() {
+        None => false,
+        Some(last) if last.0 == SEP_PARAM => {
+            last.1 |= c;
+            false
+        }
+        Some(_) => true,
+    }
 }
 
 /// Reset the menu-items list to its DEFAULT order (items + dividers in tree order),

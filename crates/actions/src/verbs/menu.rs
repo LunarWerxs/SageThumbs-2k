@@ -530,24 +530,30 @@ fn is_divider_token(t: &&str) -> bool {
 fn normalize_tokens(v: Vec<&'static str>) -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::with_capacity(v.len());
     for t in v {
-        if is_divider_token(&t) {
-            match out.last_mut() {
-                None => continue,
-                Some(last) if is_divider_token(last) => {
-                    if t == MENU_SEP_TOKEN {
-                        *last = MENU_SEP_TOKEN;
-                    }
-                    continue;
-                }
-                Some(_) => {}
-            }
-        }
-        out.push(t);
+        push_token(&mut out, t);
     }
     while out.last().is_some_and(is_divider_token) {
         out.pop();
     }
     out
+}
+
+/// Append `t` to `out`, except a divider with nothing before it (dropped) or right after
+/// another divider (merged into it, shown if either is).
+fn push_token(out: &mut Vec<&'static str>, t: &'static str) {
+    if !is_divider_token(&t) {
+        out.push(t);
+        return;
+    }
+    match out.last_mut() {
+        None => {}
+        Some(last) if is_divider_token(last) => {
+            if t == MENU_SEP_TOKEN {
+                *last = MENU_SEP_TOKEN;
+            }
+        }
+        Some(_) => out.push(t),
+    }
 }
 
 /// The factory top-level order as persisted tokens — each reorderable item's key and

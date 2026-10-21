@@ -213,46 +213,67 @@ pub(crate) unsafe fn run_shot_menu_items(
         let _ = DestroyWindow(settings);
         return false;
     };
-    let mut report = String::new();
-    let pair = arg_after(args, "--drag").and_then(|s| s.split_once(','));
-    if let Some((from, to)) = pair.and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))) {
-        // Which window comctl32 notified, for the record: Settings, though the list is the
-        // editor's child by now.
-        let target = drag_row(list, from, to);
-        let who = match target {
-            Some(t) if t == settings => "settings",
-            Some(t) if t == popup => "popup",
-            Some(_) => "other",
-            None => "none",
-        };
-        report.push_str(&format!("notify {who}\n"));
-    }
+    let mut report = drag_from_args(list, settings, popup, args);
     if let Some(row) = arg_after(args, "--space").and_then(|s| s.parse().ok()) {
         press_space(list, row);
     }
     st2k_appkit::win::settle_pump(popup, 4, 4, false);
-    let count = SendMessageW(list, LVM_GETITEMCOUNT, None, None).0 as i32;
-    for row in 0..count {
-        report.push_str(&format!(
-            "row {row} {} {}\n",
-            menu_row_param(list, row),
-            is_checked(list, row) as u8
-        ));
-    }
-    let ok = if args.iter().any(|a| a == "--done") {
-        SendMessageW(popup, WM_COMMAND, Some(WPARAM(IDOK as usize)), None);
-        report.push_str(&format!("saved {}\n", settings::menu_order().join(",")));
-        st2k_appkit::win::settle_pump(settings, 4, 4, false);
-        st2k_appkit::win::capture_and_destroy(settings, out)
-    } else {
-        let ok = st2k_appkit::win::capture_and_destroy(popup, out);
-        let _ = DestroyWindow(settings);
-        ok
-    };
+    report.push_str(&rows_report(list));
+    let ok = finish_menu_items(settings, popup, out, args, &mut report);
     if let Some(file) = arg_after(args, "--report") {
         let _ = std::fs::write(file, report);
     }
     ok
+}
+
+/// `--drag FROM,TO`: the drag, and a `notify <who>` line naming the window comctl32 notified
+/// (Settings, though the list is the editor's child by now). Empty without `--drag`.
+unsafe fn drag_from_args(list: HWND, settings: HWND, popup: HWND, args: &[String]) -> String {
+    let pair = arg_after(args, "--drag").and_then(|s| s.split_once(','));
+    let Some((from, to)) = pair.and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))) else {
+        return String::new();
+    };
+    let who = match drag_row(list, from, to) {
+        Some(t) if t == settings => "settings",
+        Some(t) if t == popup => "popup",
+        Some(_) => "other",
+        None => "none",
+    };
+    format!("notify {who}\n")
+}
+
+/// `row <i> <lParam> <checked>` for every row of the editor's list.
+unsafe fn rows_report(list: HWND) -> String {
+    let count = SendMessageW(list, LVM_GETITEMCOUNT, None, None).0 as i32;
+    (0..count)
+        .map(|row| {
+            format!(
+                "row {row} {} {}\n",
+                menu_row_param(list, row),
+                is_checked(list, row) as u8
+            )
+        })
+        .collect()
+}
+
+/// `--done` clicks Done, records the saved `MenuOrder` and captures Settings; without it the
+/// editor is captured. Both windows are gone afterwards. Returns whether the PNG was written.
+unsafe fn finish_menu_items(
+    settings: HWND,
+    popup: HWND,
+    out: &str,
+    args: &[String],
+    report: &mut String,
+) -> bool {
+    if !args.iter().any(|a| a == "--done") {
+        let ok = st2k_appkit::win::capture_and_destroy(popup, out);
+        let _ = DestroyWindow(settings);
+        return ok;
+    }
+    SendMessageW(popup, WM_COMMAND, Some(WPARAM(IDOK as usize)), None);
+    report.push_str(&format!("saved {}\n", settings::menu_order().join(",")));
+    st2k_appkit::win::settle_pump(settings, 4, 4, false);
+    st2k_appkit::win::capture_and_destroy(settings, out)
 }
 
 thread_local! {
