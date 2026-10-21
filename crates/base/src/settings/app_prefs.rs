@@ -383,11 +383,21 @@ pub enum ShotFormat {
     Png,
     Jpeg,
     WebP,
+    /// 16-bit PNG, BT.2020 primaries, PQ transfer, tagged with a `cICP` chunk.
+    PngHdr,
+    /// JPEG XR, scRGB half-float: what Windows' Game Bar saves HDR screenshots as.
+    JpegXrHdr,
 }
 
 impl ShotFormat {
     /// Every format, in stored-index (and dropdown) order.
-    pub const ALL: [ShotFormat; 3] = [ShotFormat::Png, ShotFormat::Jpeg, ShotFormat::WebP];
+    pub const ALL: [ShotFormat; 5] = [
+        ShotFormat::Png,
+        ShotFormat::Jpeg,
+        ShotFormat::WebP,
+        ShotFormat::PngHdr,
+        ShotFormat::JpegXrHdr,
+    ];
 
     /// The format for a stored index, PNG for anything out of range.
     pub fn from_dword(v: u32) -> Self {
@@ -402,9 +412,10 @@ impl ShotFormat {
     /// The file extension a capture in this format is saved with.
     pub fn ext(self) -> &'static str {
         match self {
-            ShotFormat::Png => "png",
+            ShotFormat::Png | ShotFormat::PngHdr => "png",
             ShotFormat::Jpeg => "jpg",
             ShotFormat::WebP => "webp",
+            ShotFormat::JpegXrHdr => "jxr",
         }
     }
 
@@ -414,7 +425,14 @@ impl ShotFormat {
             ShotFormat::Png => "PNG",
             ShotFormat::Jpeg => "JPEG",
             ShotFormat::WebP => "WebP",
+            ShotFormat::PngHdr => "PNG HDR",
+            ShotFormat::JpegXrHdr => "JPEG XR HDR",
         }
+    }
+
+    /// Does this format keep an HDR monitor's full range (written from the float capture)?
+    pub fn is_hdr(self) -> bool {
+        matches!(self, ShotFormat::PngHdr | ShotFormat::JpegXrHdr)
     }
 }
 

@@ -66,6 +66,7 @@ unsafe fn test_shot() -> Box<Shot> {
         tb_cache: Vec::new(),
         app: String::new(),
         crop_pending: None,
+        hdr: None,
     })
 }
 

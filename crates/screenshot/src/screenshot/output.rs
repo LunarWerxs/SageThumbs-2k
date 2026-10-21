@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use windows::Win32::Foundation::{CloseHandle, HWND, SYSTEMTIME};
+use windows::Win32::Foundation::{CloseHandle, HWND, RECT, SYSTEMTIME};
 use windows::Win32::Graphics::Gdi::BITMAPINFOHEADER;
 use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -16,6 +16,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use st2k_appkit::win::window_shot::to_rgba;
 use st2k_base::settings::{self, ShotFormat};
+
+use super::hdrsave::{self, HdrImage};
 
 /// Put a packed CF_DIB (bottom-up BGRA) on the clipboard from top-down BGRA pixels.
 /// Returns whether the clipboard actually took it — the editor-less instant capture
@@ -141,7 +143,7 @@ fn expand_with(template: &str, st: &SYSTEMTIME, app: &str, ext: &str) -> Option<
 /// save format, so `shot.png` saved as JPEG must not become `shot.png.jpg`.
 fn without_image_ext(template: &str) -> &str {
     let t = template.trim_end();
-    for ext in [".png", ".jpg", ".jpeg", ".webp"] {
+    for ext in [".png", ".jpg", ".jpeg", ".webp", ".jxr"] {
         let Some(cut) = t.len().checked_sub(ext.len()) else {
             continue;
         };
@@ -203,34 +205,96 @@ fn capture_target(dir: &Path, app: &str, format: ShotFormat) -> (PathBuf, String
     (folder, name)
 }
 
-/// The image crate's format for a capture save format.
-fn image_format(format: ShotFormat) -> image::ImageFormat {
+/// The image crate's format for an SDR save format; `None` for the HDR formats, which
+/// `hdrsave` writes itself.
+fn image_format(format: ShotFormat) -> Option<image::ImageFormat> {
     match format {
-        ShotFormat::Png => image::ImageFormat::Png,
-        ShotFormat::Jpeg => image::ImageFormat::Jpeg,
-        ShotFormat::WebP => image::ImageFormat::WebP,
+        ShotFormat::Png => Some(image::ImageFormat::Png),
+        ShotFormat::Jpeg => Some(image::ImageFormat::Jpeg),
+        ShotFormat::WebP => Some(image::ImageFormat::WebP),
+        ShotFormat::PngHdr | ShotFormat::JpegXrHdr => None,
     }
 }
 
-/// Encode a capture into `path` in `format` through the Convert verbs' own encoders.
-fn encode_capture(img: &image::DynamicImage, format: ShotFormat, path: &Path) -> bool {
-    let quality = settings::shot_save_quality().min(100) as u8;
-    st2k_actions::verbs::encode_image_file(img, image_format(format), quality, path).is_ok()
+/// A capture ready to write: an SDR format's image for the Convert verbs' encoders, or an HDR
+/// format's finished file.
+enum Encoded {
+    Sdr(image::DynamicImage, image::ImageFormat),
+    File(Vec<u8>),
+}
+
+/// Encode a capture (top-down BGRA, with `hdr` its linear light when an HDR format is the
+/// target) for `format`.
+fn encode_capture(
+    top_down_bgra: &[u8],
+    w: i32,
+    h: i32,
+    hdr: Option<&HdrImage>,
+    format: ShotFormat,
+) -> Option<Encoded> {
+    let Some(sdr) = image_format(format) else {
+        return encode_hdr(top_down_bgra, w, h, hdr, format).map(Encoded::File);
+    };
+    let img = image::DynamicImage::ImageRgba8(to_rgba(top_down_bgra, w, h)?);
+    Some(Encoded::Sdr(img, sdr))
+}
+
+/// An HDR format's file from `hdr`, or, when this capture had no HDR monitor (or `hdr` is not
+/// this capture's size), from the 8-bit pixels at the reference SDR white: the format the user
+/// picked is honoured either way.
+fn encode_hdr(
+    top_down_bgra: &[u8],
+    w: i32,
+    h: i32,
+    hdr: Option<&HdrImage>,
+    format: ShotFormat,
+) -> Option<Vec<u8>> {
+    let sdr;
+    let img = match hdr.filter(|i| (i.w as i64, i.h as i64) == (w as i64, h as i64)) {
+        Some(img) => img,
+        None => {
+            let full = RECT {
+                left: 0,
+                top: 0,
+                right: w,
+                bottom: h,
+            };
+            sdr = hdrsave::region_image(None, full, top_down_bgra, top_down_bgra)?;
+            &sdr
+        }
+    };
+    match format {
+        ShotFormat::JpegXrHdr => hdrsave::encode_jxr(img),
+        _ => hdrsave::encode_png_pq(img),
+    }
+}
+
+/// Write an encoded capture to `path`.
+fn write_encoded(enc: &Encoded, path: &Path) -> bool {
+    match enc {
+        Encoded::Sdr(img, format) => {
+            let quality = settings::shot_save_quality().min(100) as u8;
+            st2k_actions::verbs::encode_image_file(img, *format, quality, path).is_ok()
+        }
+        Encoded::File(bytes) => std::fs::write(path, bytes).is_ok(),
+    }
 }
 
 /// Auto-save a capture into `dir` under the file-name template, in the Settings format.
 /// Used by Ctrl+S / the Save button when "use a fixed save folder" is on, and by the
-/// editor-less instant capture. Returns whether the file was written.
+/// editor-less instant capture. `hdr` is the capture's linear light, which only the HDR
+/// formats read. Returns whether the file was written.
 pub(super) fn save_capture_to_dir(
     dir: &Path,
     top_down_bgra: &[u8],
     w: i32,
     h: i32,
     app: &str,
+    hdr: Option<&HdrImage>,
 ) -> bool {
     let format = settings::shot_save_format();
     let (folder, name) = capture_target(dir, app, format);
-    save_capture_as(&folder, &name, top_down_bgra, w, h, format).is_some()
+    save_capture_as(&folder, &name, top_down_bgra, w, h, format, hdr).is_some()
 }
 
 /// Encode a capture as `format` into a fresh reservation of `name` in `folder` (created if
@@ -242,11 +306,12 @@ fn save_capture_as(
     w: i32,
     h: i32,
     format: ShotFormat,
+    hdr: Option<&HdrImage>,
 ) -> Option<PathBuf> {
-    let img = image::DynamicImage::ImageRgba8(to_rgba(top_down_bgra, w, h)?);
+    let encoded = encode_capture(top_down_bgra, w, h, hdr, format)?;
     std::fs::create_dir_all(folder).ok()?;
     fill_reserved(folder, name, |_, path| {
-        if encode_capture(&img, format, path) {
+        if write_encoded(&encoded, path) {
             Ok(())
         } else {
             Err(std::io::Error::other("encode failed"))
@@ -262,16 +327,16 @@ pub(super) fn save_capture_to_path(
     w: i32,
     h: i32,
     format: ShotFormat,
+    hdr: Option<&HdrImage>,
 ) -> bool {
-    let Some(img) = to_rgba(top_down_bgra, w, h) else {
+    let Some(encoded) = encode_capture(top_down_bgra, w, h, hdr, format) else {
         return false;
     };
-    let img = image::DynamicImage::ImageRgba8(img);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     st2k_actions::verbs::write_atomic(path, |tmp| {
-        if encode_capture(&img, format, tmp) {
+        if write_encoded(&encoded, tmp) {
             Ok(())
         } else {
             Err(windows::core::Error::from(
@@ -573,16 +638,30 @@ mod tests {
         let folder = dir.join(rel.parent().expect("subfolders"));
         let file = rel.file_name().and_then(|n| n.to_str()).expect("file name");
         let bgra = vec![200u8; 8 * 6 * 4];
-        let saved = save_capture_as(&folder, file, &bgra, 8, 6, ShotFormat::Png).expect("saved");
+        let saved =
+            save_capture_as(&folder, file, &bgra, 8, 6, ShotFormat::Png, None).expect("saved");
         assert_eq!(saved, dir.join(&rel));
         assert!(saved.is_file());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The file signature each save format must start with.
+    fn magic(format: ShotFormat) -> &'static [u8] {
+        match format {
+            ShotFormat::Png | ShotFormat::PngHdr => b"\x89PNG",
+            ShotFormat::Jpeg => b"\xFF\xD8\xFF",
+            ShotFormat::WebP => b"RIFF",
+            ShotFormat::JpegXrHdr => b"II\xBC",
+        }
+    }
+
     /// Each save format writes a file of that format, under its own extension, that decodes
-    /// back at the capture's size. JPEG has no alpha and still comes out right.
+    /// back at the capture's size. JPEG has no alpha and still comes out right; the HDR
+    /// formats save an SDR capture too (at the reference SDR white).
     #[test]
     fn every_save_format_decodes_back_at_the_capture_size() {
+        // JPEG XR decodes back through WIC, which needs a COM apartment on this thread.
+        let _com = st2k_base::parallel::ComGuard::sta();
         let dir = std::env::temp_dir().join(format!("st2k_shot_formats_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let (w, h) = (37, 23);
@@ -592,21 +671,79 @@ mod tests {
         for format in ShotFormat::ALL {
             let file = format!("capture.{}", format.ext());
             let saved =
-                save_capture_as(&dir, &file, &bgra, w, h, format).expect("the capture saved");
+                save_capture_as(&dir, &file, &bgra, w, h, format, None).expect("the capture saved");
             assert_eq!(
                 saved.extension().and_then(|e| e.to_str()),
                 Some(format.ext())
             );
             let bytes = std::fs::read(&saved).expect("read back");
-            assert_eq!(
-                image::guess_format(&bytes).ok(),
-                Some(image_format(format)),
+            assert!(
+                bytes.starts_with(magic(format)),
                 "{file} is not {}",
                 format.name()
             );
-            let img = image::load_from_memory(&bytes).expect("decodes");
+            if let Some(sdr) = image_format(format) {
+                assert_eq!(image::guess_format(&bytes).ok(), Some(sdr), "{file}");
+            }
+            let img = st2k_codecs::decode::decode_full(&bytes).expect("decodes");
             assert_eq!((img.width(), img.height()), (w as u32, h as u32), "{file}");
+            let _ = std::fs::remove_file(&saved);
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A PNG HDR saved from an SDR capture reads back through the app's own HDR PNG decoder
+    /// (cICP PQ to linear at BT.2408's 203-nit white, then its tone map) as the same picture:
+    /// white at the reference white is the right tag, not just a well-formed file.
+    #[test]
+    fn png_hdr_of_an_sdr_capture_reads_back_as_the_same_picture() {
+        let dir = std::env::temp_dir().join(format!("st2k_shot_hdr_rt_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (w, h) = (16, 16);
+        let bgra: Vec<u8> = (0..w * h)
+            .flat_map(|i| [(i * 7) as u8, i as u8, (255 - i) as u8, 255])
+            .collect();
+        let saved =
+            save_capture_as(&dir, "rt.png", &bgra, w, h, ShotFormat::PngHdr, None).expect("saved");
+        let bytes = std::fs::read(&saved).expect("read back");
+        let back = st2k_codecs::decode::decode_full(&bytes)
+            .expect("decodes")
+            .to_rgba8();
+        for (i, px) in back.pixels().enumerate() {
+            let want = [bgra[i * 4 + 2], bgra[i * 4 + 1], bgra[i * 4]];
+            for (c, (&got, &want)) in px.0.iter().zip(&want).enumerate() {
+                assert!(
+                    got.abs_diff(want) <= 1,
+                    "pixel {i} channel {c}: {got} vs {want}"
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An HDR format saves the capture's linear light when it has one, not the 8-bit pixels:
+    /// a 1000-nit highlight the 8-bit capture shows as plain white keeps its 1000 nits.
+    #[test]
+    fn hdr_formats_save_the_float_capture() {
+        let dir = std::env::temp_dir().join(format!("st2k_shot_hdr_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let bgra = [255u8; 4];
+        let hdr = HdrImage {
+            w: 1,
+            h: 1,
+            rgb: vec![1000.0; 3],
+        };
+        let saved = save_capture_as(&dir, "hdr.png", &bgra, 1, 1, ShotFormat::PngHdr, Some(&hdr))
+            .expect("saved");
+        let bytes = std::fs::read(&saved).expect("read back");
+        let mut reader = png::Decoder::new(std::io::Cursor::new(&bytes))
+            .read_info()
+            .expect("decodes");
+        let mut buf = vec![0; reader.output_buffer_size().expect("size")];
+        reader.next_frame(&mut buf).expect("pixels");
+        let red = u16::from_be_bytes([buf[0], buf[1]]);
+        // PQ(1000 nits) = 0.7518; the SDR fallback would have put white at PQ(203) = 0.5807.
+        assert!((red as f32 / 65_535.0 - 0.7518).abs() < 1e-3, "got {red}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

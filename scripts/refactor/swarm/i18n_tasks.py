@@ -20,14 +20,17 @@ Read the judge's confirmed list (step 3 prints it), keep the ones that are right
 siblings (a fixed minutes abbreviation must change in every dur_* string that uses it), and
 pass them to `apply` as an overrides file.
 
+`--unbatched` because each locale's task carries its own reference strings: HSwarm otherwise
+refuses 35 small tool-free tasks as an unbatched fan-out (it did on 2026-10-21).
+
     python i18n_tasks.py build  <keys.json> <workdir>     # keys.json: {"key": "what it is"}
-    hswarm run --model deepseek-flash --tools none --concurrency 40 \
+    hswarm run --model deepseek-flash --tools none --concurrency 40 --unbatched \
         --out <workdir>/i18n-job.json <workdir>/tasks.json
     python i18n_tasks.py review <workdir>
-    hswarm run --model groq-gpt-oss-120b --tools none \
+    hswarm run --model groq-gpt-oss-120b --tools none --unbatched \
         --out <workdir>/review-job.json <workdir>/review-tasks.json
     python i18n_tasks.py judge  <workdir>
-    hswarm run --model deepseek-flash --tools none \
+    hswarm run --model deepseek-flash --tools none --unbatched \
         --out <workdir>/judge-job.json <workdir>/judge-tasks.json
     python i18n_tasks.py confirmed <workdir>              # what the judge would change
     python i18n_tasks.py apply  <workdir> [--overrides o.json] [--dry]
@@ -85,6 +88,8 @@ def cmd_build(keys_file: str, workdir: str) -> None:
 
 
 def main(argv: list[str]) -> int:
+    # `confirmed` prints every locale's strings; a cp1252 console cannot hold Persian or Thai.
+    sys.stdout.reconfigure(encoding="utf-8")
     if len(argv) < 3:
         print(__doc__)
         return 2

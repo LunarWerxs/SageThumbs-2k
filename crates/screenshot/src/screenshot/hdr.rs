@@ -15,8 +15,20 @@
 //! # The fix
 //!
 //! Windows Graphics Capture can hand back the pre-composited surface in
-//! `R16G16B16A16Float` — scRGB, linear, where `1.0` is SDR white — and we do the
+//! `R16G16B16A16Float` — scRGB, linear, where `1.0` is 80 nits — and we do the
 //! tone mapping ourselves. In-box API, no bundled bytes, no new crate.
+//!
+//! Windows composes SDR content (the desktop, every ordinary window) at the
+//! user's **SDR white level**, the "SDR content brightness" slider: 200 to 480
+//! nits is common, so desktop white arrives as scRGB 2.5 to 6.0, not 1.0. Until
+//! issue #67 the tone curve assumed 1.0, which clipped the whole desktop to white
+//! and lifted every mid-tone. Each HDR monitor's white level is now read from
+//! `DisplayConfigGetDeviceInfo` and divided out, so SDR content comes out as it
+//! would from an SDR desktop; only what is brighter than SDR white (HDR video,
+//! games) is rolled off, toward the monitor's peak, keeping its hue.
+//!
+//! The float capture itself is kept beside the 8-bit picture (see `hdrsave.rs`),
+//! so the HDR save formats get the real range, not the tone-mapped one.
 //!
 //! # Scope, deliberately narrow
 //!
@@ -39,7 +51,14 @@ use windows::Graphics::Capture::{
     Direct3D11CaptureFrame, Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession,
 };
 use windows::Graphics::DirectX::DirectXPixelFormat;
-use windows::Win32::Foundation::HMODULE;
+use windows::Win32::Devices::Display::{
+    DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes, QueryDisplayConfig,
+    DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL, DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+    DISPLAYCONFIG_DEVICE_INFO_HEADER, DISPLAYCONFIG_DEVICE_INFO_TYPE, DISPLAYCONFIG_MODE_INFO,
+    DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SDR_WHITE_LEVEL, DISPLAYCONFIG_SOURCE_DEVICE_NAME,
+    QDC_ONLY_ACTIVE_PATHS,
+};
+use windows::Win32::Foundation::{ERROR_SUCCESS, HMODULE, LUID};
 use windows::Win32::Foundation::{LPARAM, RECT};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
@@ -51,7 +70,7 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020, DXGI_FORMAT_R16G16B16A16_FLOAT,
 };
 use windows::Win32::Graphics::Dxgi::{
-    CreateDXGIFactory1, IDXGIDevice, IDXGIFactory1, IDXGIOutput6,
+    CreateDXGIFactory1, IDXGIDevice, IDXGIFactory1, IDXGIOutput6, DXGI_OUTPUT_DESC1,
 };
 use windows::Win32::Graphics::Gdi::{
     BitBlt, EnumDisplayMonitors, GetDC, ReleaseDC, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER,
@@ -61,6 +80,9 @@ use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
 };
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
+
+use super::hdrsave::{HdrShot, HdrTile, SCRGB_NITS};
+use super::hdrtone::{same_device, tone_map, Levels};
 
 /// How long to wait for the first captured frame before giving up and letting the
 /// caller fall back to `BitBlt`. A capture session normally delivers in one or two
@@ -83,9 +105,10 @@ fn monitors() -> Vec<(HMONITOR, RECT)> {
 }
 
 /// Fill `dst` (a virtual-desktop-sized memory DC) with a correctly tone-mapped
-/// capture, or return `false` to mean "nothing to do here, use the plain BitBlt".
+/// capture and return the HDR monitors' float captures, or return `None` to mean
+/// "nothing to do here, use the plain BitBlt".
 ///
-/// Returns `false` immediately when no monitor is HDR, so an SDR machine pays one
+/// Returns `None` immediately when no monitor is HDR, so an SDR machine pays one
 /// DXGI enumeration and gets byte-identical behaviour to before. When at least one
 /// monitor IS HDR, every monitor is drawn individually: HDR ones through Windows
 /// Graphics Capture and the tone map, SDR ones with the same BitBlt as always. A
@@ -93,13 +116,14 @@ fn monitors() -> Vec<(HMONITOR, RECT)> {
 /// for a laptop with an external panel.
 ///
 /// If an HDR monitor's capture fails for any reason, that monitor falls back to
-/// BitBlt rather than being left blank: a washed-out screenshot beats a black one.
-pub(super) unsafe fn capture_into(dst: HDC, vx: i32, vy: i32, vw: i32, vh: i32) -> bool {
+/// BitBlt rather than being left blank (a washed-out screenshot beats a black one),
+/// and has no tile in the result.
+pub(super) unsafe fn capture_into(dst: HDC, vx: i32, vy: i32, vw: i32, vh: i32) -> Option<HdrShot> {
     let mons = monitors();
-    let hdr: Vec<bool> = mons.iter().map(|&(m, _)| monitor_is_hdr(m)).collect();
-    let n = hdr.iter().filter(|&&b| b).count();
+    let hdr: Vec<Option<DXGI_OUTPUT_DESC1>> = mons.iter().map(|&(m, _)| hdr_output(m)).collect();
+    let n = hdr.iter().flatten().count();
     if n == 0 {
-        return false;
+        return None;
     }
     // Worth a line in the diagnostics log: if someone reports a washed-out or an
     // oddly-coloured screenshot, the first thing to know is which path ran.
@@ -114,66 +138,104 @@ pub(super) unsafe fn capture_into(dst: HDC, vx: i32, vy: i32, vw: i32, vh: i32) 
     // same as before — `capture_monitor` no longer has a device of its own to try.
     let gpu = create_capture_device();
     let screen = GetDC(None);
-    for (&(mon, r), &is_hdr) in mons.iter().zip(&hdr) {
-        let (x, y) = (r.left - vx, r.top - vy);
-        let (w, h) = (r.right - r.left, r.bottom - r.top);
-        let mut drawn = false;
-        if is_hdr {
-            if let Some((device, ctx, winrt_device)) = gpu.as_ref() {
-                if let Some((bgra, cw, ch)) = capture_monitor(mon, device, ctx, winrt_device) {
-                    let bmi = BITMAPINFO {
-                        bmiHeader: BITMAPINFOHEADER {
-                            biSize: core::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                            biWidth: cw as i32,
-                            biHeight: -(ch as i32), // top-down, matching our buffer
-                            biPlanes: 1,
-                            biBitCount: 32,
-                            biCompression: BI_RGB.0,
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    };
-                    // The captured surface can differ from the monitor rect (scaling),
-                    // so stretch rather than assuming they match.
-                    drawn = StretchDIBits(
-                        dst,
-                        x,
-                        y,
-                        w,
-                        h,
-                        0,
-                        0,
-                        cw as i32,
-                        ch as i32,
-                        Some(bgra.as_ptr() as *const _),
-                        &bmi,
-                        DIB_RGB_COLORS,
-                        SRCCOPY,
-                    ) != 0;
-                }
+    let mut shot = HdrShot::default();
+    for (&(mon, r), out) in mons.iter().zip(&hdr) {
+        let dest = RECT {
+            left: r.left - vx,
+            top: r.top - vy,
+            right: r.right - vx,
+            bottom: r.bottom - vy,
+        };
+        let tile = match (out, gpu.as_ref()) {
+            (Some(desc), Some((device, ctx, winrt))) => {
+                capture_monitor(mon, levels_of(desc), device, ctx, winrt)
+                    .and_then(|c| draw_capture(dst, dest, c))
             }
-        }
-        if !drawn {
-            let _ = BitBlt(dst, x, y, w, h, Some(screen), r.left, r.top, SRCCOPY);
+            _ => None,
+        };
+        match tile {
+            Some(t) => shot.tiles.push(t),
+            None => {
+                let _ = BitBlt(
+                    dst,
+                    dest.left,
+                    dest.top,
+                    r.right - r.left,
+                    r.bottom - r.top,
+                    Some(screen),
+                    r.left,
+                    r.top,
+                    SRCCOPY,
+                );
+            }
         }
     }
     ReleaseDC(None, screen);
     let _ = (vw, vh); // the destination is already sized by the caller
-    true
+    Some(shot)
 }
 
-/// Is this monitor currently in HDR mode?
+/// One HDR monitor's capture: the tone-mapped 8-bit picture and the scRGB it came from.
+struct Captured {
+    bgra: Vec<u8>,
+    w: u32,
+    h: u32,
+    /// `w * h` RGB triples of scRGB half floats.
+    rgb: Vec<u16>,
+    levels: Levels,
+}
+
+/// Draw `c`'s 8-bit picture into `dst` over `dest` and hand back its float tile, or `None`
+/// when GDI refused the draw (the caller then blits that monitor).
+unsafe fn draw_capture(dst: HDC, dest: RECT, c: Captured) -> Option<HdrTile> {
+    let bmi = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: core::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: c.w as i32,
+            biHeight: -(c.h as i32), // top-down, matching our buffer
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    // The captured surface can differ from the monitor rect (scaling), so stretch rather
+    // than assuming they match.
+    let drawn = StretchDIBits(
+        dst,
+        dest.left,
+        dest.top,
+        dest.right - dest.left,
+        dest.bottom - dest.top,
+        0,
+        0,
+        c.w as i32,
+        c.h as i32,
+        Some(c.bgra.as_ptr() as *const _),
+        &bmi,
+        DIB_RGB_COLORS,
+        SRCCOPY,
+    ) != 0;
+    drawn.then_some(HdrTile {
+        dest,
+        src_w: c.w as usize,
+        src_h: c.h as usize,
+        rgb: c.rgb,
+        white_nits: c.levels.white * SCRGB_NITS,
+    })
+}
+
+/// This monitor's DXGI output description, when it is currently in HDR mode.
 ///
 /// Authoritative source is DXGI: `IDXGIOutput6::GetDesc1().ColorSpace` reports
 /// the ST.2084 (PQ) space exactly when the desktop is composing in HDR for that
 /// output. An SDR monitor reports `RGB_FULL_G22_NONE_P709` regardless of whether
 /// the panel is *capable* of HDR, which is the distinction that matters here: we
 /// only want the expensive path when the pixels really are HDR.
-pub(super) fn monitor_is_hdr(mon: HMONITOR) -> bool {
+fn hdr_output(mon: HMONITOR) -> Option<DXGI_OUTPUT_DESC1> {
     unsafe {
-        let Ok(factory) = CreateDXGIFactory1::<IDXGIFactory1>() else {
-            return false;
-        };
+        let factory = CreateDXGIFactory1::<IDXGIFactory1>().ok()?;
         let mut ai = 0;
         while let Ok(adapter) = factory.EnumAdapters1(ai) {
             ai += 1;
@@ -185,11 +247,82 @@ pub(super) fn monitor_is_hdr(mon: HMONITOR) -> bool {
                 };
                 let Ok(desc) = o6.GetDesc1() else { continue };
                 if desc.Monitor == mon {
-                    return desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+                    return (desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020)
+                        .then_some(desc);
                 }
             }
         }
-        false
+        None
+    }
+}
+
+/// The display levels of the HDR output `desc` describes.
+fn levels_of(desc: &DXGI_OUTPUT_DESC1) -> Levels {
+    let white = unsafe { sdr_white_level(&desc.DeviceName) };
+    let levels = Levels::new(white, desc.MaxLuminance);
+    st2k_base::safety::log_debugf!(
+        "screenshot: HDR monitor SDR white {:.0} nits, peak {:.0} nits",
+        levels.white * SCRGB_NITS,
+        levels.peak * SCRGB_NITS
+    );
+    levels
+}
+
+/// The raw `SDRWhiteLevel` (1000 = 80 nits) of the display whose GDI device name is
+/// `device`: its active path is found by source name, then its target is asked.
+unsafe fn sdr_white_level(device: &[u16; 32]) -> Option<u32> {
+    let (mut np, mut nm) = (0u32, 0u32);
+    if GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut np, &mut nm) != ERROR_SUCCESS {
+        return None;
+    }
+    let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); np as usize];
+    let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); nm as usize];
+    let got = QueryDisplayConfig(
+        QDC_ONLY_ACTIVE_PATHS,
+        &mut np,
+        paths.as_mut_ptr(),
+        &mut nm,
+        modes.as_mut_ptr(),
+        None,
+    );
+    if got != ERROR_SUCCESS {
+        return None;
+    }
+    paths.truncate(np as usize);
+    let path = paths.iter().find(|p| {
+        let mut req = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
+            header: info_header::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>(
+                DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+                p.sourceInfo.adapterId,
+                p.sourceInfo.id,
+            ),
+            ..Default::default()
+        };
+        DisplayConfigGetDeviceInfo(&mut req.header) == 0
+            && same_device(&req.viewGdiDeviceName, device)
+    })?;
+    let mut req = DISPLAYCONFIG_SDR_WHITE_LEVEL {
+        header: info_header::<DISPLAYCONFIG_SDR_WHITE_LEVEL>(
+            DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL,
+            path.targetInfo.adapterId,
+            path.targetInfo.id,
+        ),
+        SDRWhiteLevel: 0,
+    };
+    (DisplayConfigGetDeviceInfo(&mut req.header) == 0).then_some(req.SDRWhiteLevel)
+}
+
+/// The header of a `DisplayConfigGetDeviceInfo` request whose packet is a `T`.
+fn info_header<T>(
+    kind: DISPLAYCONFIG_DEVICE_INFO_TYPE,
+    adapter: LUID,
+    id: u32,
+) -> DISPLAYCONFIG_DEVICE_INFO_HEADER {
+    DISPLAYCONFIG_DEVICE_INFO_HEADER {
+        r#type: kind,
+        size: core::mem::size_of::<T>() as u32,
+        adapterId: adapter,
+        id,
     }
 }
 
@@ -214,20 +347,21 @@ impl Drop for CaptureGuard {
     }
 }
 
-/// Capture `mon` through Windows Graphics Capture and tone-map it to 8-bit sRGB, using the
-/// D3D11 device/context/WinRT-face the caller created once for the whole multi-monitor
-/// capture (item 145's D3D half — see [`capture_into`]).
+/// Capture `mon` through Windows Graphics Capture and tone-map it to 8-bit sRGB at
+/// `levels`, using the D3D11 device/context/WinRT-face the caller created once for the whole
+/// multi-monitor capture (item 145's D3D half — see [`capture_into`]).
 ///
-/// Returns `(bgra, width, height)` with the top-down BGRA layout GDI wants, or `None` on any
+/// Returns the top-down BGRA layout GDI wants plus the scRGB it came from, or `None` on any
 /// failure at all — a refused capture session, a driver that never delivers a frame. Every
 /// `None` means "use `BitBlt` instead", so the worst case is today's behaviour rather than a
 /// broken screenshot.
-pub(super) fn capture_monitor(
+fn capture_monitor(
     mon: HMONITOR,
+    levels: Levels,
     device: &ID3D11Device,
     ctx: &ID3D11DeviceContext,
     winrt_device: &windows::Graphics::DirectX::Direct3D11::IDirect3DDevice,
-) -> Option<(Vec<u8>, u32, u32)> {
+) -> Option<Captured> {
     unsafe {
         let (pool, session) = start_capture_session(mon, winrt_device)?;
         let guard = CaptureGuard { pool, session };
@@ -245,17 +379,24 @@ pub(super) fn capture_monitor(
         ctx.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
             .ok()?;
         let (w, h) = (desc.Width, desc.Height);
-        let out = tone_map(
+        let (bgra, rgb) = tone_map(
             mapped.pData as *const u8,
             mapped.RowPitch as usize,
             w as usize,
             h as usize,
+            levels,
         );
         ctx.Unmap(&staging, 0);
 
         // `guard` drops here (and on every early return above), closing the session + pool
         // exactly once no matter which path was taken.
-        Some((out, w, h))
+        Some(Captured {
+            bgra,
+            w,
+            h,
+            rgb,
+            levels,
+        })
     }
 }
 
@@ -371,145 +512,4 @@ unsafe fn staged_copy(
     let staging = staging?;
     ctx.CopyResource(&staging, src);
     Some(staging)
-}
-
-/// scRGB half-float rows -> top-down 8-bit BGRA.
-///
-/// scRGB is LINEAR light with `1.0` = SDR white, so values above 1.0 are the
-/// highlights an SDR screenshot has to give up. Rolling them off with Reinhard
-/// (`x / (1 + x)`, rescaled so SDR white stays white) reaches white smoothly, but
-/// everything at or above 1.0 still saturates to white in this 8-bit target;
-/// then the sRGB transfer curve puts the result back in display space. Without
-/// that curve the image comes out exactly as the naive path does: washed out.
-///
-/// # Safety
-/// `data` must point to at least `row_pitch * h` readable bytes.
-unsafe fn tone_map(data: *const u8, row_pitch: usize, w: usize, h: usize) -> Vec<u8> {
-    let mut out = vec![0u8; w * h * 4];
-    for y in 0..h {
-        let row = data.add(y * row_pitch) as *const u16;
-        for x in 0..w {
-            let r = f16(*row.add(x * 4));
-            let g = f16(*row.add(x * 4 + 1));
-            let b = f16(*row.add(x * 4 + 2));
-            let o = (y * w + x) * 4;
-            // GDI's DIB layout is BGRA.
-            out[o] = encode(b);
-            out[o + 1] = encode(g);
-            out[o + 2] = encode(r);
-            out[o + 3] = 255;
-        }
-    }
-    out
-}
-
-/// One linear scRGB component -> one sRGB byte.
-fn encode(v: f32) -> u8 {
-    let v = if v.is_finite() && v > 0.0 { v } else { 0.0 };
-    let tone = v / (1.0 + v) * 2.0; // Reinhard, rescaled so SDR white stays white
-    let tone = tone.min(1.0);
-    let srgb = if tone <= 0.003_130_8 {
-        12.92 * tone
-    } else {
-        1.055 * tone.powf(1.0 / 2.4) - 0.055
-    };
-    (srgb * 255.0 + 0.5).clamp(0.0, 255.0) as u8
-}
-
-/// IEEE-754 half -> f32. Hand-rolled because Rust's `f16` is still unstable and
-/// this is not worth a dependency.
-fn f16(h: u16) -> f32 {
-    let sign = ((h >> 15) & 1) as u32;
-    let exp = ((h >> 10) & 0x1f) as u32;
-    let man = (h & 0x3ff) as u32;
-    let bits = match exp {
-        0 => {
-            if man == 0 {
-                sign << 31 // signed zero
-            } else {
-                // Subnormal: renormalize into a f32 exponent.
-                let mut m = man;
-                let mut e: i32 = 0;
-                while m & 0x400 == 0 {
-                    m <<= 1;
-                    e -= 1;
-                }
-                m &= 0x3ff;
-                (sign << 31) | (((127 - 15 + 1 + e) as u32) << 23) | (m << 13)
-            }
-        }
-        31 => (sign << 31) | 0x7f80_0000 | (man << 13), // inf / NaN
-        _ => (sign << 31) | ((exp + 112) << 23) | (man << 13),
-    };
-    f32::from_bits(bits)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn half_float_decodes() {
-        assert_eq!(f16(0x0000), 0.0);
-        assert_eq!(f16(0x3C00), 1.0); // SDR white
-        assert_eq!(f16(0x4000), 2.0);
-        assert_eq!(f16(0xBC00), -1.0);
-        assert!((f16(0x3555) - 0.333).abs() < 0.001);
-        assert!(f16(0x7C00).is_infinite());
-        assert!(f16(0x0001) > 0.0 && f16(0x0001) < 1e-6); // smallest subnormal
-    }
-
-    /// SDR white must map to white, mid-tones must stay ordered, and highlights
-    /// above white must saturate to white rather than overflow or go black.
-    #[test]
-    fn tone_curve_keeps_white_white_and_highlights_separable() {
-        assert_eq!(encode(0.0), 0);
-        assert_eq!(encode(1.0), 255, "SDR white must map to white");
-        let (a, b, c) = (encode(1.5), encode(3.0), encode(8.0));
-        assert!(a > 0 && b > 0 && c > 0, "highlights must not go black");
-        // Above SDR white everything saturates, which is correct for an 8-bit
-        // target — the guarantee that matters is that we get THERE smoothly and
-        // never produce a value out of range or a NaN.
-        assert!(encode(0.5) < encode(0.9), "mid-tones must stay ordered");
-        assert!(encode(0.9) < encode(1.0));
-    }
-
-    /// Garbage samples collapse to black, NOT to white. That matches
-    /// `decode::tone_map_float`, which has always treated a non-finite or negative
-    /// float sample as zero, so EXR/HDR decoding and HDR capture agree rather than
-    /// each inventing their own rule.
-    #[test]
-    fn nonsense_input_is_clamped_not_propagated() {
-        assert_eq!(encode(f32::NAN), 0);
-        assert_eq!(encode(-5.0), 0);
-        assert_eq!(encode(f32::NEG_INFINITY), 0);
-        assert_eq!(encode(f32::INFINITY), 0);
-    }
-
-    /// A full row round-trip through the same layout the GPU hands us, including
-    /// a RowPitch that is wider than the visible width (which it usually is).
-    #[test]
-    fn tone_map_honours_row_pitch_and_writes_bgra() {
-        let (w, h) = (2usize, 2usize);
-        let pitch = 32usize; // deliberately > w * 4 * 2 bytes
-        let mut src = vec![0u8; pitch * h];
-        // Pixel (0,0) = pure red at SDR white; (1,0) = pure blue.
-        let put = |buf: &mut [u8], x: usize, y: usize, rgba: [u16; 4]| {
-            let base = y * pitch + x * 8;
-            for (i, v) in rgba.iter().enumerate() {
-                buf[base + i * 2..base + i * 2 + 2].copy_from_slice(&v.to_le_bytes());
-            }
-        };
-        put(&mut src, 0, 0, [0x3C00, 0, 0, 0x3C00]); // r=1.0
-        put(&mut src, 1, 0, [0, 0, 0x3C00, 0x3C00]); // b=1.0
-
-        let out = unsafe { tone_map(src.as_ptr(), pitch, w, h) };
-        assert_eq!(out.len(), w * h * 4);
-        assert_eq!(&out[0..4], &[0, 0, 255, 255], "pixel 0 should be BGRA red");
-        assert_eq!(&out[4..8], &[255, 0, 0, 255], "pixel 1 should be BGRA blue");
-        assert!(
-            out[8..].iter().step_by(4).all(|&b| b == 0),
-            "row 1 stays black"
-        );
-    }
 }

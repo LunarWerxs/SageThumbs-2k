@@ -30,6 +30,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use st2k_appkit::dark::rgb;
 use st2k_appkit::win::{app_icon, gui_font, wide};
 
+use super::hdrsave::{self, HdrImage, HdrShot};
 use super::output;
 use super::toolbar::{self, Button, Swatch, TextItem};
 use super::tools::{self, Shape, Tool, PALETTE};
@@ -181,6 +182,9 @@ struct Shot {
     // The Crop tool's dragged rect, waiting for Enter (apply) or Esc (cancel). Client
     // coordinates, already clipped to `sel`. Applying it is an undoable `Shape::Crop`.
     crop_pending: Option<RECT>,
+    // The HDR monitors' float captures, kept for the HDR save formats (`hdrsave.rs`). `None`
+    // when no monitor was HDR; the 8-bit `shot` is what the editor shows and annotates.
+    hdr: Option<HdrShot>,
 }
 
 /// Hover-delay timer id (one-shot, re-armed on each new hovered button).
@@ -289,19 +293,20 @@ unsafe fn shot_dpi_for_sel(s: &Shot, sel: RECT) -> i32 {
     }
 }
 
-/// HDR capture when the feature is compiled in, otherwise "nothing to do".
+/// HDR capture when the feature is compiled in, otherwise "nothing to do". `Some` means
+/// `dst` is filled (and holds the HDR monitors' float captures); `None`, blit it yourself.
 ///
 /// The `hdr-capture` feature is app-only (see Cargo.toml): it drags in D3D11 and
 /// DXGI, which the shell DLL must never link. This shim keeps the one call site
 /// free of `cfg` noise.
 #[cfg(feature = "hdr-capture")]
-unsafe fn hdr_capture(dst: HDC, vx: i32, vy: i32, vw: i32, vh: i32) -> bool {
+unsafe fn hdr_capture(dst: HDC, vx: i32, vy: i32, vw: i32, vh: i32) -> Option<HdrShot> {
     super::hdr::capture_into(dst, vx, vy, vw, vh)
 }
 
 #[cfg(not(feature = "hdr-capture"))]
-unsafe fn hdr_capture(_dst: HDC, _vx: i32, _vy: i32, _vw: i32, _vh: i32) -> bool {
-    false
+unsafe fn hdr_capture(_dst: HDC, _vx: i32, _vy: i32, _vw: i32, _vh: i32) -> Option<HdrShot> {
+    None
 }
 
 unsafe fn activate_overlay(hwnd: HWND) {

@@ -27,6 +27,22 @@ pub(super) fn clamp_rect(r: RECT, sel: RECT) -> RECT {
 /// and pull its top-down BGRA pixels. Returns `(pixels, w, h)` — the callers route
 /// it to the clipboard and/or a PNG.
 pub(super) unsafe fn compose(s: &Shot) -> Option<(Vec<u8>, i32, i32)> {
+    compose_region(s, &s.shapes)
+}
+
+/// The selection's HDR image, for an HDR save format (`None` for the others: it is a float
+/// copy of the region, not built for nothing). The annotations are the pixels where
+/// `composed` differs from the plain snapshot; see [`hdrsave::region_image`].
+unsafe fn hdr_for_save(s: &Shot, composed: &[u8]) -> Option<HdrImage> {
+    if !st2k_base::settings::shot_save_format().is_hdr() {
+        return None;
+    }
+    let (plain, _, _) = compose_region(s, &[])?;
+    hdrsave::region_image(s.hdr.as_ref(), s.sel?, composed, &plain)
+}
+
+/// [`compose`] with only `shapes` drawn over the snapshot.
+unsafe fn compose_region(s: &Shot, shapes: &[Shape]) -> Option<(Vec<u8>, i32, i32)> {
     let sel = s.sel?;
     let (w, h) = (sel.right - sel.left, sel.bottom - sel.top);
     if w <= 0 || h <= 0 {
@@ -50,7 +66,7 @@ pub(super) unsafe fn compose(s: &Shot) -> Option<(Vec<u8>, i32, i32)> {
     // whatever GDI's surface clamp gives it — a visual glitch in the saved/copied output.
     // Clamp those rects to `sel` here rather than in `tools::draw_shape`, so every region
     // effect the compose stage bakes in stays inside the bitmap it's actually drawing into.
-    for sh in &s.shapes {
+    for sh in shapes {
         match sh {
             tools::Shape::Pixelate { r } => tools::draw_shape(
                 comp,
@@ -203,9 +219,11 @@ pub(super) unsafe fn finish_save(hwnd: HWND, s: &Shot) -> bool {
     let Some((buf, w, h)) = compose(s) else {
         return false;
     };
+    let hdr = hdr_for_save(s, &buf);
     if st2k_base::settings::screenshot_use_save_dir() {
         let dir = crate::screenshot::effective_save_dir();
-        let ok = output::save_capture_to_dir(std::path::Path::new(&dir), &buf, w, h, &s.app);
+        let path = std::path::Path::new(&dir);
+        let ok = output::save_capture_to_dir(path, &buf, w, h, &s.app, hdr.as_ref());
         if !ok {
             // A `false` here is a DISK failure (full/unwritable/missing folder), NOT a cancel
             // (the Save-As path can't run in this branch). Tell the user — otherwise the caller
@@ -214,13 +232,20 @@ pub(super) unsafe fn finish_save(hwnd: HWND, s: &Shot) -> bool {
         }
         ok
     } else {
-        save_via_dialog(hwnd, &buf, w, h, &s.app)
+        save_via_dialog(hwnd, &buf, w, h, &s.app, hdr.as_ref())
     }
 }
 
 /// Prompt for a path via the Save-As dialog and write the composited capture there, warning
 /// (and returning false) when a chosen path fails to save.
-unsafe fn save_via_dialog(hwnd: HWND, buf: &[u8], w: i32, h: i32, app: &str) -> bool {
+unsafe fn save_via_dialog(
+    hwnd: HWND,
+    buf: &[u8],
+    w: i32,
+    h: i32,
+    app: &str,
+    hdr: Option<&HdrImage>,
+) -> bool {
     let mut saved = false;
     let format = st2k_base::settings::shot_save_format();
     let (dir, name) = output::dialog_seed(&crate::screenshot::effective_save_dir(), app, format);
@@ -230,7 +255,8 @@ unsafe fn save_via_dialog(hwnd: HWND, buf: &[u8], w: i32, h: i32, app: &str) -> 
         if let Some(path) =
             st2k_appkit::win::pick_save_image(hwnd, &dir, &name, format.name(), format.ext())
         {
-            saved = output::save_capture_to_path(std::path::Path::new(&path), buf, w, h, format);
+            saved =
+                output::save_capture_to_path(std::path::Path::new(&path), buf, w, h, format, hdr);
             if !saved {
                 // A write failure here looks IDENTICAL to a user Cancel (both leave `saved`
                 // false) unless we say something — the fixed-folder branch above already

@@ -46,6 +46,7 @@ unsafe fn create_fullscreen_dc_pair(
 /// cause) must not fall through to SelectObject/BitBlt on a null handle, which paints
 /// "you captured a black screen" instead of a diagnosable failure (A139), so this logs,
 /// releases everything already allocated (`screen` included), and returns `None` instead.
+/// The third value is the HDR monitors' float captures, when any monitor was HDR.
 pub(super) unsafe fn freeze_screen_to_dc(
     screen: HDC,
     vx: i32,
@@ -53,7 +54,7 @@ pub(super) unsafe fn freeze_screen_to_dc(
     vw: i32,
     vh: i32,
     automation: bool,
-) -> Option<(HDC, HBITMAP)> {
+) -> Option<(HDC, HBITMAP, Option<HdrShot>)> {
     let (mem, bmp) = create_fullscreen_dc_pair(
         screen,
         vw,
@@ -63,13 +64,16 @@ pub(super) unsafe fn freeze_screen_to_dc(
     SelectObject(mem, HGDIOBJ(bmp.0));
     if automation {
         draw_automation_canvas(mem, vw, vh);
-    } else if !hdr_capture(mem, vx, vy, vw, vh) {
+        return Some((mem, bmp, None));
+    }
+    let hdr = hdr_capture(mem, vx, vy, vw, vh);
+    if hdr.is_none() {
         // No HDR monitor attached (or a build without the feature): the original
         // single blit, unchanged. The HDR path only engages when it has something
         // to fix.
         let _ = BitBlt(mem, 0, 0, vw, vh, Some(screen), vx, vy, SRCCOPY);
     }
-    Some((mem, bmp))
+    Some((mem, bmp, hdr))
 }
 
 /// A pre-dimmed copy of the frozen snapshot: paint blits this for the surround (no
@@ -191,6 +195,7 @@ pub(super) unsafe fn build_shot_state(
         tb_cache: Vec::new(),
         app: String::new(),
         crop_pending: None,
+        hdr: None,
     })
 }
 
@@ -278,7 +283,7 @@ pub(super) unsafe fn run_capture_inner(hinst: HINSTANCE, automation: bool, ocr_m
     // `{app}` in the file name: read before the overlay exists, so it names the user's window.
     let app = output::foreground_app();
     let screen = GetDC(None);
-    let Some((mem, bmp)) = freeze_screen_to_dc(screen, vx, vy, vw, vh, automation) else {
+    let Some((mem, bmp, hdr)) = freeze_screen_to_dc(screen, vx, vy, vw, vh, automation) else {
         return;
     };
     let (dim, dim_bmp) = build_dimmed_copy(screen, mem, vw, vh);
@@ -287,8 +292,25 @@ pub(super) unsafe fn run_capture_inner(hinst: HINSTANCE, automation: bool, ocr_m
         mem, bmp, dim, dim_bmp, vx, vy, vw, vh, automation, ocr_mode, seed_dpi,
     );
     state.app = app;
+    state.hdr = hdr;
 
     run_overlay_message_loop(hinst, automation, vx, vy, vw, vh, state);
+}
+
+/// The whole-screen HDR image the instant capture saves, when Settings saves in an HDR
+/// format (it is a float copy of every monitor: not built for nothing). Nothing to annotate,
+/// so the composed and plain pixels are the same buffer.
+fn instant_hdr_image(hdr: Option<HdrShot>, vw: i32, vh: i32, buf: &[u8]) -> Option<HdrImage> {
+    if !st2k_base::settings::shot_save_format().is_hdr() {
+        return None;
+    }
+    let full = RECT {
+        left: 0,
+        top: 0,
+        right: vw,
+        bottom: vh,
+    };
+    hdrsave::region_image(hdr.as_ref(), full, buf, buf)
 }
 
 /// Instant capture: grab the WHOLE virtual screen straight to the clipboard + a
@@ -327,7 +349,8 @@ pub unsafe fn capture_instant() {
     // HDR capture first, same as run_capture_inner's non-automation path (A017): the
     // quick-save hotkey used to always plain-BitBlt, shipping a washed-out capture on an
     // HDR display while the full editor's capture path already handled it correctly.
-    if !hdr_capture(mem, vx, vy, vw, vh) {
+    let hdr = hdr_capture(mem, vx, vy, vw, vh);
+    if hdr.is_none() {
         let _ = BitBlt(mem, 0, 0, vw, vh, Some(screen), vx, vy, SRCCOPY);
     }
 
@@ -356,7 +379,9 @@ pub unsafe fn capture_instant() {
     // The editor-less instant capture can't prompt, so it always auto-saves to the
     // effective save folder (the configured one, or the Desktop by default).
     let dir = super::super::effective_save_dir();
-    let saved = output::save_capture_to_dir(std::path::Path::new(&dir), &buf, vw, vh, &app);
+    let hdr = instant_hdr_image(hdr, vw, vh, &buf);
+    let saved =
+        output::save_capture_to_dir(std::path::Path::new(&dir), &buf, vw, vh, &app, hdr.as_ref());
 
     // Feedback — this hotkey used to be TOTALLY silent, so "worked" and "did nothing"
     // were indistinguishable. Success gets a Win+Shift+S-style split-second flash;

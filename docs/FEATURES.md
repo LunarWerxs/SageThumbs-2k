@@ -653,7 +653,11 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   hotkey** that grabs the whole screen straight to the clipboard + a saved file
   with no editor (Off by default); a **split-second screen flash confirms the capture**
   (like Win+Shift+S), and if the copy or the save failed, a small notification says
-  exactly what went wrong instead of silence. As you drag out the region, a live **`width × height`
+  exactly what went wrong instead of silence. **On an HDR monitor** the capture is taken from
+  the real high-range picture and mapped down for the editor at that monitor's own **SDR content
+  brightness**, so desktop windows come out exactly as on an SDR screen and only what is
+  brighter than them (HDR video, games) is rolled off toward the monitor's peak, keeping its
+  colour; each monitor of a mixed setup is handled on its own. As you drag out the region, a live **`width × height`
   pixel readout** follows the selection so you can size a capture precisely. In the editor,
   hold **Shift** while drawing a line or arrow to snap it to the nearest **45° angle**;
   Esc first cancels the active editor action before closing the capture, and
@@ -672,7 +676,13 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   zero that engine reads as `ø`/`Ø` comes out as `0` inside any word that has a digit in it.
 - **Screenshot files** (its own page, next to Screenshots): what a saved capture looks like.
   **Save screenshots as** PNG (the default), JPEG (with its own **quality** setting; a
-  transparent capture is laid on white) or WebP (lossless). The **Screenshot file name** is a
+  transparent capture is laid on white), WebP (lossless), or one of two **HDR formats** that
+  keep an HDR monitor's full brightness and colour instead of the 8-bit picture: **PNG HDR**
+  (16-bit, BT.2020 primaries, the PQ curve, tagged with the PNG Third Edition `cICP` chunk and
+  a `cLLI` light-level chunk) and **JPEG XR HDR** (lossless scRGB half-float, the format
+  Windows' own Game Bar saves HDR screenshots in). Annotations are laid into the HDR file at
+  the monitor's SDR white, so they look as they did in the editor; a capture with no HDR
+  monitor saves in the HDR formats too, at the standard SDR white. The **Screenshot file name** is a
   template: `{yyyy}` `{MM}` `{dd}` `{HH}` `{mm}` `{ss}` `{ms}` insert the capture's date and
   time, `{app}` the program that was in front (`Desktop` when nothing was), and `/` or `\`
   start a subfolder, created when needed. The default, `Screenshot {yyyy}-{MM}-{dd}

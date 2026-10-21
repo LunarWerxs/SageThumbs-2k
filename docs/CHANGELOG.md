@@ -11,6 +11,10 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 **TL;DR**
 
+**New**
+
+- **Screenshots save in HDR: PNG HDR and JPEG XR HDR**
+
 **Changed**
 
 - **Illustrator files with several artboards show each artboard whole**
@@ -21,10 +25,24 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **Explorer comes back after Rebuild thumbnail cache and Repair file associations**
 - **The desktop no longer flashes during setup**
 - **`st2k doctor` no longer flags .ico files by mistake**
+- **HDR screenshots keep the screen's real brightness**
 - **JPEG 2000 files with a far-off tile grid show their picture**
 
 **Everything in Unreleased**
 
+- **Screenshots save in HDR: PNG HDR and JPEG XR HDR.** Settings ▸ Screenshot files ▸ Save
+  screenshots as now offers two HDR formats that keep an HDR monitor's full brightness and
+  colour instead of the 8-bit picture: PNG HDR (16-bit, BT.2020 colours and the PQ curve,
+  tagged as the new PNG standard describes) and JPEG XR HDR (the format Windows' Game Bar
+  saves HDR screenshots in). Arrows, text and other marks keep the look they had in the editor.
+  A capture from an ordinary screen saves in these formats too. Thanks to spider623 for the
+  idea (#67).
+- **HDR screenshots keep the screen's real brightness.** On an HDR monitor, a screenshot came
+  out too bright: windows and the desktop were blown out to white and mid-tones looked faded,
+  because the capture ignored Windows' "SDR content brightness" setting. It now reads that
+  setting for each monitor, so ordinary windows come out exactly as they look, and only what is
+  brighter than them (HDR video, games) is rolled off toward the monitor's peak, keeping its
+  colour instead of turning white (#67).
 - **JPEG 2000 files with a far-off tile grid show their picture.** A JPEG 2000 file may place
   its picture and tile grid billions of pixels from the origin. SageThumbs read such a file's
   tile edges wrongly and drew it black. It now draws the same picture as the file without the

@@ -1620,6 +1620,7 @@ name = "sagethumbs2k-screenshot"
 version = "3.8.0"
 dependencies = [
  "image",
+ "png 0.18.1",
  "sagethumbs2k-actions",
  "sagethumbs2k-appkit",
  "sagethumbs2k-base",

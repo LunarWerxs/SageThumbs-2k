@@ -15,6 +15,8 @@ mod elevwarn; // warns when an elevated window makes the Space hook deaf
 mod enable;
 #[cfg(feature = "hdr-capture")]
 mod hdr;
+mod hdrsave; // the HDR save formats; builds without hdr-capture, from the 8-bit capture
+mod hdrtone; // hdr.rs's tone curve, pure, so its tests run without hdr-capture
 mod output;
 mod overlay;
 mod prefs;

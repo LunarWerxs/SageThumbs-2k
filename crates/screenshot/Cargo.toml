@@ -17,6 +17,9 @@ name = "st2k_screenshot"
 
 [dependencies]
 image = { workspace = true }
+# The PNG HDR save format's 16-bit writer (cICP/cLLI go in through `write_chunk`). Already in
+# the tree through `image` and the codecs crate, at this version.
+png = "0.18"
 windows = { workspace = true }
 # The `#[implement]` macro (the capture overlay's UI Automation providers) expands to
 # `windows_core::` paths.
@@ -32,6 +35,7 @@ st2k_preview = { package = "sagethumbs2k-preview", path = "../preview" }
 # HDR screenshots (Windows Graphics Capture + D3D11 + DXGI). APP-ONLY: these windows-rs
 # namespaces add ~900 KB to every binary that links them; the root's `hdr-capture` turns this on.
 hdr-capture = [
+    "windows/Win32_Devices_Display", # each HDR monitor's SDR white level (DisplayConfig)
     "windows/Win32_Graphics_Dxgi",
     "windows/Win32_Graphics_Dxgi_Common",
     "windows/Win32_Graphics_Direct3D",
