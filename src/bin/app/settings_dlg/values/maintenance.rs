@@ -336,6 +336,8 @@ pub(in super::super) unsafe fn repair_associations(hwnd: HWND) {
     // is written per ProgID — so re-point it at whatever owns the types NOW, or the repair
     // would silently leave the icon back on top of the badge.
     sagethumbs2k_core::typeoverlay::sync(st2k_base::settings::hide_type_overlay());
+    // Same for the ProgID-level thumbnail slots taken from Windows' own thumbnailer (#66).
+    sagethumbs2k_core::progidslot::sync(sagethumbs2k_core::progidslot::wanted());
     // The folder verb records an ABSOLUTE path to the companion EXE, so a repair after the app
     // moved (or a reinstall to a different directory) has to rewrite it or the entry silently
     // launches nothing.

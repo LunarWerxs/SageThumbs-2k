@@ -418,9 +418,9 @@ pub(crate) const AI_SHEET_PAGES: usize = 4;
 
 /// The thumbnail of an Illustrator file, by what the file actually holds:
 ///
-/// - several pages (one per artboard): the first [`AI_SHEET_PAGES`] laid out as a contact
-///   sheet, so a three-artboard file shows three artboards (issue #44), the way a comic
-///   archive shows its pages;
+/// - several pages (one per artboard): the first [`AI_SHEET_PAGES`] laid out as a sheet, each
+///   whole and outlined in its own cell, so a three-artboard file shows three artboards
+///   (issue #44) that read as separate pages;
 /// - one page that is the "saved without PDF content" placeholder: the raster thumbnail
 ///   Illustrator wrote into its private data, which is the artwork at low resolution and what
 ///   every other viewer shows for such a file (issue #45);
@@ -482,11 +482,7 @@ pub(crate) fn illustrator_answer(
 
 /// Fold pages already drawn `edge` wide into one square sheet.
 fn illustrator_sheet(pages: &[DynamicImage], edge: u32) -> Option<DynamicImage> {
-    let prepared: Vec<_> = pages
-        .iter()
-        .map(|img| crate::container::collage::prepare_for_sheet(img, edge))
-        .collect();
-    crate::container::collage::compose_prepared(&prepared, edge).map(DynamicImage::ImageRgba8)
+    crate::container::collage::compose_pages(pages, edge).map(DynamicImage::ImageRgba8)
 }
 
 /// Adobe Illustrator through the PDF tier (issues #44 and #45, 2026-09-19).
@@ -546,16 +542,12 @@ mod illustrator_tests {
         assert_eq!(img.height(), e, "a square sheet");
         // Authored as a red, a green (with a dark disc) and a blue artboard; Illustrator
         // orders the pages its own way, so the claim is "all three are on the tile", one per
-        // cell of the 3-up layout, not which cell holds which.
-        // Sample each cell's corner: every artboard carries a mark in its middle.
-        let cells = [
-            dominant(&img, e / 16, e / 16),
-            dominant(&img, e * 15 / 16, e / 16),
-            dominant(&img, e * 15 / 16, e * 15 / 16),
-        ];
-        let mut seen = cells.to_vec();
+        // cell of the 2x2 grid with the fourth empty, not which cell holds which.
+        let cells = quadrants(&img);
+        let mut seen = cells[..3].to_vec();
         seen.sort_unstable();
         assert_eq!(seen, vec!['b', 'g', 'r'], "cells: {cells:?}");
+        assert_eq!(cells[3], 't', "cells: {cells:?}");
     }
 
     #[test]
@@ -603,22 +595,36 @@ mod illustrator_tests {
         bytes
     }
 
-    fn dominant(img: &DynamicImage, x: u32, y: u32) -> char {
-        let p = img.to_rgba8().get_pixel(x, y).0;
-        if p[3] < 128 {
-            return 't';
+    /// The colour ('r', 'g' or 'b') most of a region's saturated pixels share, or 't' when it
+    /// holds none. White margins, outlines and dark marks are not counted, so the answer does
+    /// not hang on where in its cell a page sits.
+    fn colour_of(img: &image::RgbaImage, (x0, y0, x1, y1): (u32, u32, u32, u32)) -> char {
+        let mut n = [0u32; 3];
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let p = img.get_pixel(x, y).0;
+                let (hi, lo) = (p[0].max(p[1]).max(p[2]), p[0].min(p[1]).min(p[2]));
+                if p[3] >= 128 && hi - lo > 60 {
+                    n[p[..3].iter().position(|&c| c == hi).unwrap_or(2)] += 1;
+                }
+            }
         }
-        if p[0] > p[1] && p[0] > p[2] {
-            'r'
-        } else if p[1] > p[0] && p[1] > p[2] {
-            'g'
-        } else {
-            'b'
+        match n.iter().enumerate().max_by_key(|&(_, c)| c) {
+            Some((i, &c)) if c > 0 => ['r', 'g', 'b'][i],
+            _ => 't',
         }
     }
 
+    /// The colour of each quarter of a square sheet: top left, top right, bottom left, bottom
+    /// right.
+    fn quadrants(img: &DynamicImage) -> [char; 4] {
+        let (rgba, e) = (img.to_rgba8(), img.width());
+        let q = e / 2;
+        [(0, 0, q, q), (q, 0, e, q), (0, q, q, e), (q, q, e, e)].map(|r| colour_of(&rgba, r))
+    }
+
     /// Issue #44: a file with several artboards shows them all - the first pages laid out as a
-    /// contact sheet, one large cell and two stacked, rather than page one alone.
+    /// sheet, one whole page per cell, rather than page one alone.
     #[test]
     fn an_illustrator_file_with_three_artboards_shows_all_three() {
         let bytes = three_page_pdf(true);
@@ -633,11 +639,8 @@ mod illustrator_tests {
             pdf_raster_edge(Some(256)),
             "the sheet is the tier's raster edge"
         );
-        // 3-up layout: one large left column (page 1, red), two stacked right cells
-        // (page 2 green above page 3 blue).
-        assert_eq!(dominant(&img, e / 4, e / 2), 'r');
-        assert_eq!(dominant(&img, e * 3 / 4, e / 4), 'g');
-        assert_eq!(dominant(&img, e * 3 / 4, e * 3 / 4), 'b');
+        // 2x2 grid in page order: red, green, blue, and the fourth cell empty.
+        assert_eq!(quadrants(&img), ['r', 'g', 'b', 't']);
     }
 
     /// The same three pages WITHOUT Illustrator's private data are an ordinary document: page

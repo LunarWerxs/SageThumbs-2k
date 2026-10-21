@@ -11,8 +11,16 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 **TL;DR**
 
+**Changed**
+
+- **Illustrator files with several artboards show each artboard whole**
+
 **Fixed**
 
+- **The format badge and checkerboard show on every file type**
+- **Explorer comes back after Rebuild thumbnail cache and Repair file associations**
+- **The desktop no longer flashes during setup**
+- **`st2k doctor` no longer flags .ico files by mistake**
 - **JPEG 2000 files with a far-off tile grid show their picture**
 
 **Everything in Unreleased**
@@ -21,6 +29,27 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   its picture and tile grid billions of pixels from the origin. SageThumbs read such a file's
   tile edges wrongly and drew it black. It now draws the same picture as the file without the
   offset.
+- **Illustrator files with several artboards show each artboard whole.** The thumbnail of a
+  file with up to four artboards cut each artboard to fill its square and pushed them together,
+  so the artboards blended into one confusing picture and a mark in the middle of one could
+  stretch into a band. Each artboard is now drawn whole in its own cell, with a thin outline
+  round it, so the thumbnail reads as separate pages.
+- **The format badge and checkerboard show on every file type.** With the format badge or the
+  transparency checkerboard on, some types still showed Windows' plain thumbnail with neither
+  (PNG on some PCs, JPEG on others), because the file type's own entry named Windows' built-in
+  thumbnailer and Windows asks that entry first. While the badge or checkerboard is on,
+  SageThumbs now takes that entry over for your account only, and gives it back when you turn
+  both off or uninstall. `st2k doctor` says when a type is still drawn by Windows and how to fix
+  it (#66).
+- **Explorer comes back after Rebuild thumbnail cache and Repair file associations.** Now and
+  then the taskbar and desktop disappeared and stayed gone: Explorer had only half closed, so it
+  was never started again. SageThumbs now gives Explorer a few seconds, finishes closing it
+  only once its taskbar is gone, and starts it again (#68).
+- **The desktop no longer flashes during setup.** Setup and the welcome screen could both
+  restart Explorer at the same moment, so the screen flashed between black and an empty
+  desktop. A restart now waits for one already running to finish.
+- **`st2k doctor` no longer flags .ico files by mistake.** It reported a failure for .ico files
+  because of a leftover Windows entry that points at nothing and that Explorer ignores.
 
 ## 3.8.0
 

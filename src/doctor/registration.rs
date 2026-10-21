@@ -390,25 +390,13 @@ fn thumb_slot_verdict(
 /// file of that type — invisibly to `check_extensions` AND to the user, who installed us
 /// for exactly those formats and sees `check_extensions` report "Hooked by SageThumbs 2K"
 /// while nothing changes on screen.
-/// A handler whose DLL lives under the Windows directory is the OS's own (the Photos
-/// thumbnailer that `.jpg`/`.png`'s default ProgID carries, say): `register.rs` documents
-/// that one winning at the ProgID level as accepted, so it is not a competitor to report.
-fn is_windows_own_handler(clsid: &str) -> bool {
-    let Some(p) = inproc_path(clsid) else {
-        return false;
-    };
-    let lower = p.trim_start_matches('"').to_ascii_lowercase();
-    let at_boundary = |pfx: &str| {
-        lower.starts_with(pfx) && (lower.len() == pfx.len() || lower.as_bytes()[pfx.len()] == b'\\')
-    };
-    if at_boundary("%systemroot%") || at_boundary("%windir%") {
-        return true;
-    }
-    std::env::var("SystemRoot")
-        .map(|root| at_boundary(&root.to_ascii_lowercase()))
-        .unwrap_or(false)
-}
-
+///
+/// Two kinds are not competitors and are reported apart, or not at all:
+/// * Windows' own handler (the Photos thumbnailer `jpegfile` carries): `register.rs` accepts
+///   it for a plain picture, and `progidslot` takes its slot while the badge or checkerboard is
+///   on. Listed by [`report_windows_served`], a failure only while those are on (issue #66).
+/// * A CLSID registered nowhere (`icofile`'s on every Windows 11): Explorer cannot create it
+///   and moves on to our keys, so it was a false alarm in issue #66's report.
 pub(super) fn check_progid_handlers(
     r: &mut Report,
     snap: &st2k_base::settings::FormatEnabledSnapshot,
@@ -417,13 +405,18 @@ pub(super) fn check_progid_handlers(
 
     let mut total = 0usize;
     let mut examples: Vec<String> = Vec::new();
+    let mut windows_served: Vec<String> = Vec::new();
 
     for &(ext, _) in FORMATS.iter() {
         if !snap.enabled(ext) {
             continue;
         }
         total += foreign_progid_handlers_for(ext, &mut examples);
+        if let Some(progid) = windows_own_progid_for(ext) {
+            windows_served.push(format!(".{ext} ({progid})"));
+        }
     }
+    report_windows_served(r, &windows_served, crate::progidslot::wanted());
 
     if total == 0 {
         r.line(S::Ok, "Foreign ProgID handlers", "none found");
@@ -456,7 +449,8 @@ fn foreign_progid_handlers_for(ext: &str, examples: &mut Vec<String>) -> usize {
         for (kind, clsid) in [("IThumbnailProvider", thumb), ("IExtractImage", extract)] {
             let Some(clsid) = clsid else { continue };
             if clsid.eq_ignore_ascii_case(CLSID_THUMBNAIL_PROVIDER_STR)
-                || is_windows_own_handler(&clsid)
+                || crate::progidslot::is_windows_own_handler(&clsid)
+                || crate::progidslot::is_dead_handler(&clsid)
             {
                 continue;
             }
@@ -474,6 +468,49 @@ fn foreign_progid_handlers_for(ext: &str, examples: &mut Vec<String>) -> usize {
         }
     }
     total
+}
+
+/// The ProgID `.ext` actually resolves through, when its thumbnail slot names Windows' own
+/// handler: every such file is drawn by Windows, not us. Only the effective ProgID counts:
+/// measured 2026-10-21, a `.jpg` whose `UserChoice` has no handler reaches us even though the
+/// class default `jpegfile` carries the Photos thumbnailer.
+fn windows_own_progid_for(ext: &str) -> Option<String> {
+    let progid = crate::typeoverlay::effective_progid(ext)?;
+    crate::progidslot::slot_handler(&progid)
+        .is_some_and(|h| crate::progidslot::is_windows_own_handler(&h))
+        .then_some(progid)
+}
+
+/// The types Windows' own thumbnailer draws instead of us. Information while the badge and
+/// checkerboard are off (the tile looks the same either way); a failure while either is on,
+/// because then those files visibly lack them (issue #66) and `progidslot` should have taken
+/// the slot.
+fn report_windows_served(r: &mut Report, served: &[String], wanted: bool) {
+    if served.is_empty() {
+        return;
+    }
+    const SHOWN: usize = 8;
+    let mut list = served.iter().take(SHOWN).cloned().collect::<Vec<_>>().join(", ");
+    if served.len() > SHOWN {
+        list.push_str(&format!(" and {} more", served.len() - SHOWN));
+    }
+    if wanted {
+        r.fail_with_fix(
+            "Windows' own thumbnailer",
+            &format!("still draws {list}: no format badge or checkerboard on those files"),
+            "Settings -> Advanced -> 'Repair file associations' hands these types to \
+             SageThumbs 2K while the format badge or checkerboard is on.",
+        );
+    } else {
+        r.line(
+            S::Info,
+            "Windows' own thumbnailer",
+            &format!(
+                "draws {list}; SageThumbs 2K takes these over while the format badge or \
+                 checkerboard is on"
+            ),
+        );
+    }
 }
 
 #[cfg(test)]

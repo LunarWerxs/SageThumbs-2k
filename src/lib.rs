@@ -29,6 +29,10 @@ pub mod foldermenu;
 pub mod mcp;
 pub mod prebuild;
 mod previewhandler;
+// The ProgID-level thumbnail slot Windows' own thumbnailer holds, taken while our badge or
+// checkerboard is on (issue #66).
+#[doc(hidden)]
+pub mod progidslot;
 // The Details-pane property handler (`IPropertyStore`), one of the COM surfaces.
 mod propstore;
 pub mod register;

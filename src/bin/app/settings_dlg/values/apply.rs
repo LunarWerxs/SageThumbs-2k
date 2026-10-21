@@ -101,6 +101,7 @@ pub(super) unsafe fn apply_thumbnail_and_badge_settings(hwnd: HWND) -> bool {
     // the value we just stored and never fires.
     let mark_was = settings::corner_mark();
     let overlay_was = settings::hide_type_overlay();
+    let slot_was = sagethumbs2k_core::progidslot::wanted();
     let badge_changed = mark_now != mark_was
         || icon_now != settings::format_badge_icon()
         || size_now != settings::badge_size()
@@ -111,15 +112,27 @@ pub(super) unsafe fn apply_thumbnail_and_badge_settings(hwnd: HWND) -> bool {
     let _ = note(settings::set_badge_size(size_now));
     let _ = note(settings::set_thumb_checker(checker_now));
     let _ = note(settings::set_prefer_cover_art(cover_now));
-    // The corner mark's OTHER half. Explorer draws its own overlay on top of what it cached,
-    // so suppressing it is not a bitmap change and needs no purge — but it DOES need the
-    // per-ProgID registry written and the shell told, which `typeoverlay::sync` does for every
-    // hooked format. Read AFTER the write, so this compares against the value that now stands.
+    sync_corner_registry(overlay_was, slot_was);
+    badge_changed
+}
+
+/// The per-ProgID registry halves of the corner mark and checkerboard, re-synced only when the
+/// value that now stands differs from `overlay_was` / `slot_was` (read before the writes).
+fn sync_corner_registry(overlay_was: bool, slot_was: bool) {
+    // Explorer draws its own overlay on top of what it cached, so suppressing it is not a
+    // bitmap change and needs no purge — but it DOES need the per-ProgID registry written and
+    // the shell told, which `typeoverlay::sync` does for every hooked format.
     let overlay_now = settings::hide_type_overlay();
     if overlay_now != overlay_was {
         sagethumbs2k_core::typeoverlay::sync(overlay_now);
     }
-    badge_changed
+    // Our badge and checkerboard only reach a type Windows' own thumbnailer serves at the
+    // ProgID level once that slot is ours (issue #66). Both are bitmap changes, so the purge
+    // `badge_changed` triggers also makes Explorer re-read the slot.
+    let slot_now = sagethumbs2k_core::progidslot::wanted();
+    if slot_now != slot_was {
+        sagethumbs2k_core::progidslot::sync(slot_now);
+    }
 }
 
 /// The remaining simple flag/dword toggles: folder prebuild verb, menu enable flags,

@@ -503,6 +503,9 @@ unsafe fn apply_persona(hwnd: HWND) {
     if checked(hwnd, ID_P_BADGE) {
         let _ = s::set_corner_mark(s::CornerMark::Badge);
         sagethumbs2k_core::typeoverlay::sync(true);
+        // A type Windows' own thumbnailer serves at the ProgID level never reaches us, so it
+        // would get no badge (issue #66).
+        sagethumbs2k_core::progidslot::sync(true);
         // Detached: the Explorer restart takes 3-33 s, and run inline it froze this window
         // on "Get started" for all of it.
         crate::modes::detach_rebuild_thumbnail_cache();

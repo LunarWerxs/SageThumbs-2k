@@ -1,6 +1,7 @@
 //! Contact-sheet compositor: fold 2-4 decoded archive-preview images into one
 //! square tile, so a multi-page container (CBZ/CB7/CBR and similar) can show
-//! more than its single cover in Explorer. Speed over fidelity — this runs
+//! more than its single cover in Explorer, and an Illustrator file its artboards
+//! ([`compose_pages`]). Speed over fidelity — this runs
 //! against the thumbnail path, so filtering is cheap (`Triangle`, not
 //! Lanczos3) and every dimension is bounds-checked (no panics on untrusted
 //! input; the crate builds `panic = "abort"` inside Explorer).
@@ -182,6 +183,69 @@ pub fn compose_prepared(images: &[PreparedSheetImage], edge: u32) -> Option<Rgba
             }
         })
     })
+}
+
+/// Outline round each page of a [`compose_pages`] sheet, so a white page still reads as a page
+/// on a white folder, and a dark one on a dark folder.
+const PAGE_FRAME: Rgba<u8> = Rgba([150, 150, 150, 255]);
+
+/// Lay 2-4 pages (an Illustrator file's artboards) out as a square sheet of `edge` x `edge`:
+/// each page whole, never cropped, shrunk into its own cell and outlined, so the sheet reads as
+/// separate pages and not as one picture (a cover crop cut an artboard's mark into a band and
+/// butted the pages into a flag). Two wide pages stack; two others sit side by side; three or
+/// four take a 2x2 grid. `None` for fewer than 2 pages.
+pub fn compose_pages(pages: &[DynamicImage], edge: u32) -> Option<RgbaImage> {
+    if pages.len() < 2 {
+        return None;
+    }
+    let pages = &pages[..pages.len().min(4)];
+    let edge = edge.clamp(MIN_EDGE, MAX_EDGE);
+    let mut out = RgbaImage::from_pixel(edge, edge, Rgba([0, 0, 0, 0]));
+    for (&(x, y, w, h), page) in page_layout(pages, edge).iter().zip(pages) {
+        let cell = framed_page(page, w, h);
+        image::imageops::overlay(&mut out, &cell, i64::from(x), i64::from(y));
+    }
+    Some(out)
+}
+
+/// Cell rects for [`compose_pages`]: full-width rows for two wide pages, else the grid
+/// [`layout`] gives two or four pages (three leave the fourth cell empty).
+fn page_layout(pages: &[DynamicImage], edge: u32) -> Vec<(u32, u32, u32, u32)> {
+    match pages.len() {
+        2 if pages.iter().all(|p| p.width() > p.height()) => {
+            let (top, bottom) = split(edge);
+            vec![(0, 0, edge, top), (0, top + GUTTER, edge, bottom)]
+        }
+        2 => layout(2, edge),
+        _ => layout(4, edge),
+    }
+}
+
+/// One page shrunk whole into a `w` x `h` cell, centred, with a one-pixel [`PAGE_FRAME`] round
+/// it.
+fn framed_page(page: &DynamicImage, w: u32, h: u32) -> RgbaImage {
+    let mut cell = RgbaImage::from_pixel(w, h, Rgba([0, 0, 0, 0]));
+    let Some((sw, sh)) = nonzero_dims(page).filter(|_| w > 2 && h > 2) else {
+        return cell;
+    };
+    let (iw, ih) = (w - 2, h - 2);
+    let scale = (iw as f32 / sw as f32)
+        .min(ih as f32 / sh as f32)
+        .min(MAX_UPSCALE);
+    let new_w = ((sw as f32 * scale).round() as u32).clamp(1, iw);
+    let new_h = ((sh as f32 * scale).round() as u32).clamp(1, ih);
+    let (ox, oy) = ((iw - new_w) / 2, (ih - new_h) / 2);
+    for x in ox..ox + new_w + 2 {
+        cell.put_pixel(x, oy, PAGE_FRAME);
+        cell.put_pixel(x, oy + new_h + 1, PAGE_FRAME);
+    }
+    for y in oy..oy + new_h + 2 {
+        cell.put_pixel(ox, y, PAGE_FRAME);
+        cell.put_pixel(ox + new_w + 1, y, PAGE_FRAME);
+    }
+    let scaled = image::imageops::resize(page, new_w, new_h, FilterType::Triangle);
+    image::imageops::overlay(&mut cell, &scaled, i64::from(ox + 1), i64::from(oy + 1));
+    cell
 }
 
 /// Center-crop and resize without applying the native-size upscale decision.
@@ -413,6 +477,29 @@ mod tests {
         assert!(matches!(tall.mode, PreparedMode::Cover));
         assert_eq!(tall.image.dimensions(), (128, 256));
         assert!(tall.alternate_square.is_none());
+    }
+
+    /// The Illustrator survey's "very confusing" sheet: a square artboard in a tall cell lost
+    /// its sides to the cover crop. Each page must show whole, inside its own outline.
+    #[test]
+    fn pages_show_whole_inside_an_outline() {
+        // A white page with blue bands down both sides: a crop to a tall cell drops both.
+        let mut page = RgbaImage::from_pixel(200, 200, Rgba([255, 255, 255, 255]));
+        for y in 0..200 {
+            for x in (0..10).chain(190..200) {
+                page.put_pixel(x, y, Rgba([0, 0, 255, 255]));
+            }
+        }
+        let page = DynamicImage::ImageRgba8(page);
+        let sheet = compose_pages(&[page.clone(), page], 100).expect("two pages compose");
+        let row: Vec<_> = (0..49).map(|x| sheet.get_pixel(x, 50).0).collect();
+        let blue = |p: &&[u8; 4]| p[2] > 200 && p[0] < 100;
+        let first = row.iter().position(|p| p[3] > 0).expect("the page is in its cell");
+        assert_eq!(row[first], PAGE_FRAME.0, "the page starts at its outline");
+        assert!(blue(&&row[first + 1]), "the left band survives");
+        let last = row.iter().rposition(|p| p[3] > 0).expect("page");
+        assert_eq!(row[last], PAGE_FRAME.0, "the page ends at its outline");
+        assert!(blue(&&row[last - 1]), "the right band survives");
     }
 
     #[test]

@@ -158,7 +158,7 @@ pub(crate) fn progids_for(ext: &str) -> Vec<String> {
 /// The ONE ProgID Explorer draws the overlay from: the `UserChoice` when its key exists,
 /// otherwise the class default. [`progids_for`] lists both because a suppression has to
 /// land on both; a restore only makes sense on the one that is actually consulted.
-fn effective_progid(ext: &str) -> Option<String> {
+pub(crate) fn effective_progid(ext: &str) -> Option<String> {
     progids_for(ext)
         .into_iter()
         .find(|p| CLASSES_ROOT.open(p).is_ok())

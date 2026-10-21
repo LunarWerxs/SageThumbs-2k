@@ -21,7 +21,7 @@
 
 use super::*;
 
-use crate::container::collage::{compose_prepared, prepare_for_sheet};
+use crate::container::collage::{compose_pages, compose_prepared, prepare_for_sheet};
 use crate::decode::{reduce_to_fit, thumbnail_from_image, thumbnail_from_own_picture};
 use crate::video::apply_display_rotation;
 use image::{DynamicImage, ImageBuffer, Pixel};
@@ -327,30 +327,38 @@ fn check_rotation(c: &Case) -> Result<(), String> {
     Ok(())
 }
 
-/// The archive contact sheet, by the path `thumbnail_from_covers` takes (`prepare_for_sheet`
-/// then `compose_prepared`): two to four images of any shape make one square sheet. It reads
-/// the same bytes its own way, so one input also describes a set of covers.
+/// The contact sheets, by the paths `thumbnail_from_covers` (`prepare_for_sheet` then
+/// `compose_prepared`) and the Illustrator tier (`compose_pages`) take: two to four images of
+/// any shape make one square sheet. It reads the same bytes its own way, so one input also
+/// describes a set of covers.
 fn check_sheet(bytes: &[u8]) -> Result<(), String> {
     let mut s = ByteStream::new(bytes);
     let count = 2 + usize::from(s.u8() % 3);
     let edge = 1 + u32::from(s.u16()) % MAX_SHEET_EDGE;
-    let prepared: Vec<_> = (0..count)
+    let images: Vec<_> = (0..count)
         .map(|_| {
             let shape = read_shape(&mut s, MAX_PIXELS / 4);
-            prepare_for_sheet(&build_image(&mut s, &shape), edge)
+            build_image(&mut s, &shape)
         })
         .collect();
-    let Some(sheet) = compose_prepared(&prepared, edge) else {
-        return Ok(());
-    };
-    if sheet.width() == sheet.height() {
-        return Ok(());
+    let prepared: Vec<_> = images
+        .iter()
+        .map(|img| prepare_for_sheet(img, edge))
+        .collect();
+    let sheets = [
+        ("compose_prepared", compose_prepared(&prepared, edge)),
+        ("compose_pages", compose_pages(&images, edge)),
+    ];
+    for (what, sheet) in sheets {
+        if let Some(sheet) = sheet.filter(|sheet| sheet.width() != sheet.height()) {
+            return Err(format!(
+                "{what}: {count} images at edge {edge} made a {}x{} sheet",
+                sheet.width(),
+                sheet.height()
+            ));
+        }
     }
-    Err(format!(
-        "compose_prepared: {count} covers at edge {edge} made a {}x{} sheet",
-        sheet.width(),
-        sheet.height()
-    ))
+    Ok(())
 }
 
 /// Every check, in pipeline order.

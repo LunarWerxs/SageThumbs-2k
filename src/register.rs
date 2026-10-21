@@ -19,10 +19,12 @@
 //! then `SystemFileAssociations`, then the bare-extension key. We register the
 //! last two (non-invasively). For formats whose default ProgID already carries a
 //! thumbnail handler (e.g. .jpg/.png via the Photos app), that handler still
-//! wins. That's acceptable: SageThumbs' value is the formats Windows can't
-//! thumbnail at all, where the bare/association key wins. The sparse-package
-//! `fileTypeAssociation/ThumbnailHandler` path would sidestep this precedence
-//! entirely if it's ever needed.
+//! wins. That's acceptable for a plain picture: SageThumbs' value is the formats
+//! Windows can't thumbnail at all, where the bare/association key wins. It is NOT
+//! acceptable once the user asks for a tile only we draw (the format badge or the
+//! checkerboard, issue #66): then [`crate::progidslot`] takes a slot holding Windows'
+//! own handler for this user, and gives it back when they turn those off. Another
+//! program's ProgID-level handler is never overridden; `st2k doctor` names it.
 
 use windows::core::{Error, Result, HRESULT};
 use windows::Win32::Foundation::E_FAIL;
@@ -280,6 +282,7 @@ fn sweep_format_hooks(classes: &Key, fmt: &FormatEnabledSnapshot) -> bool {
 pub fn sync_user_shell() -> Result<()> {
     crate::foldermenu::sync(settings::folder_prebuild_verb());
     crate::typeoverlay::sync(settings::hide_type_overlay());
+    crate::progidslot::sync(crate::progidslot::wanted());
     notify_shell();
     Ok(())
 }
@@ -291,6 +294,7 @@ pub fn sync_user_shell() -> Result<()> {
 /// another program's icon.
 pub fn remove_user_shell() {
     crate::typeoverlay::remove_all();
+    crate::progidslot::remove_all();
     crate::foldermenu::remove_all();
     cloud::remove_relink_task();
     notify_shell();
@@ -505,6 +509,7 @@ fn remove_if_ours_leaf(classes: &Key, path: &str) -> bool {
 pub fn unregister() -> Result<()> {
     let classes = machine_classes()?;
     crate::typeoverlay::remove_all();
+    crate::progidslot::remove_all();
     crate::foldermenu::remove_all();
     // Order matters: remove the property-store VALUES on `SystemFileAssociations\.<ext>` FIRST,
     // so the subsequent thumbnail/preview `*_and_prune` calls find that key empty and prune it —
