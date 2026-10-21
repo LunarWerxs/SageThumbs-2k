@@ -103,6 +103,16 @@ foreach ($k in $userStateKeys.Values) {
     $i++
 }
 $global:LASTEXITCODE = 0
+# An exported key's lines, without the `__test_*` subkeys tests write their scratch settings
+# to (tests\first_run_shot.rs): those belong to whichever `cargo test` is running, often
+# another session's or a push preflight's, and come and go mid-run.
+function Get-UserStateLines([string]$file) {
+    $skip = $false
+    foreach ($line in Get-Content -LiteralPath $file -ErrorAction SilentlyContinue) {
+        if ($line.StartsWith('[')) { $skip = $line -like '*\__test_*' }
+        if (-not $skip) { $line }
+    }
+}
 function Test-UserStateUnchanged {
     $changed = @()
     $i = 0
@@ -112,7 +122,7 @@ function Test-UserStateUnchanged {
         $i++
         if (-not (Test-Path -LiteralPath $before)) { continue }
         & reg.exe export $userStateKeys[$name] $after /y *> $null
-        if (Compare-Object @(Get-Content -LiteralPath $before) @(Get-Content -LiteralPath $after -ErrorAction SilentlyContinue)) {
+        if (Compare-Object @(Get-UserStateLines $before) @(Get-UserStateLines $after)) {
             $changed += $name
             & reg.exe import $before *> $null
         }

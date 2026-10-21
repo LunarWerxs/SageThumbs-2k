@@ -150,6 +150,17 @@ fn a_picture_too_small_for_the_mark_is_marked_on_the_tile() {
         BadgeSize::Medium,
     );
     assert_eq!((tw, th, px.len()), (10, 12, 480));
+    // An empty picture comes back as it is, never a panic inside Explorer's thumbnail host.
+    let (px, tw, th) = mark_tile(
+        Vec::new(),
+        0,
+        12,
+        256,
+        "a.psd",
+        BadgeStyle::Icon,
+        BadgeSize::Medium,
+    );
+    assert_eq!((tw, th, px.len()), (0, 12, 0));
 }
 
 /// The badge must land in the BOTTOM-RIGHT and leave the rest of the picture alone —

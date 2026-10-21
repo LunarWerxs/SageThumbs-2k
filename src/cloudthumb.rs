@@ -30,7 +30,8 @@ use windows::Win32::UI::Shell::PropertiesSystem::{IInitializeWithFile, IInitiali
 use windows::Win32::UI::Shell::{
     AssocQueryStringW, IInitializeWithItem, IInitializeWithItem_Impl, IShellItem,
     IThumbnailProvider, IThumbnailProvider_Impl, SHCreateStreamOnFileEx, ASSOCF_INIT_DEFAULTTOSTAR,
-    ASSOCSTR_SHELLEXTENSION, SIGDN_FILESYSPATH, WTSAT_ARGB, WTSAT_UNKNOWN, WTS_ALPHATYPE,
+    ASSOCSTR_SHELLEXTENSION, SIGDN_FILESYSPATH, WTSAT_ARGB, WTSAT_RGB, WTSAT_UNKNOWN,
+    WTS_ALPHATYPE,
 };
 use windows_implement::implement;
 
@@ -228,7 +229,12 @@ unsafe fn with_our_mark(
     let (Some(name), true) = (name, cfg.format_badge) else {
         return t;
     };
-    let Some((rgba, w, h)) = dib::read_rgba(t.0, t.1 == WTSAT_ARGB) else {
+    let premultiplied = match t.1 {
+        WTSAT_ARGB => Some(true),
+        WTSAT_RGB => Some(false),
+        _ => None,
+    };
+    let Some((rgba, w, h)) = dib::read_rgba(t.0, premultiplied) else {
         return t;
     };
     let (rgba, w, h) =

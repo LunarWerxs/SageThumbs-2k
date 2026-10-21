@@ -180,6 +180,10 @@ const LONG_TEXT_LOCALES: [&str; 5] = ["fr", "de", "ru", "fil", "ja"];
 fn shot_locale(case: &str, lang: &str, dpi: u32, portable: bool) -> Vec<u8> {
     let root = scratch_reg_root(case);
     let dir = scratch(case);
+    let _cleanup = Cleanup {
+        root: root.clone(),
+        dir: dir.clone(),
+    };
     let ini = dir.join("SageThumbs2K.ini");
     if portable {
         std::fs::write(&ini, format!("[Settings]\nLang={lang}\n"))
@@ -214,10 +218,22 @@ fn shot_locale(case: &str, lang: &str, dpi: u32, portable: bool) -> Vec<u8> {
     );
     let bytes = std::fs::read(&out).unwrap_or_else(|e| panic!("{case} wrote no PNG: {e}"));
     assert!(!bytes.is_empty(), "{case} wrote an empty PNG");
-
-    let _ = CURRENT_USER.remove_tree(&root);
-    let _ = std::fs::remove_dir_all(&dir);
     bytes
+}
+
+/// A case's scratch key and folder, removed on the way out however the case ends: a failed
+/// assert unwinds past any cleanup written after it, and the key it left sits in the
+/// developer's real `Software\SageThumbs2K`.
+struct Cleanup {
+    root: String,
+    dir: PathBuf,
+}
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = CURRENT_USER.remove_tree(&self.root);
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
 }
 
 /// Both shapes of the welcome window render in every long-text locale at both 96 and 192

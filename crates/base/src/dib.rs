@@ -75,14 +75,16 @@ pub unsafe fn create_premultiplied_dib(width: i32, height: i32, rgba: &[u8]) -> 
 
 /// The pixels of `hbmp` as straight RGBA8, top row first, with its width and height: the
 /// inverse of [`create_premultiplied_dib`], for a bitmap another thumbnail provider returned.
-/// `premultiplied` is how to read the alpha byte: a `WTSAT_ARGB` bitmap carries colour
-/// premultiplied by it, anything else is opaque whatever the byte holds. `None` when GDI
-/// cannot read the bitmap.
+/// `premultiplied` is how to read the alpha byte, from the provider's `WTS_ALPHATYPE`:
+/// `Some(true)` for `WTSAT_ARGB` (colour premultiplied by it), `Some(false)` for `WTSAT_RGB`
+/// (opaque whatever the byte holds), and `None` for `WTSAT_UNKNOWN`, which the shell detects
+/// itself: premultiplied when any alpha byte is non-zero, opaque when every one is zero.
+/// `None` when GDI cannot read the bitmap.
 ///
 /// # Safety
 ///
 /// `hbmp` must be a valid bitmap that is not selected into a device context. It is only read.
-pub unsafe fn read_rgba(hbmp: HBITMAP, premultiplied: bool) -> Option<(Vec<u8>, u32, u32)> {
+pub unsafe fn read_rgba(hbmp: HBITMAP, premultiplied: Option<bool>) -> Option<(Vec<u8>, u32, u32)> {
     let mut bm = BITMAP::default();
     let got = GetObjectW(
         hbmp.into(),
@@ -109,6 +111,8 @@ pub unsafe fn read_rgba(hbmp: HBITMAP, premultiplied: bool) -> Option<(Vec<u8>, 
     if rows != h {
         return None;
     }
+    let premultiplied =
+        premultiplied.unwrap_or_else(|| buf.as_chunks::<4>().0.iter().any(|p| p[3] != 0));
     for px in buf.as_chunks_mut::<4>().0.iter_mut() {
         let a = if premultiplied { px[3] } else { 255 };
         let un = |c: u8| match a {
@@ -238,9 +242,15 @@ mod tests {
         ];
         unsafe {
             let hbmp = create_premultiplied_dib(2, 2, &rgba).expect("dib");
-            let as_argb = read_rgba(hbmp, true);
-            let as_opaque = read_rgba(hbmp, false);
+            let as_argb = read_rgba(hbmp, Some(true));
+            let as_opaque = read_rgba(hbmp, Some(false));
+            // WTSAT_UNKNOWN: alpha bytes are set, so it reads as premultiplied, as WTSAT_ARGB.
+            let as_unknown = read_rgba(hbmp, None);
             let _ = windows::Win32::Graphics::Gdi::DeleteObject(hbmp.into());
+            let zeros = create_premultiplied_dib(1, 1, &[10, 20, 30, 0]).expect("dib");
+            let unknown_all_zero = read_rgba(zeros, None);
+            let _ = windows::Win32::Graphics::Gdi::DeleteObject(zeros.into());
+            assert_eq!(as_unknown, as_argb, "WTSAT_UNKNOWN with alpha set");
             let (px, w, h) = as_argb.expect("read back");
             assert_eq!((w, h), (2, 2));
             let pairs = px.as_chunks::<4>().0.iter().zip(rgba.as_chunks::<4>().0);
@@ -258,6 +268,9 @@ mod tests {
             // An opaque provider's bitmap: the alpha byte is ignored, every pixel is solid.
             let opaque = as_opaque.expect("read back").0;
             assert!(opaque.as_chunks::<4>().0.iter().all(|p| p[3] == 255));
+            // WTSAT_UNKNOWN with every alpha byte zero: an opaque picture, not an invisible one.
+            let zeros = unknown_all_zero.expect("read back").0;
+            assert_eq!(zeros[3], 255, "WTSAT_UNKNOWN with no alpha");
         }
     }
 

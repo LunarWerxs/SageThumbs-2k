@@ -198,11 +198,11 @@ pub fn mark_tile(
 }
 
 /// `rgba` (`w` x `h`) in the middle of a transparent `side` x `side` square, or `None` when
-/// the buffer is shorter than its size says or does not fit.
+/// the picture is empty, the buffer is shorter than its size says, or it does not fit.
 fn centred_on_square(rgba: &[u8], w: u32, h: u32, side: u32) -> Option<Vec<u8>> {
     let (w, h, side) = (w as usize, h as usize, side as usize);
     let row = w.checked_mul(4)?;
-    if w > side || h > side || rgba.len() < row.checked_mul(h)? {
+    if w == 0 || h == 0 || w > side || h > side || rgba.len() < row.checked_mul(h)? {
         return None;
     }
     let mut out = vec![0u8; side.checked_mul(side)?.checked_mul(4)?];

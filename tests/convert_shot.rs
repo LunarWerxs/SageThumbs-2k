@@ -47,12 +47,16 @@ fn scratch_reg_root(case: &str) -> String {
 /// key and `dpi` forced via `--dpi`.
 fn shot(case: &str, lang: &str, dpi: u32) -> Vec<u8> {
     let root = scratch_reg_root(case);
+    let dir = scratch(case);
+    let _cleanup = Cleanup {
+        root: root.clone(),
+        dir: dir.clone(),
+    };
     CURRENT_USER
         .create(&root)
         .and_then(|k| k.set_string("Lang", lang))
         .unwrap_or_else(|e| panic!("{case}: failed to write scratch Lang={lang}: {e}"));
 
-    let dir = scratch(case);
     let out = dir.join(format!("{case}.png"));
     let _ = std::fs::remove_file(&out);
 
@@ -72,10 +76,22 @@ fn shot(case: &str, lang: &str, dpi: u32) -> Vec<u8> {
     );
     let bytes = std::fs::read(&out).unwrap_or_else(|e| panic!("{case} wrote no PNG: {e}"));
     assert!(!bytes.is_empty(), "{case} wrote an empty PNG");
-
-    let _ = CURRENT_USER.remove_tree(&root);
-    let _ = std::fs::remove_dir_all(&dir);
     bytes
+}
+
+/// A case's scratch key and folder, removed on the way out however the case ends: a failed
+/// assert unwinds past any cleanup written after it, and the key it left sits in the
+/// developer's real `Software\SageThumbs2K`.
+struct Cleanup {
+    root: String,
+    dir: PathBuf,
+}
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = CURRENT_USER.remove_tree(&self.root);
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
 }
 
 /// The locales this file sweeps: the four the finding names as long-running, plus one CJK
