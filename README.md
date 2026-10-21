@@ -183,6 +183,8 @@ Prefer nothing touching the registry outside your own account, or can't run an i
 
 The three ❌ rows all need machine-wide registration, which is exactly what the portable zip is built to avoid. If you want those too, use the installer.
 
+A portable copy never sets itself to start with Windows, since that would outlive its folder. To have its tray helper (screenshot hotkeys, Quick preview's Space key) start when you sign in, put a shortcut in your Startup folder (`shell:startup`) whose target ends in `--screenshot-daemon`, for example `"D:\Apps\SageThumbs2K\SageThumbs2K.exe" --screenshot-daemon`. Without that argument the shortcut opens Settings. Thumbnails need nothing running.
+
 ---
 
 ## 🦀 How it works
