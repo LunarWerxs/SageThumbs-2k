@@ -494,7 +494,10 @@ mod tests {
         let sheet = compose_pages(&[page.clone(), page], 100).expect("two pages compose");
         let row: Vec<_> = (0..49).map(|x| sheet.get_pixel(x, 50).0).collect();
         let blue = |p: &&[u8; 4]| p[2] > 200 && p[0] < 100;
-        let first = row.iter().position(|p| p[3] > 0).expect("the page is in its cell");
+        let first = row
+            .iter()
+            .position(|p| p[3] > 0)
+            .expect("the page is in its cell");
         assert_eq!(row[first], PAGE_FRAME.0, "the page starts at its outline");
         assert!(blue(&&row[first + 1]), "the left band survives");
         let last = row.iter().rposition(|p| p[3] > 0).expect("page");

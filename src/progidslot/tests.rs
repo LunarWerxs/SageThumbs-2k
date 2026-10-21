@@ -48,13 +48,25 @@ fn sync_takes_only_windows_own_slots_and_gives_them_back_when_off() {
     };
     let windows_own = |c: &str| c.eq_ignore_ascii_case(PHOTOS);
 
-    assert_eq!(sync_into(&classes, true, &progids, handler_of, windows_own), 1);
-    assert_eq!(slot(&classes, "St2k.Photo").as_deref(), Some(CLSID_THUMBNAIL_PROVIDER_STR));
+    assert_eq!(
+        sync_into(&classes, true, &progids, handler_of, windows_own),
+        1
+    );
+    assert_eq!(
+        slot(&classes, "St2k.Photo").as_deref(),
+        Some(CLSID_THUMBNAIL_PROVIDER_STR)
+    );
     for untouched in ["St2k.Other", "St2k.Ours", "St2k.Bare"] {
-        assert!(classes.open(untouched).is_err(), "{untouched} must not be written");
+        assert!(
+            classes.open(untouched).is_err(),
+            "{untouched} must not be written"
+        );
     }
 
-    assert_eq!(sync_into(&classes, false, &progids, handler_of, windows_own), 0);
+    assert_eq!(
+        sync_into(&classes, false, &progids, handler_of, windows_own),
+        0
+    );
     assert!(
         classes.open("St2k.Photo").is_err(),
         "a ProgID key that only held our slot must go with it"
@@ -79,7 +91,10 @@ fn a_users_own_slot_and_their_other_values_survive() {
     drop(shared);
     assert!(take_slot(&classes, "St2k.Shared"));
     give_back_all(&classes);
-    assert!(slot(&classes, "St2k.Shared").is_none(), "our slot is given back");
+    assert!(
+        slot(&classes, "St2k.Shared").is_none(),
+        "our slot is given back"
+    );
     assert!(
         classes
             .open("St2k.Shared")

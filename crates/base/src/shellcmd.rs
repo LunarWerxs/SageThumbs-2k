@@ -463,9 +463,15 @@ mod tests {
         let path = dir.join("restart.lock");
         let short = std::time::Duration::from_millis(300);
         let first = lock_file(&path, short).expect("the first restart takes the lock");
-        assert!(lock_file(&path, short).is_none(), "a second must not get in");
+        assert!(
+            lock_file(&path, short).is_none(),
+            "a second must not get in"
+        );
         drop(first);
-        assert!(lock_file(&path, short).is_some(), "free once the first ends");
+        assert!(
+            lock_file(&path, short).is_some(),
+            "free once the first ends"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

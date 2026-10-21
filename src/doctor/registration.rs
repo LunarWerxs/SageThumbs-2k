@@ -490,7 +490,12 @@ fn report_windows_served(r: &mut Report, served: &[String], wanted: bool) {
         return;
     }
     const SHOWN: usize = 8;
-    let mut list = served.iter().take(SHOWN).cloned().collect::<Vec<_>>().join(", ");
+    let mut list = served
+        .iter()
+        .take(SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
     if served.len() > SHOWN {
         list.push_str(&format!(" and {} more", served.len() - SHOWN));
     }

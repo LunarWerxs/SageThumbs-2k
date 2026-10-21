@@ -87,7 +87,9 @@ fn is_under_windows_dir(dll: &str, root: &str) -> bool {
             && lower.starts_with(pfx)
             && (lower.len() == pfx.len() || lower.as_bytes()[pfx.len()] == b'\\')
     };
-    at_boundary("%systemroot%") || at_boundary("%windir%") || at_boundary(&root.to_ascii_lowercase())
+    at_boundary("%systemroot%")
+        || at_boundary("%windir%")
+        || at_boundary(&root.to_ascii_lowercase())
 }
 
 /// Whether `clsid` names no COM class at all: no `CLSID` key and no packaged-COM entry.
@@ -213,7 +215,13 @@ pub fn sync(take: bool) {
     // Read the ProgIDs before giving anything back: the list comes from associations, which
     // our slot values do not change.
     let progids = enabled_progids();
-    let taken = sync_into(&classes, take, &progids, slot_handler, is_windows_own_handler);
+    let taken = sync_into(
+        &classes,
+        take,
+        &progids,
+        slot_handler,
+        is_windows_own_handler,
+    );
     if taken > 0 {
         st2k_base::safety::log(&format!(
             "progidslot: took {taken} ProgID thumbnail slot(s) from Windows' own thumbnailer"
