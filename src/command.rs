@@ -403,13 +403,10 @@ impl IExplorerCommand_Impl for ExplorerCommand_Impl {
     }
     fn EnumSubCommands(&self) -> Result<IEnumExplorerCommand> {
         safety::guard_val(|| {
-            // NOTE: the "Quick verbs on the main menu" Setting (`MenuQuickVerbs`) is NOT honored
-            // here — and can't be. IExplorerCommand owns only its own single flyout; it has no way
-            // to add sibling items to Explorer's main context menu the way the classic
-            // QueryContextMenu handler does (`contextmenu.rs` §2). Surfacing them would mean
-            // declaring extra top-level verbs in the AppxManifest (separate coclasses), a larger
-            // change. The classic menu honors the toggle; on stock Win11 these verbs live one level
-            // in, inside this flyout.
+            // The "Quick actions" Setting (`MenuQuickVerbs`) puts Convert, Resize and Rotate on
+            // the main menu as their own packaged verbs (`QUICK_VERBS`), so with it on this flyout
+            // leaves them out, like the classic submenu does. Their gate is this flyout's gate
+            // plus the toggle, so wherever the flyout copy would show, the main-menu one does.
             //
             // One snapshot of the visibility subkey for this enumeration (instead of
             // a key-open per item).
@@ -435,7 +432,11 @@ impl IExplorerCommand_Impl for ExplorerCommand_Impl {
                 // also applies to the modern flyout, matching the classic handler. Leaf indices
                 // aren't used here (IExplorerCommand dispatches the action directly), so the `_`
                 // start-index is discarded.
-                top_level_commands(verbs::ordered_top_level(), &vis, false, gate)
+                let mut top = verbs::ordered_top_level();
+                if gate.quick_verbs {
+                    top.retain(|(it, _)| !verbs::QUICK_KEYS.contains(&it.title()));
+                }
+                top_level_commands(top, &vis, false, gate)
             };
             Ok(SubCommandEnum::new(items).into())
         })

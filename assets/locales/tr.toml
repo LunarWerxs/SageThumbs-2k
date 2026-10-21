@@ -138,7 +138,6 @@ shot_tool_short_pixelate = "Pikselleştir"
 shot_tool_short_invert = "Ters çevir"
 shot_tool_short_eyedropper = "Damlalık"
 shot_tool_short_move = "Taşı"
-tip_menu_quick = "Dönüştür, Boyutlandır ve Döndür'ü yalnızca alt menüde değil, ana sağ tık menüsüne de koyar."
 tip_max_file = "Devasa dosyaların Gezgin'i yavaşlatmaması için bundan büyük dosyaları (MB) atlar."
 tip_max_thumb = "Gezgin'in isteyebileceği en büyük küçük resim (piksel olarak)."
 tip_jpeg = "Küçük resimler ve Dönüştür → JPG için JPEG kalitesi (0–100). Yüksek daha iyi görünür ama daha büyük olur."
@@ -856,3 +855,5 @@ cat_archive = "Arşiv"
 
 tip_shot_save_format = "Kaydet'in yazdığı dosya biçimi. PNG ve WebP her pikseli aynen korur; JPEG daha küçüktür ama metni bulanıklaştırır. PNG HDR ve JPEG XR HDR, HDR monitörün tam parlaklık ve renk aralığını korur. Kopyala, panoya her zaman düz bir bitmap koyar."
 tip_shot_save_quality = "Kaydedilen ekran görüntüleri için JPEG kalitesi, 1 ile 100 arasında. Diğer tüm biçimler kayıpsızdır ve bu ayarı yok sayar."
+
+tip_menu_quick_moves = "Dönüştür, Yeniden boyutlandır ve Döndür seçeneklerini doğrudan ana sağ tıklama menüsüne ekler. Böylece SageThumbs 2K alt menüsünden kaldırılır ve aynı seçenekler iki kez listelenmez."

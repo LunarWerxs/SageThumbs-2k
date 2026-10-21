@@ -61,7 +61,7 @@ pub(in super::super) fn conflicting_hotkeys(
 /// nothing is selected (`CB_ERR`). Every hotkey combo's items store the real packed chord
 /// (curated preset, "(none)", or an appended unrecognized chord) as their item data, so this
 /// mirrors exactly what `apply_screenshot_hotkeys` reads back on Save.
-pub(super) unsafe fn combo_item_data(hwnd: HWND, id: i32) -> u32 {
+pub(in super::super) unsafe fn combo_item_data(hwnd: HWND, id: i32) -> u32 {
     let Ok(c) = GetDlgItem(Some(hwnd), id) else {
         return 0;
     };
@@ -91,9 +91,9 @@ pub(super) unsafe fn read_hotkey_bindings(hwnd: HWND) -> [HotkeyBinding; 3] {
         },
         HotkeyBinding {
             role: HotkeyRole::CustomAction,
-            // Mirrors `register_configured_hotkey`: bound iff its own chord is non-zero,
-            // with no separate enable flag of its own.
-            enabled: custom_packed != 0,
+            // Mirrors what Save writes (`apply::custom_action_chord`): bound iff its switch
+            // is on and its chord is non-zero.
+            enabled: custom_packed != 0 && checked(hwnd, ID_CUSTOM_ACTION_ENABLE),
             packed: custom_packed,
         },
     ]

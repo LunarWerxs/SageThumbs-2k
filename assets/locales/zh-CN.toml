@@ -138,7 +138,6 @@ shot_tool_short_pixelate = "马赛克"
 shot_tool_short_invert = "反色"
 shot_tool_short_eyedropper = "取色"
 shot_tool_short_move = "移动"
-tip_menu_quick = "把转换、调整大小和旋转也放进主右键菜单 — 而不只是藏在子菜单里。"
 tip_max_file = "跳过超过此大小 (MB) 的文件，避免巨型文件拖慢资源管理器。"
 tip_max_thumb = "资源管理器可请求的最大缩略图（像素）。"
 tip_jpeg = "缩略图和“转换 → JPG”的 JPEG 质量 (0–100)。越高越好看，但文件越大。"
@@ -854,3 +853,5 @@ cat_archive = "压缩包"
 
 tip_shot_save_format = "“保存”写入的文件格式。PNG 和 WebP 会完整保留每个像素；JPEG 文件更小，但会使文字变模糊。PNG HDR 和 JPEG XR HDR 会完整保留 HDR 显示器的亮度和色彩。“复制”始终会将普通位图放入剪贴板。"
 tip_shot_save_quality = "保存截图时的 JPEG 质量，范围为 1 到 100。其他格式均为无损格式，且会忽略此设置。"
+
+tip_menu_quick_moves = "将转换、调整大小和旋转直接放到主右键菜单中。它们会从 SageThumbs 2K 子菜单中移除，避免重复显示。"

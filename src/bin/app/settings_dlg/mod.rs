@@ -42,7 +42,8 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use st2k_actions::verbs::{
-    default_menu_tokens, effective_menu_tokens, menu_order_to_save, MENU_SEP_TOKEN,
+    default_menu_tokens, effective_menu_tokens, menu_order_to_save, MENU_SEP_OFF_TOKEN,
+    MENU_SEP_TOKEN,
 };
 use st2k_base::{formats, i18n, settings};
 
@@ -135,7 +136,9 @@ use localize::*;
 use menu_rows::*;
 use navrail::*;
 use resize::*;
-pub(crate) use shot::{audit_every_page, run_shot, run_shot_gif, run_shot_search};
+pub(crate) use shot::{
+    audit_every_page, run_shot_driven, run_shot_gif, run_shot_menu_items, run_shot_search,
+};
 use st2k_appkit::license::{format_unix_date, licence_reason_line};
 use sync::*;
 use tooltips::*;

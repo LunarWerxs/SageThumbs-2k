@@ -138,7 +138,6 @@ shot_tool_short_pixelate = "Pikseliraj"
 shot_tool_short_invert = "Obrni"
 shot_tool_short_eyedropper = "Kapalka"
 shot_tool_short_move = "Premakni"
-tip_menu_quick = "Postavi Pretvori, Spremeni velikost in Zavrti tudi v glavni priročni meni — ne le v podmeni."
 tip_max_file = "Preskoči datoteke, večje od te vrednosti (MB), da ogromne datoteke ne upočasnijo Raziskovalca."
 tip_max_thumb = "Največja sličica (v slikovnih pikah), ki jo sme Raziskovalec zahtevati."
 tip_jpeg = "Kakovost JPEG za sličice in Pretvori → JPG (0–100). Višja je videti bolje, a zavzame več prostora."
@@ -851,3 +850,5 @@ cat_archive = "Arhiv"
 
 tip_shot_save_format = "Zapis zapiše v izbrani obliki zapisa. PNG in WebP ohranita vsako slikovno piko natančno; JPEG ustvari manjšo datoteko, vendar zmehča besedilo. PNG HDR in JPEG XR HDR ohranita celotno svetlost in barve zaslona HDR. Kopiraj vedno doda v odložišče navadno bitno sliko."
 tip_shot_save_quality = "Kakovost JPEG za shranjene posnetke zaslona, od 1 do 100. Vsi drugi formati so brez izgub in te nastavitve ne upoštevajo."
+
+tip_menu_quick_moves = "Pretvorbo, spreminjanje velikosti in vrtenje dodajte neposredno v glavni meni ob kliku z desno tipko miške. Tako se odstranijo iz podmenija SageThumbs 2K, da niso navedeni dvakrat."

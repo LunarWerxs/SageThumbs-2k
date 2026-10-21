@@ -138,7 +138,6 @@ shot_tool_short_pixelate = "Pikselöi"
 shot_tool_short_invert = "Käänteinen"
 shot_tool_short_eyedropper = "Poimi"
 shot_tool_short_move = "Siirrä"
-tip_menu_quick = "Tuo Muunna, Muuta kokoa ja Kierrä myös pääpikavalikkoon — ei vain alivalikkoon."
 tip_max_file = "Ohittaa tätä suuremmat tiedostot (Mt), jotta jättitiedostot eivät hidasta Resurssienhallintaa."
 tip_max_thumb = "Suurin pikkukuva (pikseleinä), jonka Resurssienhallinta saa pyytää."
 tip_jpeg = "JPEG-laatu pikkukuville ja Muunna → JPG (0–100). Suurempi näyttää paremmalta mutta vie enemmän tilaa."
@@ -847,3 +846,5 @@ cat_archive = "Arkisto"
 
 tip_shot_save_format = "Tiedoston tallennusmuoto. PNG ja WebP säilyttävät jokaisen pikselin täsmälleen ennallaan; JPEG tuottaa pienemmän tiedoston, mutta pehmentää tekstiä. PNG HDR ja JPEG XR HDR säilyttävät HDR-näytön koko kirkkaus- ja värialueen. Kopioi kopioi leikepöydälle aina tavallisen bittikartan."
 tip_shot_save_quality = "Tallennettujen kuvakaappausten JPEG-laatu, 1–100. Kaikki muut muodot ovat häviöttömiä eivätkä käytä tätä asetusta."
+
+tip_menu_quick_moves = "Lisää Muunna-, Muuta kokoa- ja Kierrä-toiminnot suoraan Windowsin pääasialliseen hiiren kakkospainikkeen valikkoon. Ne poistuvat SageThumbs 2K -alivalikosta, joten samoja toimintoja ei näytetä kahdesti."

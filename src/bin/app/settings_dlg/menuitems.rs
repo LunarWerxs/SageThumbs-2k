@@ -12,6 +12,13 @@
 //! it — `load_values` seeding checks, `apply_settings` persisting visibility + order,
 //! `list::` drag-reorder state — keeps working on the same HWND with zero duplication.
 //! The popup is modal over Settings, so nothing can read the list while it is away.
+//!
+//! The list's own notifications (the drag start among them) still go to Settings, the
+//! window it was created under: comctl32 never follows a re-parent. `notify::on_notify_begindrag`
+//! is written for that.
+//!
+//! Done (or closing the popup) saves the list straight away and tells the shell, so the next
+//! right-click shows it. Through 3.7.4 it only closed, and the change waited for Settings' Save.
 
 use super::*;
 use st2k_appkit::win::IDOK;
@@ -40,6 +47,22 @@ pub(super) unsafe fn open(settings: HWND) {
         Some(settings),
     );
     OWNER.with(|o| o.set(None));
+}
+
+/// The editor over a headless Settings for `--shot --window menuitems`: the same window and
+/// wndproc, built invisible and with no modal loop. The caller drives and captures it; the
+/// popup hands the list back to `settings` when it is destroyed.
+pub(super) unsafe fn open_for_shot(settings: HWND, hinst: HINSTANCE, dark: bool) -> Option<HWND> {
+    OWNER.with(|o| o.set(Some(settings.0 as isize)));
+    st2k_appkit::win::create_shot_window(
+        hinst,
+        dark,
+        w!("SageThumbs2KMenuItems"),
+        Some(popup_wndproc),
+        t("grp_menu_items"),
+        POP_W,
+        POP_H,
+    )
 }
 
 unsafe fn settings_hwnd() -> Option<HWND> {
@@ -135,8 +158,8 @@ extern "system" fn popup_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
         }
         match msg {
             WM_CREATE => on_create(hwnd),
-            // The checklist's notifications now land HERE, not on the Settings wndproc —
-            // forward the two it needs: drag-to-reorder and the dark-mode button paint.
+            // Reset and Done's dark-mode paint. The checklist's own notifications never come
+            // here (see the module note).
             WM_NOTIFY => on_notify(hwnd, lparam),
             // Right-click bulk toggle (check all / uncheck all) on the checklist. Gated on
             // the sender being the list itself — WM_CONTEXTMENU also fires for Reset/Done
@@ -158,8 +181,10 @@ extern "system" fn popup_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
             WM_MEASUREITEM => on_measureitem(hwnd, msg, wparam, lparam),
             WM_DRAWITEM => on_drawitem(hwnd, msg, wparam, lparam),
             WM_COMMAND => on_command(hwnd, wparam),
+            // The title bar's close does what Done does: the popup has no Cancel, and an edit
+            // that silently waited for Settings' Save is what the reporter ran into.
             WM_CLOSE => {
-                let _ = DestroyWindow(hwnd);
+                save_and_close(hwnd);
                 LRESULT(0)
             }
             WM_DESTROY => on_destroy(hwnd),
@@ -174,9 +199,6 @@ unsafe fn on_create(hwnd: HWND) -> LRESULT {
 
 unsafe fn on_notify(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     let nmhdr = lparam.0 as *const NMHDR;
-    if let Some(r) = super::notify::on_notify_begindrag(hwnd, nmhdr, lparam) {
-        return r;
-    }
     let code = (*nmhdr).code;
     if code == NM_CUSTOMDRAW {
         if is_button_class((*nmhdr).hwndFrom) {
@@ -233,12 +255,16 @@ unsafe fn on_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
                 list::reset_menu_order(list);
             }
         }
-        PopupCommand::Close => {
-            let _ = DestroyWindow(hwnd);
-        }
+        PopupCommand::Close => save_and_close(hwnd),
         PopupCommand::Ignore => {}
     }
     LRESULT(0)
+}
+
+/// Save the list's visibility, order and dividers now, then close.
+unsafe fn save_and_close(hwnd: HWND) {
+    super::values::apply_menu_list_now(hwnd);
+    let _ = DestroyWindow(hwnd);
 }
 
 /// Hand the checklist back BEFORE the window goes away, hidden again, so load/save find

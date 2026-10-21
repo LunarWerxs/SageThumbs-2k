@@ -138,7 +138,6 @@ shot_tool_short_pixelate = "모자이크"
 shot_tool_short_invert = "반전"
 shot_tool_short_eyedropper = "스포이드"
 shot_tool_short_move = "이동"
-tip_menu_quick = "변환, 크기 조정, 회전을 하위 메뉴뿐 아니라 기본 우클릭 메뉴에도 표시합니다."
 tip_max_file = "이 크기(MB)보다 큰 파일은 건너뛰어 거대한 파일이 탐색기를 느리게 하지 않도록 합니다."
 tip_max_thumb = "탐색기가 요청할 수 있는 가장 큰 미리 보기(픽셀)."
 tip_jpeg = "미리 보기와 변환 → JPG의 JPEG 품질 (0–100). 높을수록 보기 좋지만 용량이 커집니다."
@@ -857,3 +856,5 @@ cat_archive = "압축 파일"
 
 tip_shot_save_format = "저장 시 사용할 파일 형식입니다. PNG와 WebP는 모든 픽셀을 그대로 유지합니다. JPEG는 파일 크기가 작지만 텍스트가 흐려집니다. PNG HDR과 JPEG XR HDR은 HDR 모니터의 전체 밝기와 색상을 유지합니다. 복사는 항상 일반 비트맵을 클립보드에 넣습니다."
 tip_shot_save_quality = "저장할 스크린샷의 JPEG 품질입니다(1~100). 다른 모든 형식은 무손실이며 이 설정을 사용하지 않습니다."
+
+tip_menu_quick_moves = "변환, 크기 조정, 회전을 기본 우클릭 메뉴에 바로 표시합니다. 이 항목들은 SageThumbs 2K 하위 메뉴에서 빠지므로 중복 표시되지 않습니다."

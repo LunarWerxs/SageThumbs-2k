@@ -145,7 +145,7 @@ pub(super) unsafe fn run_shot_settings_window(
     {
         settings_dlg::run_shot_search(hinst, dark, out, needle)
     } else {
-        settings_dlg::run_shot(hinst, dark, out, tab)
+        settings_dlg::run_shot_driven(hinst, dark, out, tab, args)
     }
 }
 
@@ -240,6 +240,9 @@ pub(super) unsafe fn run_shot_mode(
                 .and_then(|p| args.get(p + 1));
             st2k_screenshot::ocr_result::run_shot_ocr(out, file.map(String::as_str))
         }
+        // The "Edit menu items" editor over Settings, optionally driven (--drag, --space,
+        // --done; see settings_dlg::run_shot_menu_items).
+        "menuitems" => settings_dlg::run_shot_menu_items(hinst, dark, out, args),
         "preview" => {
             let opts = build_shot_preview_opts(args);
             st2k_preview::preview::run_shot_preview(hinst, dark, out, &opts)

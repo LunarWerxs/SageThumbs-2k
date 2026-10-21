@@ -138,7 +138,6 @@ shot_tool_short_pixelate = "Pixelesítés"
 shot_tool_short_invert = "Invertálás"
 shot_tool_short_eyedropper = "Pipetta"
 shot_tool_short_move = "Mozgatás"
-tip_menu_quick = "A Konvertálást, Átméretezést és Forgatást a fő helyi menübe is kiteszi — nem csak az almenübe."
 tip_max_file = "Az ennél nagyobb fájlokat (MB) kihagyja, hogy az óriási fájlok ne lassítsák a Fájlkezelőt."
 tip_max_thumb = "A legnagyobb bélyegkép (pixelben), amit a Fájlkezelő kérhet."
 tip_jpeg = "JPEG-minőség a bélyegképekhez és a Konvertálás → JPG művelethez (0–100). Nagyobb érték szebb, de nagyobb fájl."
@@ -858,3 +857,5 @@ cat_archive = "Archívum"
 
 tip_shot_save_format = "A Mentés gomb által használt fájlformátum. A PNG és a WebP minden képpontot pontosan megőriz; a JPEG kisebb fájlt eredményez, de elmosódottabbá teszi a szöveget. A PNG HDR és a JPEG XR HDR megőrzi a HDR-monitor teljes fényerejét és színeit. A Másolás gomb mindig egyszerű bitképet helyez a vágólapra."
 tip_shot_save_quality = "A mentett képernyőképek JPEG-minősége 1 és 100 között. Minden más formátum veszteségmentes, és figyelmen kívül hagyja ezt az értéket."
+
+tip_menu_quick_moves = "Tegye az Átalakítás, Átméretezés és Elforgatás műveleteket közvetlenül a fő jobb gombos menübe. Így kikerülnek a SageThumbs 2K almenüből, ezért nem jelennek meg kétszer."

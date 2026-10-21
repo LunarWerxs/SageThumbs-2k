@@ -4,7 +4,7 @@ use super::*;
 
 pub(super) unsafe fn on_notify(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     let nmhdr = lparam.0 as *const NMHDR;
-    if let Some(r) = on_notify_begindrag(hwnd, nmhdr, lparam) {
+    if let Some(r) = on_notify_begindrag(nmhdr, lparam) {
         return r;
     }
     // Dark-mode modern restyle: own the paint of the format list, the
@@ -20,13 +20,16 @@ pub(super) unsafe fn on_notify(hwnd: HWND, lparam: LPARAM) -> LRESULT {
 }
 
 /// Drag-to-reorder the "Menu items" checklist: begin on LVN_BEGINDRAG.
-pub(super) unsafe fn on_notify_begindrag(
-    hwnd: HWND,
-    nmhdr: *const NMHDR,
-    lparam: LPARAM,
-) -> Option<LRESULT> {
+///
+/// Matched by the sender's control id, not by "my child with that id". The checklist is
+/// created here and moved into the "Edit menu items" popup while it is open, and comctl32
+/// keeps sending its notifications to the window it was created under (measured 2026-10-21
+/// on 5.82 and 6.16; `CCM_SETNOTIFYWINDOW` does not move them). So the drag arrives here while
+/// the list is the popup's child, and the old `GetDlgItem(this window)` test never matched:
+/// in 3.7.4 dragging a row did nothing at all (Discord report, 2026-10-21).
+pub(super) unsafe fn on_notify_begindrag(nmhdr: *const NMHDR, lparam: LPARAM) -> Option<LRESULT> {
     if (*nmhdr).code == windows::Win32::UI::Controls::LVN_BEGINDRAG
-        && (*nmhdr).hwndFrom == GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST).unwrap_or_default()
+        && (*nmhdr).idFrom == ID_MENU_ITEMS_LIST as usize
     {
         let nmlv = lparam.0 as *const NMLISTVIEW;
         list::begin_menu_drag((*nmhdr).hwndFrom, (*nmlv).iItem);

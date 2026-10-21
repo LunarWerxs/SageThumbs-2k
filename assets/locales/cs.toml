@@ -138,7 +138,6 @@ shot_tool_short_pixelate = "Pixelovat"
 shot_tool_short_invert = "Invertovat"
 shot_tool_short_eyedropper = "Nabrat"
 shot_tool_short_move = "Přesunout"
-tip_menu_quick = "Umístí Převést, Změnit velikost a Otočit i do hlavní kontextové nabídky — nejen do podnabídky."
 tip_max_file = "Přeskočí soubory větší než tato hodnota (MB), aby obří soubory nezpomalovaly Průzkumníka."
 tip_max_thumb = "Největší miniatura (v pixelech), o kterou si Průzkumník smí říct."
 tip_jpeg = "Kvalita JPEG pro miniatury a Převést → JPG (0–100). Vyšší vypadá lépe, ale zabírá víc místa."
@@ -851,3 +850,5 @@ cat_archive = "Archiv"
 
 tip_shot_save_format = "Formát souboru, ve kterém tlačítko Uložit ukládá snímky obrazovky. PNG a WebP zachovávají každý pixel přesně; JPEG má menší soubory, ale text je méně ostrý. PNG HDR a JPEG XR HDR zachovávají plný jas a barvy HDR monitoru. Tlačítko Kopírovat vždy vloží do schránky nekomprimovaný bitmapový obrázek."
 tip_shot_save_quality = "Kvalita JPEG pro uložené snímky obrazovky, od 1 do 100. Všechny ostatní formáty jsou bezeztrátové a toto nastavení ignorují."
+
+tip_menu_quick_moves = "Zobrazí Převést, Změnit velikost a Otočit přímo v hlavní nabídce po kliknutí pravým tlačítkem. Tyto položky se přesunou z podnabídky SageThumbs 2K, takže se nebudou zobrazovat dvakrát."

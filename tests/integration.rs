@@ -24,11 +24,14 @@ suite! {
     format_capability_claims,
     fringe_dimensions,
     layout_audit,
+    menu_items_shot,
     preview_db_shot,
     preview_markdown_shot,
     preview_upload_question,
     preview_view_source,
     qualification_matrix,
+    settings_bulk_check_shot,
+    settings_custom_action_shot,
     window_teardown_order,
 }
 

@@ -35,7 +35,7 @@ pub(super) const TOOLTIPS: &[(i32, &str)] = &[
     (ID_LBL_SHOT_QUALITY, "tip_shot_save_quality"),
     (ID_SHOT_BLUR, "tip_shot_blur"),
     (ID_LBL_SHOT_BLUR, "tip_shot_blur"),
-    (ID_MENU_QUICK, "tip_menu_quick"),
+    (ID_MENU_QUICK, "tip_menu_quick_moves"),
     (ID_MENU_CHECKER, "tip_menu_checker"),
     (ID_FOLDER_PREBUILD, "tip_folder_prebuild"),
     (ID_MAXSIZE, "tip_max_file"),

@@ -135,7 +135,6 @@ shot_tool_short_pixelate = "Pixelate"
 shot_tool_short_invert = "Invert"
 shot_tool_short_eyedropper = "Kumuha"
 shot_tool_short_move = "Ilipat"
-tip_menu_quick = "Inilalagay rin ang I-convert, Laki at I-rotate sa pangunahing right-click menu — hindi lang sa submenu."
 tip_max_file = "Nilalaktawan ang mga file na mas malaki rito (MB) para hindi mapabagal ng malalaking file ang Explorer."
 tip_max_thumb = "Ang pinakamalaking thumbnail (sa pixels) na maaaring hilingin ng Explorer."
 tip_jpeg = "Kalidad ng JPEG para sa mga thumbnail at I-convert → JPG (0–100). Mas mataas, mas maganda pero mas malaki."
@@ -847,3 +846,5 @@ cat_archive = "Archive"
 
 tip_shot_save_format = "Ang format ng file na ginagamit ng Save. Eksaktong pinananatili ng PNG at WebP ang bawat pixel; mas maliit ang JPEG pero lumalabo ang text. Pinananatili ng PNG HDR at JPEG XR HDR ang buong liwanag at kulay ng HDR monitor. Palaging naglalagay ang Copy ng plain bitmap sa clipboard."
 tip_shot_save_quality = "Kalidad ng JPEG para sa mga naka-save na screenshot, mula 1 hanggang 100. Lossless ang lahat ng iba pang format at hindi ginagamit ang setting na ito."
+
+tip_menu_quick_moves = "Ilagay ang I-convert, Baguhin ang laki at I-rotate nang direkta sa pangunahing right-click menu. Aalisin ang mga ito sa submenu ng SageThumbs 2K para hindi madoble ang pagkakalista."

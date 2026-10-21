@@ -22,14 +22,14 @@ unsafe fn lv_next(list: HWND, start: i32, flags: u32) -> i32 {
     .0 as i32
 }
 
+/// Every row of both lists has a box: the menu list's dividers too, since they can be
+/// switched off. This used to skip any row whose lParam was not a menu toggle index, which on
+/// the file-types list (lParam = FORMATS index) left every format past the first few dozen
+/// untouched by a bulk check.
 unsafe fn bulk_set_selected(list: HWND, target: bool) {
     let mut i = lv_next(list, -1, LVNI_SELECTED);
     while i >= 0 {
-        // Divider rows carry [`SEP_PARAM`], not a toggle index, and must never acquire a
-        // checkbox glyph — same treatment as [`rebuild_rows`].
-        if super::menu_row_toggle(list, i).is_some() {
-            set_check(list, i, target);
-        }
+        set_check(list, i, target);
         i = lv_next(list, i, LVNI_SELECTED);
     }
 }
@@ -285,8 +285,9 @@ pub(super) const SEP_PARAM: isize = -1;
 pub(super) const SEP_LABEL: &str = "──────────────────────────────────────";
 
 /// Rebuild the list from `(lParam, checked)` rows: item rows (lParam = toggle index) get
-/// their translated label + checkbox; divider rows (lParam == [`SEP_PARAM`]) get the rule
-/// label and no checkbox. Optionally selects the row at display INDEX `select` — not by
+/// their translated label; divider rows (lParam == [`SEP_PARAM`]) get the rule label. Every
+/// row gets its checkbox: a divider's says whether the menu draws it. Optionally selects the
+/// row at display INDEX `select` — not by
 /// lParam key, because every divider shares [`SEP_PARAM`] and a key match would always land
 /// on the FIRST divider rather than whichever one the caller actually means (see A266 at
 /// [`finish_menu_drag`]).
@@ -319,11 +320,7 @@ pub(super) unsafe fn rebuild_rows(list: HWND, rows: &[(isize, bool)], select: Op
             Some(WPARAM(0)),
             Some(LPARAM(&mut it as *mut _ as isize)),
         );
-        if is_sep {
-            clear_checkbox(list, row as i32);
-        } else {
-            set_check(list, row as i32, checked);
-        }
+        set_check(list, row as i32, checked);
     }
     if let Some(idx) = select {
         if idx < rows.len() {
@@ -377,7 +374,8 @@ unsafe fn finish_menu_drag(list: HWND, x: i32, y: i32) {
 /// [`normalize_rows`], the single implementation of the divider rules, with an optional input
 /// index `track`: when `Some(track)`, also reports where the row at that input index ended up in
 /// the output, or `None` if normalization dropped that exact row (it collapsed into an earlier
-/// divider, or it was a trailing divider that got trimmed).
+/// divider, or it was a trailing divider that got trimmed). Two dividers that meet keep one row,
+/// ticked if either was, the same rule the menu applies to the saved tokens.
 fn normalize_rows_tracking(
     rows: &[(isize, bool)],
     track: Option<usize>,
@@ -385,8 +383,15 @@ fn normalize_rows_tracking(
     let mut out: Vec<(isize, bool)> = Vec::with_capacity(rows.len());
     let mut tracked = None;
     for (i, &(p, c)) in rows.iter().enumerate() {
-        if p == SEP_PARAM && (out.is_empty() || out.last().unwrap().0 == SEP_PARAM) {
-            continue; // dropped: a leading/duplicate divider
+        if p == SEP_PARAM {
+            match out.last_mut() {
+                None => continue, // dropped: a leading divider
+                Some(last) if last.0 == SEP_PARAM => {
+                    last.1 |= c;
+                    continue; // dropped: merged into the divider just before it
+                }
+                Some(_) => {}
+            }
         }
         if track == Some(i) {
             tracked = Some(out.len());
@@ -727,16 +732,18 @@ mod menu_drag_reorder_tests {
     /// existing rule): the JUST-DROPPED instance is the one that gets skipped, so there is no
     /// surviving row that IS the one the user dropped — `None` (no forced selection) is the
     /// honest answer, and strictly better than the old bug of highlighting an unrelated divider.
+    /// The surviving row is ticked because the dropped one was: a shown divider dragged next
+    /// to a switched-off one must not vanish from the menu.
     #[test]
     fn tracks_none_when_the_dropped_divider_collapses_into_an_earlier_one() {
         let rows = vec![
             (0, true),
             (SEP_PARAM, false),
-            (SEP_PARAM, false), // dropped here, index 2, collapses into index 1
+            (SEP_PARAM, true), // dropped here, index 2, collapses into index 1
             (1, true),
         ];
         let (out, sel) = normalize_rows_tracking(&rows, Some(2));
-        assert_eq!(out, vec![(0, true), (SEP_PARAM, false), (1, true)]);
+        assert_eq!(out, vec![(0, true), (SEP_PARAM, true), (1, true)]);
         assert_eq!(
             sel, None,
             "the dropped instance was itself the one collapsed away"

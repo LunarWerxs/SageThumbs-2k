@@ -138,7 +138,6 @@ shot_tool_short_pixelate = "モザイク"
 shot_tool_short_invert = "反転"
 shot_tool_short_eyedropper = "スポイト"
 shot_tool_short_move = "移動"
-tip_menu_quick = "変換・サイズ変更・回転をサブメニューだけでなく、メインの右クリックメニューにも置きます。"
 tip_max_file = "このサイズ (MB) を超えるファイルはスキップし、巨大なファイルでエクスプローラーが遅くならないようにします。"
 tip_max_thumb = "エクスプローラーが要求できる最大サムネイル（ピクセル）。"
 tip_jpeg = "サムネイルと「変換 → JPG」の JPEG 品質 (0–100)。高いほどきれいですが、ファイルは大きくなります。"
@@ -857,3 +856,5 @@ cat_archive = "アーカイブ"
 
 tip_shot_save_format = "「保存」で書き出すファイル形式です。PNG と WebP はすべてのピクセルをそのまま保持します。JPEG はファイルサイズが小さくなりますが、文字がぼやけます。PNG HDR と JPEG XR HDR は、HDR モニターの明るさと色を完全に保持します。「コピー」では常に通常のビットマップがクリップボードにコピーされます。"
 tip_shot_save_quality = "保存するスクリーンショットの JPEG 品質です。1～100 で指定します。それ以外の形式は可逆圧縮のため、この設定は無視されます。"
+
+tip_menu_quick_moves = "変換、サイズ変更、回転をメインの右クリックメニューに直接表示します。これらは SageThumbs 2K のサブメニューから外れるため、二重に表示されません。"

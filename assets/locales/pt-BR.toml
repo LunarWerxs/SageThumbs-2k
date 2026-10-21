@@ -138,7 +138,6 @@ shot_tool_short_pixelate = "Pixelizar"
 shot_tool_short_invert = "Inverter"
 shot_tool_short_eyedropper = "Conta-gotas"
 shot_tool_short_move = "Mover"
-tip_menu_quick = "Coloca Converter, Redimensionar e Girar também no menu de contexto principal — não só dentro do submenu."
 tip_max_file = "Ignora arquivos maiores que isto (MB) para que arquivos enormes não deixem o Explorador lento."
 tip_max_thumb = "Maior miniatura (em pixels) que o Explorador poderá pedir."
 tip_jpeg = "Qualidade JPEG para miniaturas e Converter → JPG (0–100). Mais alto fica melhor, porém maior."
@@ -857,3 +856,5 @@ cat_archive = "Arquivo compactado"
 
 tip_shot_save_format = "O formato de arquivo usado pelo botão Salvar. PNG e WebP preservam cada pixel exatamente; JPEG gera arquivos menores, mas deixa o texto menos nítido. PNG HDR e JPEG XR HDR preservam todo o brilho e as cores de um monitor HDR. Copiar sempre coloca um bitmap simples na área de transferência."
 tip_shot_save_quality = "Qualidade do JPEG para capturas de tela salvas, de 1 a 100. Todos os outros formatos são sem perdas e ignoram esse valor."
+
+tip_menu_quick_moves = "Coloque Converter, Redimensionar e Girar diretamente no menu principal do botão direito. Eles saem do submenu do SageThumbs 2K, então nada aparece duplicado."

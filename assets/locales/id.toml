@@ -138,7 +138,6 @@ shot_tool_short_pixelate = "Piksel"
 shot_tool_short_invert = "Balikkan"
 shot_tool_short_eyedropper = "Pilih"
 shot_tool_short_move = "Pindah"
-tip_menu_quick = "Menaruh Konversi, Ubah ukuran, dan Putar juga di menu klik kanan utama — bukan hanya di submenu."
 tip_max_file = "Lewati file yang lebih besar dari ini (MB) agar file raksasa tidak memperlambat Explorer."
 tip_max_thumb = "Gambar mini terbesar (piksel) yang boleh diminta Explorer."
 tip_jpeg = "Kualitas JPEG untuk gambar mini dan Konversi → JPG (0–100). Makin tinggi makin bagus tapi makin besar."
@@ -857,3 +856,5 @@ cat_archive = "Arsip"
 
 tip_shot_save_format = "Format file yang ditulis oleh Simpan. PNG dan WebP mempertahankan setiap piksel dengan tepat; JPEG berukuran lebih kecil tetapi membuat teks lebih lembut. PNG HDR dan JPEG XR HDR mempertahankan kecerahan dan warna penuh dari monitor HDR. Salin selalu menaruh bitmap biasa di clipboard."
 tip_shot_save_quality = "Kualitas JPEG untuk screenshot yang disimpan, 1 hingga 100. Semua format lainnya lossless dan mengabaikannya."
+
+tip_menu_quick_moves = "Tampilkan Konversi, Ubah ukuran, dan Putar langsung di menu utama saat klik kanan. Ketiganya dipindahkan dari submenu SageThumbs 2K agar tidak muncul dua kali."

@@ -515,6 +515,41 @@ pub fn quick_items() -> Vec<QuickItem> {
 /// keys are all `menu_*`, so this can never collide with one.
 pub const MENU_SEP_TOKEN: &str = "--";
 
+/// A divider row the user switched off in Settings: it keeps its place in the list but the
+/// menu draws nothing there. An older build drops it as an unknown token, which reads the
+/// same way.
+pub const MENU_SEP_OFF_TOKEN: &str = "--off";
+
+/// Either divider token, shown or switched off.
+fn is_divider_token(t: &&str) -> bool {
+    *t == MENU_SEP_TOKEN || *t == MENU_SEP_OFF_TOKEN
+}
+
+/// [`normalize_sep`] for saved tokens: two dividers that meet collapse into one, which is
+/// shown if either was (a switched-off divider never hides a shown one).
+fn normalize_tokens(v: Vec<&'static str>) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::with_capacity(v.len());
+    for t in v {
+        if is_divider_token(&t) {
+            match out.last_mut() {
+                None => continue,
+                Some(last) if is_divider_token(last) => {
+                    if t == MENU_SEP_TOKEN {
+                        *last = MENU_SEP_TOKEN;
+                    }
+                    continue;
+                }
+                Some(_) => {}
+            }
+        }
+        out.push(t);
+    }
+    while out.last().is_some_and(is_divider_token) {
+        out.pop();
+    }
+    out
+}
+
 /// The factory top-level order as persisted tokens — each reorderable item's key and
 /// [`MENU_SEP_TOKEN`] for each divider, in tree order, EXCLUDING the always-last
 /// `menu_settings` and its preceding divider (the menu re-adds that automatically).
@@ -529,7 +564,7 @@ pub fn default_menu_tokens() -> Vec<&'static str> {
         }
     }
     // Drop a leading divider + collapse consecutive ones.
-    normalize_sep(out, |t| *t == MENU_SEP_TOKEN)
+    normalize_tokens(out)
 }
 
 /// The top-level MENU items to DISPLAY, in [`effective_menu_tokens`]'s order for the saved
@@ -623,10 +658,14 @@ fn is_untouched_legacy(items: &[&str]) -> bool {
 }
 
 /// The saved tokens `effective_menu_tokens` can place: item keys the factory order knows
-/// (each once) and dividers, as `'static` tokens. Anything else is dropped.
+/// (each once) and dividers of both kinds, as `'static` tokens. Anything else is dropped.
 fn known_tokens<S: AsRef<str>>(body: &[S], defaults: &[&'static str]) -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::with_capacity(defaults.len());
     for tok in body.iter().map(AsRef::as_ref) {
+        if tok == MENU_SEP_OFF_TOKEN {
+            out.push(MENU_SEP_OFF_TOKEN);
+            continue;
+        }
         match defaults.iter().copied().find(|d| *d == tok) {
             Some(MENU_SEP_TOKEN) => out.push(MENU_SEP_TOKEN),
             Some(key) if !out.contains(&key) => out.push(key),
@@ -646,7 +685,7 @@ fn place_missing(out: &mut Vec<&'static str>, defaults: &[&'static str]) {
         let at = defaults[..i]
             .iter()
             .rev()
-            .filter(|prev| **prev != MENU_SEP_TOKEN)
+            .filter(|prev| !is_divider_token(prev))
             .find_map(|prev| out.iter().position(|o| o == prev))
             .map_or(0, |p| p + 1);
         out.insert(at, key);
@@ -680,20 +719,20 @@ pub fn effective_menu_tokens<S: AsRef<str>>(saved: &[S]) -> Vec<&'static str> {
     let items: Vec<&str> = out
         .iter()
         .copied()
-        .filter(|t| *t != MENU_SEP_TOKEN)
+        .filter(|t| !is_divider_token(t))
         .collect();
     if items.is_empty() || (!marked && is_untouched_legacy(&items)) {
         return defaults;
     }
     place_missing(&mut out, &defaults);
-    normalize_sep(out, |t| *t == MENU_SEP_TOKEN)
+    normalize_tokens(out)
 }
 
-/// What Settings should persist for the rows the user left (item keys + [`MENU_SEP_TOKEN`]):
-/// nothing for the factory order, so a later default still reaches them, and the rows behind
-/// [`MENU_ORDER_CUSTOM`] for anything else.
+/// What Settings should persist for the rows the user left (item keys, [`MENU_SEP_TOKEN`] and
+/// [`MENU_SEP_OFF_TOKEN`]): nothing for the factory order, so a later default still reaches
+/// them, and the rows behind [`MENU_ORDER_CUSTOM`] for anything else.
 pub fn menu_order_to_save(rows: &[&'static str]) -> Vec<&'static str> {
-    if normalize_sep(rows.to_vec(), |t| *t == MENU_SEP_TOKEN) == default_menu_tokens() {
+    if normalize_tokens(rows.to_vec()) == default_menu_tokens() {
         return Vec::new();
     }
     std::iter::once(MENU_ORDER_CUSTOM)
@@ -732,10 +771,10 @@ fn order_top_level_with(saved: &[String]) -> Vec<(&'static MenuItem, u32)> {
         .find(|(it, _)| matches!(it, MenuItem::Separator));
     let mut body: Vec<(&'static MenuItem, u32)> = Vec::with_capacity(pairs.len());
     for tok in effective_menu_tokens(saved) {
-        if tok == MENU_SEP_TOKEN {
-            body.extend(sep);
-        } else {
-            body.extend(item(tok));
+        match tok {
+            MENU_SEP_TOKEN => body.extend(sep),
+            MENU_SEP_OFF_TOKEN => {} // switched off in Settings: no divider here
+            _ => body.extend(item(tok)),
         }
     }
     let mut out = normalize_dividers(body);

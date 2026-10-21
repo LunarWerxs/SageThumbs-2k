@@ -138,7 +138,6 @@ shot_tool_short_pixelate = "Pixelen"
 shot_tool_short_invert = "Omkeren"
 shot_tool_short_eyedropper = "Pipet"
 shot_tool_short_move = "Verplaatsen"
-tip_menu_quick = "Zet Converteren, Formaat wijzigen en Draaien ook in het hoofdcontextmenu — niet alleen in het submenu."
 tip_max_file = "Bestanden groter dan dit (MB) worden overgeslagen, zodat enorme bestanden Verkenner niet vertragen."
 tip_max_thumb = "Grootste miniatuur (in pixels) die Verkenner mag opvragen."
 tip_jpeg = "JPEG-kwaliteit voor miniaturen en Converteren → JPG (0–100). Hoger oogt beter maar wordt groter."
@@ -857,3 +856,5 @@ cat_archive = "Archief"
 
 tip_shot_save_format = "De bestandsindeling waarin Opslaan schrijft. PNG en WebP behouden elke pixel exact; JPEG is kleiner, maar maakt tekst zachter. PNG HDR en JPEG XR HDR behouden de volledige helderheid en kleur van een HDR-monitor. Kopiëren zet altijd een gewone bitmap op het klembord."
 tip_shot_save_quality = "JPEG-kwaliteit voor opgeslagen schermafbeeldingen, van 1 tot 100. Alle andere indelingen zijn verliesvrij en negeren deze instelling."
+
+tip_menu_quick_moves = "Zet Converteren, Formaat wijzigen en Draaien rechtstreeks in het hoofdmenu van de rechtermuisknop. Ze verdwijnen dan uit het submenu van SageThumbs 2K, zodat ze niet dubbel worden vermeld."

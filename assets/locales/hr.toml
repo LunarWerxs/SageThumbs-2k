@@ -135,7 +135,6 @@ shot_tool_short_pixelate = "Pikselizacija"
 shot_tool_short_invert = "Invertiraj"
 shot_tool_short_eyedropper = "Pipeta"
 shot_tool_short_move = "Pomakni"
-tip_menu_quick = "Stavlja Pretvori, Veličinu i Zakreni i u glavni kontekstni izbornik — ne samo u podizbornik."
 tip_max_file = "Preskače datoteke veće od ovoga (MB) kako goleme datoteke ne bi usporavale Explorer."
 tip_max_thumb = "Najveća minijatura (u pikselima) koju Explorer smije zatražiti."
 tip_jpeg = "JPEG kvaliteta za minijature i Pretvori → JPG (0–100). Viša izgleda bolje, ali zauzima više."
@@ -856,3 +855,5 @@ cat_archive = "Arhiva"
 
 tip_shot_save_format = "Format datoteke u koji se spremaju snimke zaslona. PNG i WebP čuvaju svaki piksel točno onako kako jest; JPEG zauzima manje prostora, ali tekst postaje manje oštar. PNG HDR i JPEG XR HDR čuvaju puni raspon svjetline i boja HDR monitora. Kopiraj uvijek stavlja običnu bitmapu u međuspremnik."
 tip_shot_save_quality = "Kvaliteta JPEG-a za spremljene snimke zaslona, od 1 do 100. Svi ostali formati su bez gubitaka i zanemaruju ovu postavku."
+
+tip_menu_quick_moves = "Dodajte Pretvori, Promijeni veličinu i Zakreni izravno u glavni kontekstni izbornik koji se otvara desnim klikom. Time se uklanjaju iz podizbornika SageThumbs 2K kako se ne bi prikazivali dvaput."

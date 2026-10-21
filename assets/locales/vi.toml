@@ -138,7 +138,6 @@ shot_tool_short_pixelate = "Pixel hóa"
 shot_tool_short_invert = "Đảo màu"
 shot_tool_short_eyedropper = "Hút màu"
 shot_tool_short_move = "Di chuyển"
-tip_menu_quick = "Đưa Chuyển đổi, Đổi kích thước và Xoay ra cả menu chuột phải chính — không chỉ nằm trong menu con."
 tip_max_file = "Bỏ qua tệp lớn hơn mức này (MB) để các tệp khổng lồ không làm Explorer chậm."
 tip_max_thumb = "Hình thu nhỏ lớn nhất (theo pixel) mà Explorer được phép yêu cầu."
 tip_jpeg = "Chất lượng JPEG cho hình thu nhỏ và Chuyển đổi → JPG (0–100). Cao hơn đẹp hơn nhưng nặng hơn."
@@ -854,3 +853,5 @@ cat_archive = "Tệp nén"
 
 tip_shot_save_format = "Định dạng tệp mà nút Lưu sử dụng. PNG và WebP giữ nguyên từng điểm ảnh; JPEG có dung lượng nhỏ hơn nhưng làm chữ kém sắc nét. PNG HDR và JPEG XR HDR giữ nguyên toàn bộ độ sáng và màu sắc của màn hình HDR. Sao chép luôn đưa bitmap thông thường vào khay nhớ tạm."
 tip_shot_save_quality = "Chất lượng JPEG cho ảnh chụp màn hình đã lưu, từ 1 đến 100. Các định dạng khác đều không mất dữ liệu và bỏ qua tùy chọn này."
+
+tip_menu_quick_moves = "Đưa Chuyển đổi, Thay đổi kích thước và Xoay thẳng vào menu chuột phải chính. Các mục này sẽ không còn nằm trong menu con SageThumbs 2K, tránh hiển thị trùng lặp."

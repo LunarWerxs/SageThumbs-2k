@@ -9,14 +9,14 @@ mod hotkeys;
 use hotkeys::*;
 mod dependents;
 mod maintenance;
-pub(super) use apply::apply_settings;
 #[cfg(test)]
 pub(super) use apply::apply_tuning_numbers;
+pub(super) use apply::{apply_menu_list_now, apply_settings, custom_action_chord};
 pub(super) use dependents::{
     badge_size_active, is_dependent_switch, sync_dependent_switches, update_badge_style_enabled,
     update_custom_action_enabled, update_quick_enabled, update_save_dir_enabled,
 };
-pub(super) use hotkeys::block_on_hotkey_conflict;
+pub(super) use hotkeys::{block_on_hotkey_conflict, combo_item_data};
 #[cfg(test)]
 pub(super) use hotkeys::{
     conflicting_hotkeys, hotkey_conflict_decision, HotkeyBinding, HotkeyRole,

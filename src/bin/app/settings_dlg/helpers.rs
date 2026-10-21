@@ -94,12 +94,8 @@ pub(super) unsafe fn theme_checkbox_list(list: HWND) {
 pub(super) unsafe fn set_check(list: HWND, item: i32, on: bool) {
     set_state_image(list, item, if on { CHECKED } else { UNCHECKED });
 }
-/// Remove a row's checkbox glyph (state image 0) — used for the menu list's divider rows.
-pub(super) unsafe fn clear_checkbox(list: HWND, item: i32) {
-    set_state_image(list, item, 0);
-}
-/// Write a row's state-image bits (`LVIS_STATEIMAGEMASK`): the checked / unchecked / no-glyph
-/// setters above differ only in the value.
+/// Write a row's state-image bits (`LVIS_STATEIMAGEMASK`): checked and unchecked differ only
+/// in the value.
 unsafe fn set_state_image(list: HWND, item: i32, state: u32) {
     let st = LVITEMW {
         state: LIST_VIEW_ITEM_STATE_FLAGS(state),

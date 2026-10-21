@@ -103,6 +103,7 @@ pub(in super::super) unsafe fn load_values(hwnd: HWND) {
         settings::screenshot_quick_hotkey().1 != 0,
     );
     update_quick_enabled(hwnd);
+    seed_custom_action_switch(hwnd);
     refresh_shot_status(hwnd);
     // Portable copies only lay this row out, but seeding it unconditionally is harmless and
     // keeps the "what does load_values touch" list free of a special case.
@@ -117,6 +118,18 @@ pub(in super::super) unsafe fn load_values(hwnd: HWND) {
     // rows. The earlier `update_badge_style_enabled` call runs before the menu/preview
     // masters are loaded and would leave their children greyed under an enabled parent.
     sync_dependent_switches(hwnd);
+}
+
+/// The custom action's Enable switch from the saved binding: on iff its hotkey is bound, its
+/// two combos greyed to match. Only an import or a sync pull used to set it, so on a normal
+/// open a bound hotkey sat under a switch that read off, and still fired (Discord, 2026-10-21).
+unsafe fn seed_custom_action_switch(hwnd: HWND) {
+    check(
+        hwnd,
+        ID_CUSTOM_ACTION_ENABLE,
+        settings::custom_action_hotkey().1 != 0,
+    );
+    update_custom_action_enabled(hwnd);
 }
 
 /// Reset every control to the factory defaults (does not write yet).
@@ -256,6 +269,8 @@ pub(in super::super) unsafe fn load_defaults(hwnd: HWND) {
     if let Ok(ahk) = GetDlgItem(Some(hwnd), ID_SHOT_ACTION_HK) {
         SendMessageW(ahk, CB_SETCURSEL, Some(WPARAM(0)), None); // "(none)"
     }
+    check(hwnd, ID_CUSTOM_ACTION_ENABLE, false);
+    update_custom_action_enabled(hwnd);
     update_quick_enabled(hwnd);
     check(hwnd, ID_SHOT_HIDE_TRAY, false);
     if let Ok(c) = GetDlgItem(Some(hwnd), ID_TRAY_DBLCLICK) {
@@ -470,15 +485,9 @@ pub(in super::super) unsafe fn seed_combo_selections(hwnd: HWND) {
             .position(|code| current.as_deref() == Some(*code))
             .map_or(0, |i| i + 1)
     });
-    // Not a combo, but the same "derived from a setting `load_values` doesn't restore"
-    // shape: re-derive the custom-action Enable checkbox from whether a hotkey is bound,
-    // then re-grey its two dependent combos to match.
-    check(
-        hwnd,
-        ID_CUSTOM_ACTION_ENABLE,
-        settings::custom_action_hotkey().1 != 0,
-    );
-    update_custom_action_enabled(hwnd);
+    // `load_values` set the custom action's switch before the hotkey combo above was
+    // re-selected; derive it again from the same saved binding so the two agree.
+    seed_custom_action_switch(hwnd);
 }
 
 /// Select item `index(combo)` in the dialog's combo `id`; a missing control is skipped.

@@ -138,7 +138,6 @@ shot_tool_short_pixelate = "Verpixeln"
 shot_tool_short_invert = "Invertieren"
 shot_tool_short_eyedropper = "Pipette"
 shot_tool_short_move = "Verschieben"
-tip_menu_quick = "Zeigt Umwandeln, Größe ändern und Drehen auch direkt im Haupt-Kontextmenü — nicht nur im Untermenü."
 tip_max_file = "Dateien über dieser Größe (MB) werden übersprungen, damit Riesendateien den Explorer nicht ausbremsen."
 tip_max_thumb = "Größte Miniaturansicht (in Pixeln), die der Explorer anfordern darf."
 tip_jpeg = "JPEG-Qualität für Miniaturen und Umwandeln → JPG (0–100). Höher sieht besser aus, braucht aber mehr Platz."
@@ -851,3 +850,5 @@ cat_archive = "Archiv"
 
 tip_shot_save_format = "Das Dateiformat, in dem „Speichern“ die Screenshots speichert. PNG und WebP erhalten jedes Pixel exakt; JPEG benötigt weniger Speicherplatz, macht Text aber unschärfer. PNG HDR und JPEG XR HDR erhalten die volle Helligkeit und Farbwiedergabe eines HDR-Monitors. „Kopieren“ legt immer eine einfache Bitmap in der Zwischenablage ab."
 tip_shot_save_quality = "JPEG-Qualität für gespeicherte Screenshots, von 1 bis 100. Alle anderen Formate sind verlustfrei und ignorieren diesen Wert."
+
+tip_menu_quick_moves = "Konvertieren, Größe ändern und Drehen direkt im Windows-Rechtsklickmenü anzeigen. Sie werden dann aus dem Untermenü „SageThumbs 2K“ entfernt, damit nichts doppelt aufgeführt wird."

@@ -5,11 +5,12 @@
 
 use super::*;
 
-/// Parse `tokens` (item keys + `verbs::MENU_SEP_TOKEN` divider markers) into menu-list
-/// rows `(lParam, checked)`: an item row carries its `MENU_ITEM_TOGGLES` index + its
-/// `check(index)` state; a divider token becomes a `list::SEP_PARAM` row. Items are
-/// de-duped and any missing from a stale order are appended in default order, so every
-/// toggle appears exactly once.
+/// Parse `tokens` (item keys + the `verbs::MENU_SEP_TOKEN` / `MENU_SEP_OFF_TOKEN` divider
+/// markers) into menu-list rows `(lParam, checked)`: an item row carries its
+/// `MENU_ITEM_TOGGLES` index + its `check(index)` state; a divider token becomes a
+/// `list::SEP_PARAM` row, ticked unless it was switched off. Items are de-duped and any
+/// missing from a stale order are appended in default order, so every toggle appears
+/// exactly once.
 pub(super) fn menu_rows_from_tokens(
     tokens: &[String],
     check: impl Fn(usize) -> bool,
@@ -17,8 +18,8 @@ pub(super) fn menu_rows_from_tokens(
     let mut rows = Vec::with_capacity(tokens.len() + MENU_ITEM_TOGGLES.len());
     let mut seen = vec![false; MENU_ITEM_TOGGLES.len()];
     for tok in tokens {
-        if tok == MENU_SEP_TOKEN {
-            rows.push((list::SEP_PARAM, false));
+        if tok == MENU_SEP_TOKEN || tok == MENU_SEP_OFF_TOKEN {
+            rows.push((list::SEP_PARAM, tok == MENU_SEP_TOKEN));
         } else if let Some(i) = MENU_ITEM_TOGGLES
             .iter()
             .position(|(_, k)| *k == tok.as_str())

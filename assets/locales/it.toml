@@ -138,7 +138,6 @@ shot_tool_short_pixelate = "Pixel"
 shot_tool_short_invert = "Inverti"
 shot_tool_short_eyedropper = "Contagocce"
 shot_tool_short_move = "Sposta"
-tip_menu_quick = "Mette Converti, Ridimensiona e Ruota anche nel menu contestuale principale — non solo nel sottomenu."
 tip_max_file = "Salta i file più grandi di questa soglia (MB), così i file enormi non rallentano Esplora file."
 tip_max_thumb = "La miniatura più grande (in pixel) che Esplora file potrà richiedere."
 tip_jpeg = "Qualità JPEG per le miniature e Converti → JPG (0–100). Più alta rende meglio ma pesa di più."
@@ -857,3 +856,5 @@ cat_archive = "Archivio"
 
 tip_shot_save_format = "Il formato di file usato da Salva. PNG e WebP mantengono ogni pixel esattamente com'è; JPEG occupa meno spazio ma rende il testo meno nitido. PNG HDR e JPEG XR HDR mantengono tutta la luminosità e i colori di un monitor HDR. Copia inserisce sempre una bitmap non compressa negli appunti."
 tip_shot_save_quality = "Qualità JPEG per gli screenshot salvati, da 1 a 100. Tutti gli altri formati sono senza perdita di qualità e ignorano questo valore."
+
+tip_menu_quick_moves = "Metti Converti, Ridimensiona e Ruota direttamente nel menu principale del clic destro. Verranno rimossi dal sottomenu SageThumbs 2K, così non compariranno due volte."

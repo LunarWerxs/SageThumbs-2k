@@ -138,7 +138,6 @@ shot_tool_short_pixelate = "Pikselizacja"
 shot_tool_short_invert = "Odwróć"
 shot_tool_short_eyedropper = "Kroplomierz"
 shot_tool_short_move = "Przesuń"
-tip_menu_quick = "Umieszcza Konwertuj, Zmień rozmiar i Obróć także w głównym menu kontekstowym — nie tylko w podmenu."
 tip_max_file = "Pomija pliki większe niż ten rozmiar (MB), żeby ogromne pliki nie spowalniały Eksploratora."
 tip_max_thumb = "Największa miniatura (w pikselach), o jaką może poprosić Eksplorator."
 tip_jpeg = "Jakość JPEG dla miniatur i Konwertuj → JPG (0–100). Wyższa wygląda lepiej, ale zajmuje więcej."
@@ -857,3 +856,5 @@ cat_archive = "Archiwum"
 
 tip_shot_save_format = "Format pliku używany przez przycisk Zapisz. PNG i WebP zachowują każdy piksel dokładnie, a JPEG zajmuje mniej miejsca, ale zmiękcza tekst. PNG HDR i JPEG XR HDR zachowują pełną jasność i kolory monitora HDR. Przycisk Kopiuj zawsze umieszcza zwykłą bitmapę w schowku."
 tip_shot_save_quality = "Jakość JPEG dla zapisanych zrzutów ekranu, od 1 do 100. Wszystkie pozostałe formaty są bezstratne i ignorują to ustawienie."
+
+tip_menu_quick_moves = "Umieść Konwertuj, Zmień rozmiar i Obróć bezpośrednio w głównym menu kontekstowym. Znikną z podmenu SageThumbs 2K, więc nic nie będzie wyświetlane dwukrotnie."

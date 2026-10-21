@@ -38,7 +38,7 @@ pub use menu::{
     id_for, leaves, menu_order_to_save, ordered_top_level, quick_items, slot_for,
     top_level_audio_ok, top_level_needs_video, top_level_video_ok, video_top_level, CmdSlot,
     EmailSize, LeafId, MenuItem, QuickItem, RenamePattern, Transform, VerbAction, WallpaperMode,
-    MENU, MENU_ORDER_CUSTOM, MENU_SEP_TOKEN, QUICK_KEYS,
+    MENU, MENU_ORDER_CUSTOM, MENU_SEP_OFF_TOKEN, MENU_SEP_TOKEN, QUICK_KEYS,
 };
 // The leaf COUNT alone, for the QueryContextMenu id budget: cheaper than `leaves().len()`,
 // which allocated the whole ~46-entry Vec on every right-click just to read its length.

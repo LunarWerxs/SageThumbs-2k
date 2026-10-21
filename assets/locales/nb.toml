@@ -138,7 +138,6 @@ shot_tool_short_pixelate = "Pikselér"
 shot_tool_short_invert = "Inverter"
 shot_tool_short_eyedropper = "Velg"
 shot_tool_short_move = "Flytt"
-tip_menu_quick = "Legger Konverter, Endre størrelse og Roter også i hovedhurtigmenyen — ikke bare i undermenyen."
 tip_max_file = "Hopper over filer større enn dette (MB), slik at enorme filer ikke gjør Utforsker treg."
 tip_max_thumb = "Største miniatyrbilde (i piksler) Utforsker kan be om."
 tip_jpeg = "JPEG-kvalitet for miniatyrer og Konverter → JPG (0–100). Høyere ser bedre ut, men tar mer plass."
@@ -857,3 +856,5 @@ cat_archive = "Arkiv"
 
 tip_shot_save_format = "Filformatet som Lagre bruker. PNG og WebP bevarer hver piksel nøyaktig; JPEG gir mindre filer, men gjør teksten mindre skarp. PNG HDR og JPEG XR HDR bevarer hele lysstyrken og fargene fra en HDR-skjerm. Kopier legger alltid et vanlig punktgrafikkbilde på utklippstavlen."
 tip_shot_save_quality = "JPEG-kvalitet for lagrede skjermbilder, fra 1 til 100. Alle andre formater er tapsfrie og ignorerer denne innstillingen."
+
+tip_menu_quick_moves = "Legg Konverter, Endre størrelse og Roter direkte i hovedmenyen som vises når du høyreklikker. De fjernes fra undermenyen «SageThumbs 2K», slik at de ikke vises to ganger."

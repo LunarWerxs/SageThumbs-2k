@@ -296,13 +296,23 @@ impl ContextMenu_Impl {
 
         // 2) Quick-verb groups (see `insert_quick_verb_groups`). Image-only
         //    (Convert/Resize/Rotate), so dropped for audio AND video, same as the condensed set.
-        if quick_verbs && !kinds.condensed && !kinds.audio_only && !kinds.video_only {
+        let quick_on_main =
+            quick_verbs && !kinds.condensed && !kinds.audio_only && !kinds.video_only;
+        if quick_on_main {
             pos = insert_quick_verb_groups(hmenu, pos, idcmdfirst, budget, &vis);
         }
 
         // 3) The full "SageThumbs 2K" submenu (see `insert_sagethumbs_submenu`).
-        let sub_preview_inserted =
-            self.insert_sagethumbs_submenu(hmenu, pos, idcmdfirst, budget, mode, kinds, &vis);
+        let sub_preview_inserted = self.insert_sagethumbs_submenu(
+            hmenu,
+            pos,
+            idcmdfirst,
+            budget,
+            mode,
+            kinds,
+            quick_on_main,
+            &vis,
+        );
         preview_inserted | sub_preview_inserted
     }
 
@@ -310,7 +320,8 @@ impl ContextMenu_Impl {
     /// at its top in mode 1). This is the brand entry with every verb + Settings — kept
     /// cohesive with the preview above it, never "off on its own." We ship ONLY this
     /// classic handler (no packaged modern command), so "SageThumbs 2K" is listed exactly
-    /// once. Returns whether the preview was actually inserted into it.
+    /// once. `quick_on_main`: Convert, Resize and Rotate already sit on the main menu above,
+    /// so the submenu leaves them out. Returns whether the preview was actually inserted.
     #[allow(clippy::too_many_arguments)] // one call site; a struct would only rename these
     unsafe fn insert_sagethumbs_submenu(
         &self,
@@ -320,6 +331,7 @@ impl ContextMenu_Impl {
         budget: u32,
         mode: u32,
         kinds: Kinds,
+        quick_on_main: bool,
         vis: &settings::MenuVisibility,
     ) -> bool {
         let mut preview_inserted = false;
@@ -353,6 +365,11 @@ impl ContextMenu_Impl {
         };
         if !kinds.any_video {
             top.retain(|(item, _)| !verbs::top_level_needs_video(item.title()));
+        }
+        // Listed twice they only cluttered the submenu (Discord, 2026-10-21). The main-menu
+        // copies carry the same command ids, so nothing about dispatch changes.
+        if quick_on_main {
+            top.retain(|(item, _)| !verbs::QUICK_KEYS.contains(&item.title()));
         }
         // All at once, not one item per call: the dividers between groups need one shared
         // state (`Dividers`), or every one of them reads as leading and is dropped.

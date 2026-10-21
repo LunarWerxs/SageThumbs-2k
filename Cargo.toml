@@ -515,6 +515,10 @@ name = "context_menu_layout"
 path = "tests/context_menu_layout.rs"
 
 [[test]]
+name = "context_menu_quick_verbs"
+path = "tests/context_menu_quick_verbs.rs"
+
+[[test]]
 name = "convert_shot"
 path = "tests/convert_shot.rs"
 

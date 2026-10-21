@@ -135,7 +135,6 @@ shot_tool_short_pixelate = "Pixelér"
 shot_tool_short_invert = "Invertér"
 shot_tool_short_eyedropper = "Vælg"
 shot_tool_short_move = "Flyt"
-tip_menu_quick = "Lægger Konvertér, Størrelse og Rotér også i hovedhøjrekliksmenuen — ikke kun i undermenuen."
 tip_max_file = "Springer filer større end dette (MB) over, så enorme filer ikke gør Stifinder langsom."
 tip_max_thumb = "Største miniature (i pixels), som Stifinder må bede om."
 tip_jpeg = "JPEG-kvalitet for miniaturer og Konvertér → JPG (0–100). Højere ser bedre ud, men fylder mere."
@@ -849,3 +848,5 @@ cat_archive = "Arkiv"
 
 tip_shot_save_format = "Filformatet, som Gem bruger. PNG og WebP bevarer hver pixel præcist; JPEG fylder mindre, men gør teksten mindre skarp. PNG HDR og JPEG XR HDR bevarer hele lysstyrken og farverne fra en HDR-skærm. Kopiér lægger altid en almindelig bitmap på udklipsholderen."
 tip_shot_save_quality = "JPEG-kvalitet for gemte skærmbilleder, fra 1 til 100. Alle andre formater er tabsfri og ignorerer denne indstilling."
+
+tip_menu_quick_moves = "Vis Konvertér, Tilpas størrelse og Rotér direkte i Windows' hovedmenu ved højreklik. De fjernes fra undermenuen SageThumbs 2K, så de ikke vises to gange."

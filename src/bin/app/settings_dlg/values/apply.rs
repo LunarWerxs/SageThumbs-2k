@@ -34,16 +34,7 @@ pub(in super::super) unsafe fn apply_settings(hwnd: HWND) {
     // One message covers every tracked write above — apply_format_flags' own elevation
     // failure already shows its own (more specific, "admin required") message, so it is
     // deliberately not routed through `note`.
-    if SAVE_FAILED.with(|f| f.get()) {
-        let where_ = settings::ini_path()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| t("save_failed_registry").to_string());
-        message_box(
-            hwnd,
-            &t("msg_save_failed").replace("{path}", &where_),
-            "SageThumbs 2K",
-        );
-    }
+    report_save_failure(hwnd);
 
     // Nudge the shell to drop its cached file-association / context-menu state so a
     // menu toggle (e.g. MenuQuickVerbs, per-item visibility, the reorder) takes
@@ -61,6 +52,30 @@ pub(in super::super) unsafe fn apply_settings(hwnd: HWND) {
     if badge_changed {
         spawn_cache_rebuild(hwnd, None);
     }
+}
+
+/// Say where saving failed when any write since `SAVE_FAILED` was last reset did.
+unsafe fn report_save_failure(hwnd: HWND) {
+    if SAVE_FAILED.with(|f| f.get()) {
+        let where_ = settings::ini_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| t("save_failed_registry").to_string());
+        message_box(
+            hwnd,
+            &t("msg_save_failed").replace("{path}", &where_),
+            "SageThumbs 2K",
+        );
+    }
+}
+
+/// The "Edit menu items" popup's Done: save just the menu list (visibility, order, dividers)
+/// and tell the shell, so the next right-click shows it without Settings' Save (Discord,
+/// 2026-10-21). `hwnd` is the window that holds the list right now, the popup.
+pub(in super::super) unsafe fn apply_menu_list_now(hwnd: HWND) {
+    SAVE_FAILED.with(|f| f.set(false));
+    apply_menu_item_list_order(hwnd);
+    report_save_failure(hwnd);
+    notify_shell_assoc_changed();
 }
 
 /// The thumbnail-generation + format-badge settings, returning whether anything baked into
@@ -201,14 +216,18 @@ pub(super) unsafe fn apply_menu_item_list_order(hwnd: HWND) {
     };
     // Persist BOTH per-item visibility AND the row order (drag-to-reorder), reading
     // each row's lParam so a reordered list - items AND divider rows - saves
-    // correctly: item rows write their key + checkbox; divider rows write the
-    // separator token at their position.
+    // correctly: item rows write their key + checkbox; divider rows write a divider
+    // token at their position, the switched-off kind when their box is cleared.
     let count = SendMessageW(mlist, LVM_GETITEMCOUNT, None, None).0 as i32;
     let mut order: Vec<&'static str> = Vec::with_capacity(count as usize);
     for row in 0..count {
         let param = menu_row_param(mlist, row);
         if param == list::SEP_PARAM {
-            order.push(MENU_SEP_TOKEN);
+            order.push(if is_checked(mlist, row) {
+                MENU_SEP_TOKEN
+            } else {
+                MENU_SEP_OFF_TOKEN
+            });
         } else if param >= 0 && (param as usize) < MENU_ITEM_TOGGLES.len() {
             let key = MENU_ITEM_TOGGLES[param as usize].1;
             let _ = note(settings::set_menu_item_shown(key, is_checked(mlist, row)));
@@ -424,18 +443,22 @@ pub(super) unsafe fn apply_screenshot_hotkeys(hwnd: HWND) {
             let _ = note(settings::set_custom_action(id));
         }
     }
-    if let Ok(ahk) = GetDlgItem(Some(hwnd), ID_SHOT_ACTION_HK) {
-        let sel = SendMessageW(ahk, CB_GETCURSEL, None, None).0;
-        // Item 0's data is explicitly 0 ("(none)" — unbound), so reading item
-        // data uniformly handles every index, curated or the appended unknown-
-        // chord item alike.
-        let packed = if sel < 0 {
-            0
-        } else {
-            SendMessageW(ahk, CB_GETITEMDATA, Some(WPARAM(sel as usize)), None).0 as u32
-        };
-        let _ = note(settings::set_custom_action_hotkey(packed));
+    let _ = note(settings::set_custom_action_hotkey(custom_action_chord(
+        hwnd,
+    )));
+}
+
+/// Packed chord for the custom action: its "Enable custom action" switch is the on/off
+/// switch, like the instant screenshot's below, so off saves unbound whatever the hotkey
+/// combo still shows. 3.7.4 saved the combo alone, and a switch shown off left the hotkey
+/// live (Discord, 2026-10-21).
+pub(in super::super) unsafe fn custom_action_chord(hwnd: HWND) -> u32 {
+    if !checked(hwnd, ID_CUSTOM_ACTION_ENABLE) {
+        return 0;
     }
+    // Item 0's data is explicitly 0 ("(none)" — unbound), so reading item data uniformly
+    // handles every index, curated or the appended unknown-chord item alike.
+    super::hotkeys::combo_item_data(hwnd, ID_SHOT_ACTION_HK)
 }
 
 /// Packed chord for the instant-screenshot combo: the enable checkbox is the on/off switch,

@@ -610,7 +610,8 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   unsupported file gets a condensed file-utility set: Files to folder / Sort into folders
   / Rename / Pick color), menu-preview placement (off / submenu / main menu), **a subtle
   checkerboard behind transparent previews** (on by default), and **show quick actions
-  (Convert / Resize / Rotate) directly in the main right-click menu**.
+  (Convert / Resize / Rotate) directly in the main right-click menu** (they then leave the
+  SageThumbs 2K submenu, so nothing is listed twice).
 - **Limits & quality:** max file size (MB), max thumbnail size (px), JPEG quality,
   PNG compression. **Max file size bounds what is read INTO MEMORY, not what can be
   thumbnailed.** A picture past it is not given up on: it is read off the disk a strip at a
@@ -639,8 +640,10 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   Tick/untick to show or hide an item; **drag the rows
   to reorder them**, and **drag the divider rows** to regroup the menu; the right-click
   menu mirrors your arrangement exactly (group dividers included; an accent line shows the
-  drop point as you drag, and adjacent/edge dividers tidy themselves). A **Reset order**
-  button restores the default. Applies to both the classic and the modern Win11 menus.
+  drop point as you drag, and adjacent/edge dividers tidy themselves). Every divider row has
+  its own tick box too: clear it and the menu draws no line there, while the row keeps its
+  place. A **Reset order** button restores the default, and **Done** applies the list to the
+  menu straight away. Applies to both the classic and the modern Win11 menus.
   Only an order you actually arranged is kept: if you leave the default, the menu follows
   the default in later versions too. In an arranged order, an entry a later version adds
   joins its own group instead of the bottom.

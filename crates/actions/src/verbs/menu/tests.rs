@@ -478,3 +478,53 @@ fn settings_saves_only_an_order_the_user_arranged() {
     assert_eq!(saved[0], MENU_ORDER_CUSTOM);
     assert_eq!(effective_menu_tokens(&saved), arranged);
 }
+
+/// A divider switched off in Settings (Discord, 2026-10-21: "add checkboxes next to the
+/// separators") is saved, comes back unticked in the same place, and the menu draws nothing
+/// there. Where a switched-off divider meets a shown one they collapse to the shown one.
+#[test]
+fn a_switched_off_divider_keeps_its_row_and_leaves_no_line_in_the_menu() {
+    let factory = default_menu_tokens();
+    let first_div = factory.iter().position(|t| *t == MENU_SEP_TOKEN).unwrap();
+    let mut rows = factory.clone();
+    rows[first_div] = MENU_SEP_OFF_TOKEN;
+
+    let saved: Vec<String> = menu_order_to_save(&rows)
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    assert_eq!(
+        saved[0], MENU_ORDER_CUSTOM,
+        "an unticked divider is a choice"
+    );
+    assert_eq!(
+        effective_menu_tokens(&saved),
+        rows,
+        "it reads back in place"
+    );
+
+    let shown = |order: &[String]| {
+        order_top_level_with(order)
+            .iter()
+            .filter(|(it, _)| matches!(it, MenuItem::Separator))
+            .count()
+    };
+    let factory_saved: Vec<String> = Vec::new();
+    assert_eq!(
+        shown(&saved),
+        shown(&factory_saved) - 1,
+        "the switched-off divider draws no line"
+    );
+    let before = order_top_level_with(&saved)[first_div - 1].0.title();
+    assert_eq!(before, factory[first_div - 1]);
+    assert_ne!(
+        order_top_level_with(&saved)[first_div].0.title(),
+        "",
+        "no divider follows {before}"
+    );
+
+    // Off next to on: the pair is one shown divider.
+    let mut pair = factory.clone();
+    pair.insert(first_div, MENU_SEP_OFF_TOKEN);
+    assert_eq!(menu_order_to_save(&pair), Vec::<&str>::new());
+}

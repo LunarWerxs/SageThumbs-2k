@@ -14,13 +14,19 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 **New**
 
 - **Screenshots save in HDR: PNG HDR and JPEG XR HDR**
+- **Each divider in the right-click menu can be switched off**
 
 **Changed**
 
 - **Illustrator files with several artboards show each artboard whole**
+- **Done in Edit menu items applies the menu straight away**
+- **Quick actions on the main menu leave the SageThumbs 2K submenu**
 
 **Fixed**
 
+- **Dragging rows in Edit menu items moves them**
+- **The custom action's switch shows whether its hotkey is on, and turns it off**
+- **Space and Check selected reach every selected file type**
 - **The format badge and checkerboard show on every file type**
 - **The format badge shows on long extensions, tiny pictures and cloud files**
 - **A format badge picked during setup shows on thumbnails**
@@ -39,6 +45,29 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   saves HDR screenshots in). Arrows, text and other marks keep the look they had in the editor.
   A capture from an ordinary screen saves in these formats too. Thanks to spider623 for the
   idea (#67).
+- **Each divider in the right-click menu can be switched off.** Settings ▸ Right-click menu ▸
+  Edit menu items now has a tick box next to every divider line, as it has next to every item.
+  Clear one and the menu draws no line there; the row keeps its place in the list, so it can be
+  ticked again later. Thanks to justdeek on Discord for the idea.
+- **Done in Edit menu items applies the menu straight away.** Done (or closing the window)
+  saves the list and the next right-click shows it. It used to only close the window, and the
+  change waited for Settings' own Save. Thanks to justdeek on Discord.
+- **Quick actions on the main menu leave the SageThumbs 2K submenu.** With "Show quick actions
+  in the menu" on, Convert, Resize and Rotate now sit on the main right-click menu only, on both
+  the Windows 11 menu and the classic one, instead of being listed a second time inside the
+  SageThumbs 2K submenu. Thanks to justdeek on Discord for the idea.
+- **Dragging rows in Edit menu items moves them.** Dragging an item or a divider in the list did
+  nothing at all: the list sends its drag to the Settings window it was made in, and Settings
+  only listened while the list was still its own child, which it stops being once the editor
+  opens. Rows now move where they are dropped. Thanks to justdeek on Discord.
+- **The custom action's switch shows whether its hotkey is on, and turns it off.** Settings ▸
+  Quick action opened with "Enable custom action" off even while a hotkey was bound, with the
+  action and hotkey still live under it, so the hotkey kept running the action. The switch now
+  opens on when a hotkey is bound; switching it off greys both out and Save unbinds the hotkey,
+  so it stops firing. Thanks to justdeek on Discord.
+- **Space and Check selected reach every selected file type.** In Settings ▸ File types, Space
+  over several selected rows, and the right-click Check selected, Uncheck selected and Toggle
+  selected, changed only the first few dozen formats and skipped the rest.
 - **HDR screenshots keep the screen's real brightness.** On an HDR monitor, a screenshot came
   out too bright: windows and the desktop were blown out to white and mid-tones looked faded,
   because the capture ignored Windows' "SDR content brightness" setting. It now reads that

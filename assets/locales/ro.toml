@@ -135,7 +135,6 @@ shot_tool_short_pixelate = "Pixelare"
 shot_tool_short_invert = "Inversare"
 shot_tool_short_eyedropper = "Pipetă"
 shot_tool_short_move = "Mutare"
-tip_menu_quick = "Pune Convertește, Redimensionează și Rotește și în meniul contextual principal — nu doar în submeniu."
 tip_max_file = "Sare peste fișierele mai mari de atât (MB), ca fișierele uriașe să nu încetinească Explorer."
 tip_max_thumb = "Cea mai mare miniatură (în pixeli) pe care o poate cere Explorer."
 tip_jpeg = "Calitatea JPEG pentru miniaturi și Convertește → JPG (0–100). Mai mare arată mai bine, dar ocupă mai mult."
@@ -852,3 +851,5 @@ cat_archive = "Arhivă"
 
 tip_shot_save_format = "Formatul de fișier folosit de butonul Salvează. PNG și WebP păstrează fiecare pixel exact; JPEG ocupă mai puțin spațiu, dar estompează textul. PNG HDR și JPEG XR HDR păstrează întreaga luminozitate și gamă de culori a unui monitor HDR. Copiază pune întotdeauna un bitmap simplu în clipboard."
 tip_shot_save_quality = "Calitatea JPEG pentru capturile de ecran salvate, de la 1 la 100. Toate celelalte formate sunt fără pierderi și ignoră această setare."
+
+tip_menu_quick_moves = "Pune Convertire, Redimensionare și Rotire direct în meniul principal de clic dreapta. Acestea ies din submeniul SageThumbs 2K, astfel încât să nu fie listate de două ori."
