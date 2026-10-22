@@ -7,15 +7,15 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 3.9.0
 
 **TL;DR**
 
 **New**
 
-- **Screenshots save in HDR: PNG HDR and JPEG XR HDR**
+- **Screenshots save in HDR: PNG HDR and JPEG XR HDR** (#67)
 - **Each divider in the right-click menu can be switched off**
-- **Pick the checkerboard's colours**
+- **Pick the checkerboard's colours** (#69)
 
 **Changed**
 
@@ -28,16 +28,16 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **Dragging rows in Edit menu items moves them**
 - **The custom action's switch shows whether its hotkey is on, and turns it off**
 - **Space and Check selected reach every selected file type**
-- **The format badge and checkerboard show on every file type**
+- **The format badge and checkerboard show on every file type** (fixes #66)
 - **The format badge shows on long extensions, tiny pictures and cloud files**
 - **A format badge picked during setup shows on thumbnails**
-- **Explorer comes back after Rebuild thumbnail cache and Repair file associations**
+- **Explorer comes back after Rebuild thumbnail cache and Repair file associations** (fixes #68)
 - **The desktop no longer flashes during setup**
 - **`st2k doctor` no longer flags .ico files by mistake**
-- **HDR screenshots keep the screen's real brightness**
+- **HDR screenshots keep the screen's real brightness** (#67)
 - **JPEG 2000 files with a far-off tile grid show their picture**
 
-**Everything in Unreleased**
+**Everything in 3.9.0**
 
 - **Screenshots save in HDR: PNG HDR and JPEG XR HDR.** Settings ▸ Screenshot files ▸ Save
   screenshots as now offers two HDR formats that keep an HDR monitor's full brightness and
@@ -97,7 +97,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   both off or uninstall, and pictures Explorer had already cached without the badge are redrawn
   (at your next sign-in, or straight away from the refresh offer after an update). Opening
   Settings checks again, so a default program you pick later is covered too. `st2k doctor` says
-  when a type is still drawn by Windows and how to fix it (#66).
+  when a type is still drawn by Windows and how to fix it (fixes #66).
 - **The format badge shows on long extensions, tiny pictures and cloud files.** Measured over
   every format SageThumbs reads, three kinds of file still went without the badge. A file
   whose extension is longer than five letters got none: it now gets a short label (`.aseprite`
@@ -112,7 +112,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **Explorer comes back after Rebuild thumbnail cache and Repair file associations.** Now and
   then the taskbar and desktop disappeared and stayed gone: Explorer had only half closed, so it
   was never started again. SageThumbs now gives Explorer a few seconds, finishes closing it
-  only once its taskbar is gone, and starts it again (#68).
+  only once its taskbar is gone, and starts it again (fixes #68).
 - **The desktop no longer flashes during setup.** Setup and the welcome screen could both
   restart Explorer at the same moment, so the screen flashed between black and an empty
   desktop. A restart now waits for one already running to finish.
