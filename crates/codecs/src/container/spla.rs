@@ -817,10 +817,13 @@ mod tests {
             read: read.clone(),
         };
         let mut zip = ZipArchive::new(counted).expect("zip");
+        // zip 9.0.5's open scans the whole file for the central directory, so count only what
+        // extraction reads: each entry's bytes once is less than the package.
+        read.set(0);
         let png_bytes = extract(&mut zip).expect("should render kept parts");
         assert!(
-            read.get() < 2 * len,
-            "{} bytes read from a {len}-byte package: the skipped part was read again",
+            read.get() < len,
+            "{} bytes read extracting a {len}-byte package: the skipped part was read again",
             read.get()
         );
         let img = image::load_from_memory(&png_bytes)

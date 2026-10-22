@@ -158,7 +158,9 @@ mod store;
 /// `windows_registry::Result`. Map the file failure onto a generic HRESULT rather than
 /// widening ~40 signatures for a case callers already treat as best-effort.
 fn io_result(r: std::io::Result<()>) -> windows_registry::Result<()> {
-    r.map_err(|_| windows::core::Error::from(windows::Win32::Foundation::E_FAIL))
+    r.map_err(|_| {
+        windows_result::Error::from_hresult(windows_result::HRESULT(0x8000_4005_u32 as i32))
+    })
 }
 
 fn get_dword(name: &str, default: u32) -> u32 {

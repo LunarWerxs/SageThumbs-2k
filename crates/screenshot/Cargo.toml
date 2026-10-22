@@ -24,7 +24,7 @@ windows = { workspace = true }
 # The `#[implement]` macro (the capture overlay's UI Automation providers) expands to
 # `windows_core::` paths.
 windows-core = "0.62"
-windows-registry = "0.6"
+windows-registry = "0.100"
 st2k_base = { package = "sagethumbs2k-base", path = "../base" }
 st2k_codecs = { package = "sagethumbs2k-codecs", path = "../codecs" }
 st2k_actions = { package = "sagethumbs2k-actions", path = "../actions" }

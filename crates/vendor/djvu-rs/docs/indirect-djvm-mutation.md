@@ -111,7 +111,7 @@ plan, destination policy, and atomic replacement behavior.
    - Cover resolver errors, missing components, and successful page metadata or
      text-layer mutation.
    - Shipped as
-     [`DjVuDocumentMut::from_indirect_resolved`](../src/djvu_mut.rs). It resolves
+     [`DjVuDocumentMut::from_indirect_resolved`](../src/djvu_mut/mod.rs). It resolves
      every `DIRM` component, validates each is a `FORM:DJVU`/`DJVI`/`THUM`,
      reuses the original BZZ directory metadata while flipping the bundled bit
      and recomputing the offset table, and returns a side-effect-free bundled
@@ -124,7 +124,7 @@ plan, destination policy, and atomic replacement behavior.
    - Stage temporary files and document atomicity guarantees.
    - Reject unsafe or duplicate DIRM names.
    - Shipped as
-     [`IndirectRewritePlan`](../src/djvu_mut.rs); see
+     [`IndirectRewritePlan`](../src/djvu_mut/mod.rs); see
      [External-File Rewrite Path](#external-file-rewrite-path-326) below.
 
 ## External-File Rewrite Path (#326)

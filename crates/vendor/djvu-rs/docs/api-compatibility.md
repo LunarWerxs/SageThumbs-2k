@@ -40,7 +40,10 @@ bump). This includes:
 - The error hierarchy (`DjVuError`, `IffError`, `Jb2Error`, `Iw44Error`,
   `BzzError`, `DocError`, `RenderError`) — see the error-stability rule below.
 - The rendering entry points in [`djvu_render`] (`RenderOptions`,
-  `render_pixmap`, `render_region`, `render_coarse`, `render_progressive`, …).
+  `RenderRequest`, `render_pixmap`, …). The older `render_*` variants
+  (`render_into`, `render_streaming`, `render_region`, `render_coarse`,
+  `render_progressive`, …) are deprecated in favour of `RenderRequest`; they
+  keep working until a future breaking release removes them.
 - The codec entry points of the workspace crates that the README advertises as
   `no_std`-callable: `iff::parse_form`, `bzz::bzz_decode`, `jb2::decode_dict`,
   `iw44::Iw44Image::decode_chunk`.
@@ -114,8 +117,10 @@ they can outlive the minimum window without cost.
 - Experimental surfaces are exempt: they may break in any release.
 
 Unintended breakage of the **stable** surface is caught by
-[`cargo-semver-checks`](#enforcement) in CI, which compares the PR against the
-latest published version and understands the `0.x` breaking axis. An
+[`cargo-semver-checks`](#enforcement) in CI, which compares each change against
+its parent (a PR against its base commit, a push to `main` against the previous
+tip) and understands the `0.x` breaking axis. A break declared by an earlier
+PR is therefore not reported again before the next release. An
 intended break is declared with a `!` in the PR title (`feat(scope)!: …`) or
 a `BREAKING CHANGE:` footer, the same marker release-please reads; the gate
 then checks the PR as the breaking bump it will produce (`0.Y` on 0.x) and
@@ -160,10 +165,10 @@ the break:
 
 | Item | Was | Is |
 |------|-----|-----|
-| [`DjVuPage::decoded_bg44`](../src/djvu_document.rs) | `Option<&Iw44Image>` | `Option<Arc<Iw44Image>>` |
-| [`DjVuPage::decoded_bg44_partial`](../src/djvu_document.rs) | `Option<&Iw44Image>` | `Option<Arc<Iw44Image>>` |
-| [`DjVuPage::decoded_mask`](../src/djvu_document.rs) | `Option<&Bitmap>` | `Option<Arc<Bitmap>>` |
-| [`DjVuPage::decoded_fg44`](../src/djvu_document.rs) | `Option<&Iw44Image>` | `Option<Arc<Iw44Image>>` |
+| [`DjVuPage::decoded_bg44`](../src/djvu_document/page.rs) | `Option<&Iw44Image>` | `Option<Arc<Iw44Image>>` |
+| [`DjVuPage::decoded_bg44_partial`](../src/djvu_document/page.rs) | `Option<&Iw44Image>` | `Option<Arc<Iw44Image>>` |
+| [`DjVuPage::decoded_mask`](../src/djvu_document/page.rs) | `Option<&Bitmap>` | `Option<Arc<Bitmap>>` |
+| [`DjVuPage::decoded_fg44`](../src/djvu_document/page.rs) | `Option<&Iw44Image>` | `Option<Arc<Iw44Image>>` |
 
 `Arc<T>` derefs to `T`, so most call sites need no change; a site that stored
 the returned reference now stores an owned handle instead, which is what makes
@@ -192,6 +197,9 @@ Behaviour also changed: the render caches are now bounded by default. See §7.
 - MSRV is a **required** CI gate (the `MSRV (1.88)` job builds the crate on the
   pinned toolchain). A PR that uses a newer-than-MSRV language or std feature
   fails that gate.
+- One exception: the experimental `ocr-onnx` feature needs Rust **1.91**, the
+  MSRV of its `tract-onnx` 0.23 dependency. The MSRV job builds the default
+  features, so it does not cover `ocr-onnx`.
 
 ## 4. Feature combinations and targets
 
@@ -283,14 +291,14 @@ of ceilings lives in [`../SECURITY.md`](../SECURITY.md#decode-time-resource-ceil
 
 **Configurable budgets.** Callers may supply a [`ResourceLimits`](../../src/validate.rs)
 budget via [`ParseOptions::limits`](../../src/validate.rs) on
-[`DjVuDocument::parse_with_options`](../../src/djvu_document.rs) /
+[`DjVuDocument::parse_with_options`](../../src/djvu_document/document.rs) /
 [`Document::from_bytes_with_options`](../../src/lib.rs), or via
-[`render_pixmap_with_limits`](../../src/djvu_render.rs) on render entry points.
+[`RenderRequest::limits`](../../src/djvu_render/request.rs) on a render.
 Unset fields mean “no limit on this axis”. When render calls omit an explicit
 override, the document inherits limits stored at parse time. When both are
 unset, render output inherits [`DEFAULT_MAX_RENDER_PIXELS`]. Use
 [`ResourceLimits::inherited`] for the documented default render ceiling only.
-Per-render tightening uses [`render_pixmap_with_limits`](../../src/djvu_render.rs).
+Per-render tightening uses [`RenderRequest::limits`](../../src/djvu_render/request.rs).
 The validator and `djvu validate --limits` use the same type.
 
 **Render caches are bounded by default (since 0.33).** The decode results a
@@ -327,7 +335,7 @@ the failing entry point returns a typed error naming the axis and operation:
 | JB2 too many records | `Jb2Error::TooManyRecords` | `DjVuError::Jb2` |
 | IW44 image too large | `Iw44Error::ImageTooLarge` | `DjVuError::Iw44` |
 | BZZ block / output too large | `BzzError::BlockSizeTooLarge(_)` / `OutputTooLarge` | `DjVuError::Bzz` |
-| Configured document/render budget exceeded | [`ResourceLimitExceeded`](../../src/validate.rs) | [`DocError::ResourceLimit`](../../src/djvu_document.rs) / [`RenderError::ResourceLimit`](../../src/djvu_render.rs) |
+| Configured document/render budget exceeded | [`ResourceLimitExceeded`](../../src/validate.rs) | [`DocError::ResourceLimit`](../../src/djvu_document/error.rs) / [`RenderError::ResourceLimit`](../../src/djvu_render/options.rs) |
 
 The `DjVuError` variant (`Iff` / `Jb2` / `Iw44` / `Bzz`) identifies which
 decode stage rejected the input; the inner variant identifies the axis.

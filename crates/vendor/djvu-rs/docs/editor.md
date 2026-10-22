@@ -12,13 +12,25 @@ Schema version `1` supports:
 
 - replacing or removing a page `TXTz` text layer;
 - replacing or removing page `ANTz` annotations;
-- replacing or removing page-level `METz` metadata;
-- replacing or removing document-level `METz` metadata;
+- replacing or removing page-level metadata;
+- replacing or removing document-level metadata;
 - replacing or removing bundled-document `NAVM` bookmarks.
 
 Both single-page `FORM:DJVU` documents and bundled `FORM:DJVM` documents with
 at least one page are supported. An indirect or empty `FORM:DJVM` is rejected
 because editing it needs a resolver-aware multi-file commit model.
+
+Metadata is written where DjVuLibre reads it, as a `(metadata …)` block in
+an `ANTz` annotation chunk. Other annotations in that chunk are kept.
+
+- Page metadata goes into the page's own `ANTz`.
+- Document metadata of a single-page file goes into the page's `ANTz`.
+- Document metadata of a bundled file goes into the shared annotation
+  component (`FORM:DJVI`). The first edit adds that component, its `DIRM`
+  entry and an `INCL` reference in every page, as `djvused set-meta` does.
+- Older `METa`/`METz` chunks are removed, because DjVuLibre ignores them.
+- Replacing or removing page annotations keeps the `(metadata …)` block of
+  that chunk, unless the new annotation carries its own block.
 
 ## Validation and commit behavior
 
@@ -31,6 +43,11 @@ result in memory, creates a sibling temporary file, writes and syncs it, and
 then renames it over the destination. A rejected request therefore leaves an
 existing destination unchanged. Input and output paths that resolve to the
 same file are rejected.
+
+`DocumentEditor::commit_bytes` is that commit step on its own: it validates
+edited bytes (for example from `DjVuDocumentMut`) and atomically replaces the
+destination. It may replace the file the bytes were read from; the Python
+`Editor.save` uses it.
 
 Operations are applied in order. On a single-page document, page-level and
 document-level metadata refer to the same root `FORM:DJVU`; use a bundled

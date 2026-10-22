@@ -20,63 +20,49 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
-      pr: ${{ steps.release.outputs.pr }}
     steps:
+      # Two passes of the same action, split by token.
+      #
+      # Pass 1 (GITHUB_TOKEN) creates the tag and the GitHub Release once a release
+      # PR is merged. It must stay on GITHUB_TOKEN: GitHub skips workflow runs for
+      # pushes authored by GITHUB_TOKEN, so the tag does NOT start publish.yml
+      # (`push: tags: ['v*']`). The publish job below publishes the crates instead;
+      # an App-authored tag would start publish.yml as well and publish twice.
+      #
+      # The same guard means the tag does not start publish-packages.yml either
+      # (PyPI + npm). workflow_dispatch is exempt from that guard (GitHub docs:
+      # "workflow_dispatch and repository_dispatch events always create workflow
+      # runs"), so the dispatch-publish-packages job starts it explicitly.
       - uses: googleapis/release-please-action@v4
         id: release
         with:
-          # Use the built-in GITHUB_TOKEN — no dependency on an expiring PAT.
-          # A dedicated RELEASE_PLEASE_TOKEN was previously used only so the release
-          # PR would auto-trigger CI, but that PAT expired and silently broke the
-          # 0.25.0 release ('Bad credentials'). Releases are now cut by manually
-          # pushing the vX.Y.Z tag, which triggers publish.yml independently of this
-          # workflow (see RELEASING.md), so the PAT is no longer on the release path.
-          # Tradeoff: GitHub does not run workflows on events created by GITHUB_TOKEN,
-          # so the release PR would show BLOCKED on never-run required checks. The
-          # dispatch-ci job below fixes that: workflow_dispatch is exempt from the
-          # recursion guard, and a run dispatched on the release branch reports its
-          # check runs against the branch tip — which is the PR head commit — so the
-          # required checks satisfy the ruleset without an admin bypass.
-          #
-          # The same GITHUB_TOKEN restriction means the vX.Y.Z tag this action pushes
-          # does NOT trigger publish-packages.yml's `push: tags:` filter (PyPI + npm)
-          # — GitHub skips workflow runs for push events authored by GITHUB_TOKEN.
-          # workflow_dispatch is explicitly exempt from that recursion guard (GitHub
-          # docs: "workflow_dispatch and repository_dispatch events always create
-          # workflow runs"), so the dispatch-publish-packages job below fires
-          # publish-packages.yml via `gh workflow run ... workflow_dispatch` instead of
-          # relying on the tag push, using nothing but this workflow's own GITHUB_TOKEN.
           token: ${{ secrets.GITHUB_TOKEN }}
+          skip-github-pull-request: true
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  # A release PR opened by GITHUB_TOKEN never fires `pull_request` workflows, so
-  # without this job none of the five required checks ever report and every release
-  # needs an admin bypass of the branch ruleset (#800). Dispatching ci.yml on the
-  # release branch produces those same check runs on the PR head commit.
-  dispatch-ci:
-    name: Dispatch CI for the release PR
-    needs: release-please
-    if: ${{ needs.release-please.outputs.pr }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Trigger ci.yml on the release branch
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_JSON: ${{ needs.release-please.outputs.pr }}
-        run: |
-          set -euo pipefail
-          # Read the branch at run time rather than with fromJSON() in `env:` — a
-          # missing field there fails the job, here it degrades to a warning.
-          BRANCH=$(printf '%s' "$PR_JSON" | jq -r '.headBranchName // empty')
-          if [ -z "$BRANCH" ]; then
-            echo "::warning::release-please reported no head branch; skipping the CI dispatch"
-            exit 0
-          fi
-          echo "Dispatching ci.yml on $BRANCH"
-          gh workflow run ci.yml \
-            --repo "${{ github.repository }}" \
-            --ref "$BRANCH"
+      # Pass 2 (GitHub App token) opens and updates the release PR. A PR pushed by
+      # GITHUB_TOKEN gets its `pull_request` runs held for manual approval, so the
+      # required checks never start without a click. A PR pushed by an App starts
+      # them like any other PR. Dispatching ci.yml on the release branch does not
+      # help (#800): checks from a workflow_dispatch run are not linked to the PR.
+      #
+      # The App (contents, pull requests, issues: write) is installed on this repo;
+      # its client ID is the RELEASE_APP_CLIENT_ID variable and its private key the
+      # RELEASE_APP_PRIVATE_KEY secret. A short-lived token is minted per run, so
+      # nothing expires (a personal access token broke the 0.25.0 release).
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          skip-github-release: true
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
 
   publish:
     needs: release-please
@@ -141,7 +127,7 @@ jobs:
     steps:
       # publish-packages.yml also listens for `push: tags:`, but the tag this
       # workflow just created was pushed by GITHUB_TOKEN, so that push event never
-      # fires it (see the comment on the release-please step above). Start it
+      # fires it (see the comment on the release-please steps above). Start it
       # explicitly instead — workflow_dispatch is exempt from that guard, so this
       # works with the job's own GITHUB_TOKEN and needs no personal access token.
       - name: Trigger publish-packages.yml for ${{ needs.release-please.outputs.tag_name }}

@@ -50,7 +50,7 @@ canvas exactly once.
   byte — for the cached entry point this holds across cold misses, warm
   hits, and any interleaving (`tile_pixels_independent_of_request_order`).
 - **Cache transparency.** `render_tile_cached` is byte-identical to
-  `render_tile`; it routes through `render_region_tiled`, a memoization of
+  `render_tile`; it routes through `RenderRequest::cached`, a memoization of
   the same compositor (see C4_TILE_CACHE notes there).
 
 ### Layer selection
@@ -59,19 +59,29 @@ Tiles composite the same layer stack as `render_pixmap` (mask + foreground +
 background). Selecting individual layers (mask-only, background-only) is a
 later slice of #691.
 
-### Rejected options
+### Anti-aliasing and Lanczos-3
 
-`TileLayout::new` returns `RenderError::UnsupportedOption` for:
+Every option is allowed. The grid covers the page `render_pixmap` returns
+before rotation (`unrotated_size`):
 
-- `Resampling::Lanczos3` — a windowed whole-image resampling post-pass; its
-  kernel windows straddle tile boundaries, so per-tile assembly cannot be
-  byte-identical. Follow-up in #691.
-- `aa: true` — a post-pass that *halves* the output; the tile grid would no
-  longer match the produced pixels. Request the target size via
-  `opts.width`/`height` instead.
+- `aa: true` halves the page, so the grid covers `opts.width / 2 ×
+  opts.height / 2` (min 1). A tile is averaged from the doubled window of
+  the canvas, exactly as `render_region` does.
+- `Resampling::Lanczos3` at a scaled size keeps the requested size and
+  ignores `aa`. A tile is cut from the rescaled page. The first cache miss
+  rescales the whole page and, when the page fits the tile-cache budget,
+  caches all of its tiles, so the rest of the grid hits.
+
+Invalidation drops a Lanczos-3 tile when the region lies within the
+filter's reach of it (3 pixels at the coarser scale, plus one), because the
+filter carries a changed pixel into its neighbours.
 
 `permissive: true` is allowed and inherits the region renderer's recovery
-semantics (the cached path falls back to uncached rendering in that mode).
+semantics. Strict and permissive requests share the cache: layers decode
+before any tile lookup, so a strict request on a damaged page still fails,
+and on an intact page both modes composite identical tiles. Rotated requests
+use the cache too: tiles are stored in native orientation and the assembled
+region is rotated once.
 
 ### Resource limits
 
@@ -227,4 +237,3 @@ decodes, which the non-progressive paths resolve through
 ## Planned follow-ups (#691)
 
 - Layer selection (mask/foreground/background) per tile request.
-- Lanczos-3 tiles (needs kernel-window-aware tile aprons).

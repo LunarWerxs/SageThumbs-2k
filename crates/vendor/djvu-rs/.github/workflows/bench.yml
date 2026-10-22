@@ -64,8 +64,8 @@ jobs:
             simd:
               # IW44 SIMD lives in the djvu-iw44 crate since the codec extraction
               # (#344); the old `src/iw44_*.rs` are thin re-export shims now.
-              - 'crates/djvu-iw44/src/lib.rs'
-              - 'crates/djvu-iw44/src/encode.rs'
+              # The decoder is split one file per concern (#898), so match them all.
+              - 'crates/djvu-iw44/src/*.rs'
               - 'benches/codecs.rs'
               - 'benches/render.rs'
               - '.github/workflows/bench.yml'

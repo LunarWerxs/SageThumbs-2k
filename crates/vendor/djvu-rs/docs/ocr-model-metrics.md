@@ -19,7 +19,8 @@ jitter passes while a silent regression fails. CI runs it in the main-only
 
 Pinned pipeline: `ppocr-v4-mobile-det` (detection) +
 `ppocr-v5-cyrillic-rec` with its pinned dictionary (recognition),
-tract-onnx 0.22.3.
+tract-onnx 0.22.3. Re-measured 2026-10-02 under tract-onnx 0.23.8: the
+same numbers to three decimals.
 
 Measured 2026-08-12 on macOS arm64 (debug profile; metrics are
 platform-stable by design — fixed-point preprocessing, deterministic

@@ -79,3 +79,13 @@ fn lazy_document_inherits_reader_thread_safety() {
     }
     lazy_is_send_sync::<std::io::Cursor<Vec<u8>>>();
 }
+
+/// The lazy indirect document is `Send + Sync` whenever its resolver is.
+#[cfg(feature = "async")]
+#[test]
+fn lazy_indirect_document_inherits_resolver_thread_safety() {
+    fn lazy_is_send_sync<Res: Send + Sync + 'static>() {
+        assert_send_sync::<djvu_rs::djvu_async::LazyIndirectDocument<Res>>();
+    }
+    lazy_is_send_sync::<fn(djvu_rs::ComponentId) -> std::future::Ready<Vec<u8>>>();
+}

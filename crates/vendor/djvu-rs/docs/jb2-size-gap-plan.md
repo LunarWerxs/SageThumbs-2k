@@ -3,6 +3,23 @@
 Status: **Both branches evaluated. Branch A: validated lossless −11.7% Sjbz on text (same-size rec-6, experimental). Branch B: B0 found the existing same-size `lossy_threshold` is a −22…−24%/SSIM≥0.999 text lever that ships off by default; B1 (cross-size lossy rec-7) implemented + measured + REVERTED (dominated by raising `lossy_threshold`). Shipped `Jb2EncodeOptions::lossy_text()` (opt-in 0.02 preset, ≈−22% text at SSIM 0.999) + enriched docs; NOT enabled by default (archival-safe). Plan complete.** Owner: perf.
 See `PERF_EXPERIMENTS.md` for the measured history this plan builds on.
 
+**Update 2026-09-27 — lossless lever shipped.** Two findings changed the
+picture. First, the scorecard's 2.1× `cjb2` gap was mostly profile choice:
+`PageEncoder` `Lossless` wrote direct tiles and never used the dictionary.
+Second, a refinement scored and coded with the decoder's own **center
+alignment** (no resampling — the fault #322 hit) and emitted as **record 4**,
+so refined glyphs join the dictionary, is lossless −1.9…−20.3 % Sjbz against
+the exact-match dictionary. `encode_jb2_lossless` combines both and is now the
+`Lossless` default: 0.952–1.011× `cjb2`. See PERF_EXPERIMENTS.md,
+"JB2 center-aligned record-4 refinement".
+
+**Update 2026-09-28.** The same refinement now runs on every JB2 write path:
+the bilevel multi-page bundle (also against shared `Djbz` symbols), the
+colour `Quality`/`Archival` mask and the layered bundle, and
+`chunk_encode::Jb2Chunk`. Colour text pages shrink 2–19 % as whole files.
+See PERF_EXPERIMENTS.md, "JB2 aligned refinement in bundles, colour masks and
+`chunk_encode`".
+
 ## 1. Where the gap actually is
 
 The naive framing ("our JB2 files are bigger") is too coarse. The measured

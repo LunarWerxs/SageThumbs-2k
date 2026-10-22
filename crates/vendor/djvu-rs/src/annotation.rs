@@ -5,8 +5,8 @@
 //!
 //! ## Key public types
 //!
-//! - `Annotation` — page-level annotation (background, zoom, mode)
-//! - `MapArea` — a clickable area with URL, description, and shape
+//! - `Annotation` — page-level annotation (background, zoom, mode, other forms)
+//! - `MapArea` — a clickable area with URL, description, shape, and options
 //! - `Shape` — rect / oval / poly / line / text area shape
 //! - `Color` — RGB color parsed from `#rrggbb` strings
 //! - `AnnotationError` — typed errors from this module
@@ -15,14 +15,19 @@
 //!
 //! ANTa/ANTz contain S-expression-like text:
 //! ```text
-//! (background #ffffff)
-//! (zoom 100)
+//! (background #FFFFFF)
+//! (zoom d100)
 //! (mode color)
-//! (maparea "url" "desc" (rect x y w h) ...)
+//! (maparea "url" "desc" (rect x y w h) (xor) (hilite #FFFF00))
+//! (maparea (url "url" "_blank") "desc" (oval x y w h) (shadow_in 3))
 //! ```
 //!
-//! This parser handles only the subset documented in the DjVu v3 spec
-//! (background, zoom, mode, maparea with rect/oval/poly/line/text shapes).
+//! The parser types the forms of the DjVu v3 spec (background, numeric zoom,
+//! mode, maparea with rect/oval/poly/line/text shapes, border, and hilite).
+//! Every other top-level form (`metadata`, `align`, `xmp`, symbolic zoom, …)
+//! and every other maparea option (`border_avis`, `opacity`, `width`, …) is
+//! kept as S-expression text in [`Annotation::extra`](crate::annotation::Annotation::extra) / [`MapArea::extra`](crate::annotation::MapArea::extra),
+//! so a parse → edit → encode round trip loses nothing DjVuLibre reads.
 
 #[cfg(not(feature = "std"))]
 use alloc::{
@@ -87,10 +92,14 @@ pub enum Shape {
     Text(Rect),
 }
 
-/// A border style (currently stored as a raw string for forward-compat).
+/// The border of a maparea.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Border {
+    /// The DjVuLibre border option without its parentheses: `none`, `xor`,
+    /// `border #RRGGBB`, or `shadow_in` / `shadow_out` / `shadow_ein` /
+    /// `shadow_eout` with an optional thickness (`shadow_in 3`). Encoded as
+    /// `(<style>)`.
     pub style: String,
 }
 
@@ -106,8 +115,14 @@ pub struct Highlight {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MapArea {
     /// Target URL (empty string if no link).
+    #[cfg_attr(feature = "serde", serde(default))]
     pub url: String,
+    /// Browser frame for the link, from the `(url "href" "target")` form;
+    /// `None` for the plain `"href"` form.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub target: Option<String>,
     /// Human-readable description.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub description: String,
     /// Shape of the area.
     pub shape: Shape,
@@ -115,11 +130,17 @@ pub struct MapArea {
     pub border: Option<Border>,
     /// Optional highlight color.
     pub highlight: Option<Highlight>,
+    /// Every other option of the area as S-expression text, in source order
+    /// (`(border_avis)`, `(opacity 50)`, `(lineclr #FF0000)`, …). Encoded
+    /// back unchanged.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub extra: Vec<String>,
 }
 
 /// Page-level annotation data.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct Annotation {
     /// Background color for the page view.
     pub background: Option<Color>,
@@ -127,6 +148,11 @@ pub struct Annotation {
     pub zoom: Option<u32>,
     /// Display mode string (e.g. "color", "bw", "fore", "back").
     pub mode: Option<String>,
+    /// Every other top-level form as S-expression text, in source order
+    /// (`(metadata …)`, `(align center top)`, `(zoom page)`, …). Encoded back
+    /// unchanged.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub extra: Vec<String>,
 }
 
 // ---- Entry points -----------------------------------------------------------
@@ -154,51 +180,68 @@ fn parse_annotation_text(text: &str) -> Result<(Annotation, Vec<MapArea>), Annot
     let mut mapareas = Vec::new();
 
     for expr in &exprs {
-        if let SExpr::List(items) = expr {
-            let head = match items.first() {
-                Some(SExpr::Atom(s)) => s.as_str(),
-                _ => continue,
-            };
-
-            match head {
-                "background" => {
-                    if let Some(SExpr::Atom(color_str)) = items.get(1) {
-                        annotation.background = Some(parse_color(color_str)?);
-                    }
-                }
-                "zoom" => {
-                    if let Some(SExpr::Atom(n)) = items.get(1) {
-                        annotation.zoom = Some(parse_uint(n)?);
-                    }
-                }
-                "mode" => {
-                    if let Some(SExpr::Atom(m)) = items.get(1) {
-                        annotation.mode = Some(m.clone());
-                    }
-                }
-                "maparea" => {
-                    if let Some(ma) = parse_maparea(items)? {
-                        mapareas.push(ma);
-                    }
-                }
-                _ => {} // ignore unknown top-level forms
+        let items = match expr {
+            SExpr::List(items) => items.as_slice(),
+            _ => &[],
+        };
+        let head = items.first().and_then(SExpr::text);
+        let value = items.get(1).and_then(SExpr::text);
+        match (head, value) {
+            (Some("background"), Some(color)) => {
+                annotation.background = Some(parse_color(color)?);
             }
+            (Some("zoom"), Some(zoom)) if parse_zoom(zoom).is_some() => {
+                annotation.zoom = parse_zoom(zoom);
+            }
+            (Some("mode"), Some(mode)) => annotation.mode = Some(mode.to_string()),
+            (Some("maparea"), _) => {
+                if let Some(ma) = parse_maparea(items)? {
+                    mapareas.push(ma);
+                }
+            }
+            _ => annotation.extra.push(sexpr_text(expr)),
         }
     }
 
     Ok((annotation, mapareas))
 }
 
+/// A numeric zoom: DjVuLibre's `d150`, or the bare `150` older djvu-rs
+/// releases wrote. Symbolic zooms (`page`, `width`, …) return `None` and stay
+/// in [`Annotation::extra`].
+fn parse_zoom(value: &str) -> Option<u32> {
+    value.strip_prefix('d').unwrap_or(value).parse().ok()
+}
+
+/// The DjVuLibre border options (the head of a maparea option list).
+const BORDER_STYLES: [&str; 7] = [
+    "none",
+    "xor",
+    "border",
+    "shadow_in",
+    "shadow_out",
+    "shadow_ein",
+    "shadow_eout",
+];
+
+fn sexpr_text(expr: &SExpr) -> String {
+    let mut out = String::new();
+    expr.write_to(&mut out);
+    out
+}
+
 fn parse_maparea(items: &[SExpr]) -> Result<Option<MapArea>, AnnotationError> {
     // (maparea "url" "desc" (shape ...) [options...])
-    let url = match items.get(1) {
-        Some(SExpr::Atom(s)) => s.clone(),
-        _ => String::new(),
+    // (maparea (url "url" "target") "desc" (shape ...) [options...])
+    let (url, target) = match items.get(1) {
+        Some(SExpr::List(link)) if link.first().and_then(SExpr::text) == Some("url") => (
+            link.get(1).and_then(SExpr::text).unwrap_or("").to_string(),
+            Some(link.get(2).and_then(SExpr::text).unwrap_or("").to_string()),
+        ),
+        Some(item) => (item.text().unwrap_or("").to_string(), None),
+        None => (String::new(), None),
     };
-    let description = match items.get(2) {
-        Some(SExpr::Atom(s)) => s.clone(),
-        _ => String::new(),
-    };
+    let description = items.get(2).and_then(SExpr::text).unwrap_or("").to_string();
 
     let shape_expr = match items.get(3) {
         Some(SExpr::List(l)) => l,
@@ -207,37 +250,50 @@ fn parse_maparea(items: &[SExpr]) -> Result<Option<MapArea>, AnnotationError> {
 
     let shape = parse_shape(shape_expr)?;
 
-    // Optional border / highlight (items[4..])
     let mut border = None;
     let mut highlight = None;
+    let mut extra = Vec::new();
     for item in items.get(4..).unwrap_or(&[]) {
-        if let SExpr::List(opts) = item {
-            match opts.first() {
-                Some(SExpr::Atom(s)) if s == "border" => {
-                    if let Some(SExpr::Atom(style)) = opts.get(1) {
-                        border = Some(Border {
-                            style: style.clone(),
-                        });
-                    }
-                }
-                Some(SExpr::Atom(s)) if s == "hilite" => {
-                    if let Some(SExpr::Atom(color)) = opts.get(1) {
-                        highlight = Some(Highlight {
-                            color: parse_color(color)?,
-                        });
-                    }
-                }
-                _ => {}
+        let opts = match item {
+            SExpr::List(opts) => opts.as_slice(),
+            _ => &[],
+        };
+        match opts.first().and_then(SExpr::text) {
+            // `(border xor)`: the non-standard spelling older djvu-rs releases
+            // wrote for `(xor)`. Read it as the border keyword it names.
+            Some("border")
+                if opts.len() == 2
+                    && opts[1].text().is_some_and(|style| {
+                        style != "border" && BORDER_STYLES.contains(&style)
+                    }) =>
+            {
+                border = Some(Border {
+                    style: opts[1].text().unwrap_or_default().to_string(),
+                });
             }
+            Some(style) if BORDER_STYLES.contains(&style) => {
+                let text = sexpr_text(item);
+                border = Some(Border {
+                    style: text[1..text.len() - 1].to_string(),
+                });
+            }
+            Some("hilite") if opts.get(1).and_then(SExpr::text).is_some() => {
+                highlight = Some(Highlight {
+                    color: parse_color(opts[1].text().unwrap_or_default())?,
+                });
+            }
+            _ => extra.push(sexpr_text(item)),
         }
     }
 
     Ok(Some(MapArea {
         url,
+        target,
         description,
         shape,
         border,
         highlight,
+        extra,
     }))
 }
 
@@ -349,16 +405,17 @@ pub fn encode_annotations(ann: &Annotation, areas: &[MapArea]) -> Vec<u8> {
     let mut out = String::new();
 
     if let Some(ref c) = ann.background {
-        out.push_str(&format!(
-            "(background #{:02x}{:02x}{:02x})\n",
-            c.r, c.g, c.b
-        ));
+        out.push_str(&format!("(background {})\n", encode_color(c)));
     }
     if let Some(z) = ann.zoom {
-        out.push_str(&format!("(zoom {z})\n"));
+        out.push_str(&format!("(zoom d{z})\n"));
     }
     if let Some(ref m) = ann.mode {
         out.push_str(&format!("(mode {m})\n"));
+    }
+    for form in &ann.extra {
+        out.push_str(form);
+        out.push('\n');
     }
 
     for ma in areas {
@@ -367,6 +424,11 @@ pub fn encode_annotations(ann: &Annotation, areas: &[MapArea]) -> Vec<u8> {
     }
 
     out.into_bytes()
+}
+
+/// `#RRGGBB`, upper-case as DjVuLibre writes it.
+fn encode_color(c: &Color) -> String {
+    format!("#{:02X}{:02X}{:02X}", c.r, c.g, c.b)
 }
 
 /// Serialize an [`Annotation`] and map areas to ANTz bytes (BZZ-compressed ANTa).
@@ -382,19 +444,29 @@ pub fn encode_annotations_bzz(ann: &Annotation, areas: &[MapArea]) -> Vec<u8> {
 /// Serialize one maparea to its S-expression string (without trailing newline).
 fn encode_maparea(ma: &MapArea) -> String {
     let mut s = String::from("(maparea ");
-    s.push_str(&quote_str(&ma.url));
+    match &ma.target {
+        Some(target) => {
+            s.push_str("(url ");
+            s.push_str(&quote_str(&ma.url));
+            s.push(' ');
+            s.push_str(&quote_str(target));
+            s.push(')');
+        }
+        None => s.push_str(&quote_str(&ma.url)),
+    }
     s.push(' ');
     s.push_str(&quote_str(&ma.description));
     s.push(' ');
     s.push_str(&encode_shape(&ma.shape));
     if let Some(ref b) = ma.border {
-        s.push_str(&format!(" (border {})", b.style));
+        s.push_str(&format!(" ({})", b.style));
     }
     if let Some(ref h) = ma.highlight {
-        s.push_str(&format!(
-            " (hilite #{:02x}{:02x}{:02x})",
-            h.color.r, h.color.g, h.color.b
-        ));
+        s.push_str(&format!(" (hilite {})", encode_color(&h.color)));
+    }
+    for option in &ma.extra {
+        s.push(' ');
+        s.push_str(option);
     }
     s.push(')');
     s
@@ -423,15 +495,7 @@ fn encode_shape(shape: &Shape) -> String {
 /// Produces `"..."` with backslash-escaping for `"` and `\`.
 fn quote_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            other => out.push(other),
-        }
-    }
-    out.push('"');
+    crate::sexp::write_quoted(s, &mut out);
     out
 }
 
@@ -569,13 +633,77 @@ mod tests {
 
     #[test]
     fn test_parse_maparea_with_border_and_hilite() {
-        let input = br#"(maparea "" "" (rect 0 0 10 10) (border solid) (hilite #00ff00))"#;
+        let input = br#"(maparea "" "" (rect 0 0 10 10) (border #FF0000) (hilite #00ff00))"#;
         let (_, areas) = parse_annotations(input).unwrap();
-        assert_eq!(areas[0].border.as_ref().unwrap().style, "solid");
+        assert_eq!(areas[0].border.as_ref().unwrap().style, "border #FF0000");
         assert_eq!(
             areas[0].highlight.as_ref().unwrap().color,
             Color { r: 0, g: 255, b: 0 }
         );
+    }
+
+    #[test]
+    fn test_parse_djvulibre_border_options() {
+        let input = br#"(maparea "" "" (rect 0 0 1 1) (xor))
+            (maparea "" "" (rect 0 0 1 1) (shadow_in 3 ))
+            (maparea "" "" (rect 0 0 1 1) (none))"#;
+        let (_, areas) = parse_annotations(input).unwrap();
+        let styles: Vec<_> = areas
+            .iter()
+            .map(|a| a.border.as_ref().unwrap().style.as_str())
+            .collect();
+        assert_eq!(styles, ["xor", "shadow_in 3", "none"]);
+    }
+
+    #[test]
+    fn test_parse_legacy_border_keyword_spelling() {
+        // Older djvu-rs releases wrote `(border xor)`; DjVuLibre spells it `(xor)`.
+        let (_, areas) =
+            parse_annotations(br#"(maparea "" "" (rect 0 0 1 1) (border xor))"#).unwrap();
+        assert_eq!(areas[0].border.as_ref().unwrap().style, "xor");
+        let encoded =
+            String::from_utf8(encode_annotations(&Annotation::default(), &areas)).unwrap();
+        assert_eq!(encoded, "(maparea \"\" \"\" (rect 0 0 1 1) (xor))\n");
+    }
+
+    #[test]
+    fn test_parse_zoom_forms() {
+        let (ann, _) = parse_annotations(b"(zoom d150)").unwrap();
+        assert_eq!(ann.zoom, Some(150));
+        assert!(ann.extra.is_empty());
+        let (ann, _) = parse_annotations(b"(zoom page)").unwrap();
+        assert_eq!(ann.zoom, None);
+        assert_eq!(ann.extra, ["(zoom page)"]);
+    }
+
+    #[test]
+    fn test_parse_url_with_target() {
+        let input = br#"(maparea (url "http://e.x" "_blank") "d" (rect 0 0 1 1))"#;
+        let (_, areas) = parse_annotations(input).unwrap();
+        assert_eq!(areas[0].url, "http://e.x");
+        assert_eq!(areas[0].target.as_deref(), Some("_blank"));
+        let (_, plain) =
+            parse_annotations(br#"(maparea "http://e.x" "d" (rect 0 0 1 1))"#).unwrap();
+        assert_eq!(plain[0].target, None);
+    }
+
+    #[test]
+    fn test_roundtrip_keeps_every_form_djvulibre_writes() {
+        // What djvused/djview write: symbolic zoom, alignment, metadata,
+        // targets, border options, and line/text options this model does not
+        // type. Re-encoding the parsed form must reproduce it.
+        let input = concat!(
+            "(background #8F8F8F)\n",
+            "(zoom d150)\n",
+            "(mode bw)\n",
+            "(align center top)\n",
+            "(metadata (Title \"A \\\"quoted\\\" title\") (Year \"1999\"))\n",
+            "(maparea (url \"#1\" \"_self\") \"note\" (rect 1 2 3 4) (shadow_in 3) (hilite #FFFF00) (border_avis) (opacity 50))\n",
+            "(maparea \"\" \"\" (line 0 0 9 9) (none) (arrow) (width 2) (lineclr #FF0000))\n",
+        );
+        let (ann, areas) = parse_annotations(input.as_bytes()).unwrap();
+        let encoded = String::from_utf8(encode_annotations(&ann, &areas)).unwrap();
+        assert_eq!(encoded, input);
     }
 
     #[test]
@@ -631,6 +759,7 @@ mod tests {
             }),
             zoom: None,
             mode: None,
+            extra: Vec::new(),
         };
         let bytes = encode_annotations(&ann, &[]);
         let (dec, _) = parse_annotations(&bytes).unwrap();
@@ -643,6 +772,7 @@ mod tests {
             background: None,
             zoom: Some(150),
             mode: Some("color".to_string()),
+            extra: Vec::new(),
         };
         let bytes = encode_annotations(&ann, &[]);
         let (dec, _) = parse_annotations(&bytes).unwrap();
@@ -664,6 +794,8 @@ mod tests {
             }),
             border: None,
             highlight: None,
+            target: None,
+            extra: Vec::new(),
         }];
         let bytes = encode_annotations(&ann, &areas);
         let (_, dec_areas) = parse_annotations(&bytes).unwrap();
@@ -681,6 +813,8 @@ mod tests {
             shape: Shape::Poly(vec![(0, 0), (10, 0), (5, 10)]),
             border: None,
             highlight: None,
+            target: None,
+            extra: Vec::new(),
         }];
         let bytes = encode_annotations(&Annotation::default(), &areas);
         let (_, dec_areas) = parse_annotations(&bytes).unwrap();
@@ -705,6 +839,8 @@ mod tests {
             highlight: Some(Highlight {
                 color: Color { r: 255, g: 0, b: 0 },
             }),
+            target: None,
+            extra: Vec::new(),
         }];
         let bytes = encode_annotations(&Annotation::default(), &areas);
         let (_, dec_areas) = parse_annotations(&bytes).unwrap();
@@ -720,6 +856,8 @@ mod tests {
             shape: Shape::Line(0, 0, 1, 1),
             border: None,
             highlight: None,
+            target: None,
+            extra: Vec::new(),
         }];
         let bytes = encode_annotations(&Annotation::default(), &areas);
         let (_, dec_areas) = parse_annotations(&bytes).unwrap();

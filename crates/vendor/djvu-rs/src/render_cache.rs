@@ -2,7 +2,7 @@
 //!
 //! Rendering a page memoises what it decoded — the wavelet background, the JB2
 //! mask, the converted RGB pixmaps, the composited tiles (see
-//! [`crate::djvu_render::PageLayers`]). That makes the second render of a page
+//! `PageLayers`). That makes the second render of a page
 //! nearly free, and it is why a viewer can pan and zoom without re-decoding.
 //!
 //! Until 0.33 nothing bounded it. The eviction API
@@ -14,9 +14,9 @@
 //!
 //! This module closes that: every page cache registers itself here, every cache
 //! fill reports its new size, and when the total goes over
-//! [`budget`] the least-recently-used layers are dropped until it is under
-//! again. The default ceiling is [`DEFAULT_BUDGET`]; set your own with
-//! [`set_budget`], or lift it entirely with `set_budget(usize::MAX)`.
+//! [`budget`](crate::render_cache::budget) the least-recently-used layers are dropped until it is under
+//! again. The default ceiling is [`DEFAULT_BUDGET`](crate::render_cache::DEFAULT_BUDGET); set your own with
+//! [`set_budget`](crate::render_cache::set_budget), or lift it entirely with `set_budget(usize::MAX)`.
 //!
 //! The unit of eviction is a *layer*, not a page (#813): each decoded
 //! background, mask, converted pixmap and tile store carries its own last-used

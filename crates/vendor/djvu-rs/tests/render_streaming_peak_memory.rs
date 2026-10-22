@@ -18,6 +18,9 @@
 //! are process-global and a second test in this file would count the first
 //! one's allocations. Do not add one.
 
+// This file also tests the deprecated render entry points.
+#![allow(deprecated)]
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 

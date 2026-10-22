@@ -2,6 +2,9 @@
 //!
 //! These tests require the `image` feature flag to be enabled.
 
+// This file also tests the deprecated render entry points.
+#![allow(deprecated)]
+
 #[cfg(feature = "image")]
 mod image_tests {
     use std::path::PathBuf;

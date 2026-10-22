@@ -11,25 +11,25 @@
 //! This module adds the standard perceptual metrics so a change can be
 //! judged against a reference image with a single number:
 //!
-//! - [`psnr`] — peak signal-to-noise ratio in dB. Higher is closer; ∞ (returned
+//! - [`psnr`](crate::quality::psnr) — peak signal-to-noise ratio in dB. Higher is closer; ∞ (returned
 //!   as [`f64::INFINITY`]) for identical inputs. Correlates loosely with quality
 //!   but is a pure error metric.
-//! - [`ssim`] — structural similarity index in `[-1, 1]` (1.0 = identical).
+//! - [`ssim`](crate::quality::ssim) — structural similarity index in `[-1, 1]` (1.0 = identical).
 //!   Models luminance, contrast and structure the way the human visual system
 //!   roughly does, so it catches blur / ringing / blockiness that PSNR misses.
 //!
 //! Both operate on the **luma** of RGBA [`Pixmap`]s (alpha ignored) so colour
 //! and grayscale renders compare on the same perceptual channel. A convenience
-//! [`compare`] returns both plus MSE in one pass-pair.
+//! [`compare`](crate::quality::compare) returns both plus MSE in one pass-pair.
 //!
-//! # Colour blindness of the luma-only metrics — [`compare_color`]
+//! # Colour blindness of the luma-only metrics — [`compare_color`](crate::quality::compare_color)
 //!
 //! `psnr`/`ssim`/`compare` are **structurally colour-blind**: two renders that
 //! agree on luma but disagree on hue or saturation score as identical. This
 //! bit the round-31 `FGBZ_MEDIANCUT` experiment (PERF_EXPERIMENTS.md) —
 //! aggressive foreground-palette quantisation visibly washed out coloured
 //! text, but the D1 harness reported no drop, forcing a fall-back to manual
-//! crop inspection. [`compare_color`] closes that gap:
+//! crop inspection. [`compare_color`](crate::quality::compare_color) closes that gap:
 //!
 //! - Converts both images to **YCbCr** (ITU-R BT.601, the same colour model
 //!   DjVu itself stores IW44 planes in — see `djvu-iw44::encode::rgb_to_ycbcr`)
@@ -50,7 +50,7 @@
 //! luma SSIM: 1.0 = identical, and values noticeably below the luma SSIM on
 //! the same pair mean the difference lives mostly in colour, not structure —
 //! exactly the FGBZ_MEDIANCUT scenario. A combined score within ~0.001 of the
-//! luma-only [`ssim`] means the change is colour-neutral; a combined score
+//! luma-only [`ssim`](crate::quality::ssim) means the change is colour-neutral; a combined score
 //! more than ~0.01 below the luma score means colour is doing the damage.
 //!
 //! *ΔE76* (per CIE guidance, carried over unchanged from colour-reproduction
@@ -67,7 +67,7 @@
 //! take a known image, encode it to DjVu, render it back, and measure SSIM/PSNR
 //! against the original. A change that raises SSIM-vs-source is genuinely better,
 //! independent of whether it drifts from DjVuLibre. `examples/quality_harness.rs`
-//! drives exactly this, now with [`compare_color`] columns alongside luma.
+//! drives exactly this, now with [`compare_color`](crate::quality::compare_color) columns alongside luma.
 
 #[cfg(feature = "std")]
 use crate::pixmap::{GrayPixmap, Pixmap};

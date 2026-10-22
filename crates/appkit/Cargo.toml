@@ -21,7 +21,7 @@ ed25519-dalek = { version = "3", default-features = false }
 image = { workspace = true }
 serde_json = "1"
 windows = { workspace = true }
-windows-registry = "0.6"
+windows-registry = "0.100"
 # `windows::core::implement` (the UI Automation list items) expands to `windows_core::` paths.
 windows-core = "0.62"
 st2k_base = { package = "sagethumbs2k-base", path = "../base" }

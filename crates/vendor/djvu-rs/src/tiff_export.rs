@@ -4,17 +4,18 @@
 //!
 //! ## Key public types
 //!
-//! - [`TiffOptions`] — export parameters (color vs. bilevel mode)
-//! - [`djvu_to_tiff_writer`] — low-memory writer API backed by row-streaming
-//! - [`TiffError`] — errors from TIFF conversion
+//! - [`TiffOptions`](crate::tiff_export::TiffOptions) — export parameters (color vs. bilevel mode)
+//! - [`djvu_to_tiff_writer`](crate::tiff_export::djvu_to_tiff_writer) — low-memory writer API backed by row-streaming
+//! - [`TiffError`](crate::tiff_export::TiffError) — errors from TIFF conversion
 //!
 //! ## Modes
 //!
 //! - **Color** (`TiffMode::Color`): each page is rendered to an RGB Pixmap
 //!   and written as a 24-bit RGB TIFF strip.
-//! - **Bilevel** (`TiffMode::Bilevel`): the JB2 mask is extracted and written
-//!   as an 8-bit grayscale TIFF strip (0 = white, 255 = black). Pages with no
-//!   JB2 mask fall back to a blank white page.
+//! - **Bilevel** (`TiffMode::Bilevel`): the foreground mask is extracted,
+//!   turned to the page's display orientation, and written as an 8-bit
+//!   grayscale strip (0 = black, 255 = white) or a CCITT G4 strip. Pages with
+//!   no mask fall back to a blank white page.
 //!
 //! ## Example
 //!
@@ -34,9 +35,12 @@ use tiff::encoder::{Rational, TiffEncoder, colortype, compression::Deflate};
 use tiff::tags::ResolutionUnit;
 
 use crate::{
+    bitmap::Bitmap,
     djvu_document::{DjVuDocument, DjVuPage, DocError},
     djvu_render::{self, RenderError, RenderOptions},
+    export_common::{PageRun, export_pages},
     export_control::{ExportObserver, NoOpObserver},
+    info::Rotation,
 };
 
 // ---- Error ------------------------------------------------------------------
@@ -76,10 +80,11 @@ pub enum TiffMode {
     /// Render each page as a full-color RGB image (24-bit per pixel).
     #[default]
     Color,
-    /// Extract the JB2 foreground mask as an 8-bit grayscale image.
+    /// Extract the foreground mask (JB2 or MMR) as a black-and-white image
+    /// in the page's display orientation.
     ///
-    /// Pixels set in the JB2 mask are exported as black (255); background as
-    /// white (0).  Pages with no JB2 mask are written as blank white pages.
+    /// Mask pixels are black, the background is white. Pages with no mask are
+    /// written as blank white pages.
     Bilevel,
 }
 
@@ -179,55 +184,38 @@ pub fn djvu_to_tiff_writer_with_observer<W: Write + Seek>(
         return write_bilevel_g4_tiff(doc, writer, observer);
     }
     let mut encoder = TiffEncoder::new(writer)?;
-    let indices: Vec<usize> = crate::export_common::page_indices(doc, None).collect();
-    let total = indices.len();
+    let indices: Vec<usize> = (0..doc.page_count()).collect();
 
-    // Building a page's pixel buffer (color: render → RGB; bilevel: JB2 decode →
+    // Building a page's pixel buffer (color: render → RGB; bilevel: mask →
     // Gray8) is independent and CPU-heavy per page; only appending IFDs to the
-    // single `TiffEncoder` must stay serial. With the `parallel` feature, build
-    // every page's image concurrently via rayon, then write them in index order
-    // — the same shape as the PDF/EPUB parallel exporters. Output is byte-
+    // single `TiffEncoder` must stay serial. With the `parallel` feature, pages
+    // build in bounded batches and are written in index order. Output is byte-
     // identical: the materialised RGB matches the streaming path (asserted by
     // `streamed_color_tiff_matches_render_pixmap*`), and the encoder produces the
-    // same IFDs from the same pixels. This trades the sequential path's
-    // row-streaming O(1)-page memory for wall-time, so it is gated to the feature.
+    // same IFDs from the same pixels. Without the feature, each page streams
+    // its rows straight into the encoder instead (O(1 row) pixel memory).
+    // #629: every page builds on a cold clone — decode caches drop with it.
     #[cfg(feature = "parallel")]
-    {
-        use rayon::prelude::*;
-        if observer.cancelled() {
-            return Err(TiffError::Cancelled);
-        }
-        let images: Vec<PageImage> = indices
-            .par_iter()
-            .map(|&i| {
-                // #629: cold clone — decode caches drop with the page.
-                let page = doc.page(i)?.clone();
-                build_page_image(&page, opts)
-            })
-            .collect::<Result<Vec<_>, TiffError>>()?;
-        for (done, img) in images.iter().enumerate() {
-            if observer.cancelled() {
-                return Err(TiffError::Cancelled);
-            }
-            write_page_image(&mut encoder, img)?;
-            observer.on_progress(done + 1, total);
-        }
-    }
-
+    let run = export_pages(
+        &indices,
+        observer,
+        |i| build_page_image(&doc.page(i)?.clone(), opts),
+        |_, img| write_page_image(&mut encoder, &img),
+    )?;
     #[cfg(not(feature = "parallel"))]
-    for (done, &i) in indices.iter().enumerate() {
-        if observer.cancelled() {
-            return Err(TiffError::Cancelled);
-        }
-        // #629: cold clone — decode caches drop with the page.
-        let page = doc.page(i)?.clone();
-        match opts.mode {
-            TiffMode::Color => write_color_page(&mut encoder, &page, opts.scale)?,
-            TiffMode::Bilevel => write_bilevel_page(&mut encoder, &page)?,
-        }
-        observer.on_progress(done + 1, total);
+    let run = export_pages(
+        &indices,
+        observer,
+        |i| Ok(doc.page(i)?.clone()),
+        |_, page| match opts.mode {
+            TiffMode::Color => write_color_page(&mut encoder, &page, opts.scale),
+            TiffMode::Bilevel => write_bilevel_page(&mut encoder, &page),
+        },
+    )?;
+    match run {
+        PageRun::Finished => Ok(()),
+        PageRun::Cancelled => Err(TiffError::Cancelled),
     }
-    Ok(())
 }
 
 /// A page's fully-materialised pixel buffer, ready to append as one TIFF IFD.
@@ -262,9 +250,11 @@ fn build_page_image(page: &DjVuPage, opts: &TiffOptions) -> Result<PageImage, Ti
             // else fall back to the full-pixmap path for non-streamable options.
             let rgb = if ropts.can_stream(page) {
                 let mut rgb = Vec::with_capacity(w as usize * h as usize * 3);
-                djvu_render::render_streaming(page, &ropts, |_, rgba_row| {
-                    crate::export_common::rgba_row_to_rgb(&mut rgb, rgba_row);
-                })?;
+                djvu_render::RenderRequest::new(ropts)
+                    .operation("render_streaming")
+                    .rows(page, |_, rgba_row| {
+                        crate::export_common::rgba_row_to_rgb(&mut rgb, rgba_row);
+                    })?;
                 rgb
             } else {
                 djvu_render::render_pixmap(page, &ropts)?.to_rgb()
@@ -277,15 +267,12 @@ fn build_page_image(page: &DjVuPage, opts: &TiffOptions) -> Result<PageImage, Ti
             })
         }
         TiffMode::Bilevel => {
-            let w = page.width() as u32;
-            let h = page.height() as u32;
-            let gray = extract_bilevel_pixels(page, w, h)?;
-            let dpi = page.dpi() as u32;
+            let mask = display_mask(page)?;
             Ok(PageImage {
-                w,
-                h,
-                dpi,
-                data: PageImageData::GrayDeflate(gray),
+                w: mask.width,
+                h: mask.height,
+                dpi: page.dpi() as u32,
+                data: PageImageData::GrayDeflate(mask_to_gray8(&mask)),
             })
         }
     }
@@ -335,19 +322,14 @@ fn write_color_page<W: Write + Seek>(
     }
 }
 
+/// The encoder size and render options for `page` at `scale`. The size is
+/// the display size: the pixmap comes out after the page's INFO rotation.
+/// Only the size is set in the options; the pipeline derives the decode scale
+/// from it.
 fn color_render_options(page: &DjVuPage, scale: f32) -> (u32, u32, RenderOptions) {
-    let (w, h) =
-        crate::export_common::scaled_size(page.width() as u32, page.height() as u32, scale);
-
-    // Only the size is set; the pipeline derives the decode scale from `width`.
-    // The remaining fields (bold/aa/rotation/permissive/resampling) are the
-    // `RenderOptions` defaults.
-    let opts = RenderOptions {
-        width: w,
-        height: h,
-        ..RenderOptions::default()
-    };
-    (w, h, opts)
+    let size = crate::render_size::RenderSize::at_scale(page, scale);
+    let (w, h) = size.display;
+    (w, h, size.options())
 }
 
 #[cfg(not(feature = "parallel"))]
@@ -366,33 +348,35 @@ fn write_color_page_streaming<W: Write + Seek>(
     let mut strip = Vec::with_capacity(next_strip_samples);
     let mut encode_error: Option<tiff::TiffError> = None;
 
-    djvu_render::render_streaming(page, opts, |_, rgba_row| {
-        if encode_error.is_some() {
-            return;
-        }
-
-        crate::export_common::rgba_row_to_rgb(&mut strip, rgba_row);
-
-        if strip.len() > next_strip_samples {
-            encode_error = Some(
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "streamed RGB strip exceeded expected TIFF strip size",
-                )
-                .into(),
-            );
-            return;
-        }
-
-        if strip.len() == next_strip_samples {
-            if let Err(e) = img.write_strip(&strip) {
-                encode_error = Some(e);
+    djvu_render::RenderRequest::new(opts.clone())
+        .operation("render_streaming")
+        .rows(page, |_, rgba_row| {
+            if encode_error.is_some() {
                 return;
             }
-            strip.clear();
-            next_strip_samples = img.next_strip_sample_count() as usize;
-        }
-    })?;
+
+            crate::export_common::rgba_row_to_rgb(&mut strip, rgba_row);
+
+            if strip.len() > next_strip_samples {
+                encode_error = Some(
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "streamed RGB strip exceeded expected TIFF strip size",
+                    )
+                    .into(),
+                );
+                return;
+            }
+
+            if strip.len() == next_strip_samples {
+                if let Err(e) = img.write_strip(&strip) {
+                    encode_error = Some(e);
+                    return;
+                }
+                strip.clear();
+                next_strip_samples = img.next_strip_sample_count() as usize;
+            }
+        })?;
 
     if let Some(e) = encode_error {
         return Err(e.into());
@@ -425,21 +409,16 @@ fn write_color_page_pixmap<W: Write + Seek>(
     Ok(())
 }
 
-/// Extract the JB2 mask from `page` as an 8-bit grayscale strip and append
-/// one IFD to `encoder`.
-///
-/// Black pixels in the mask are written as 255; white background as 0.
-/// Pages without a JB2 mask get a blank white page.
+/// Write the page's [`display_mask`] as an 8-bit grayscale strip (black = 0,
+/// white = 255) and append one IFD to `encoder`.
 #[cfg(not(feature = "parallel"))]
 fn write_bilevel_page<W: std::io::Write + std::io::Seek>(
     encoder: &mut TiffEncoder<W>,
     page: &DjVuPage,
 ) -> Result<(), TiffError> {
-    let w = page.width() as u32;
-    let h = page.height() as u32;
-
-    // Try to extract the JB2 mask directly from the page chunks.
-    let gray = extract_bilevel_pixels(page, w, h)?;
+    let mask = display_mask(page)?;
+    let (w, h) = (mask.width, mask.height);
+    let gray = mask_to_gray8(&mask);
     let dpi = page.dpi() as u32;
     // Bilevel content is just 0x00 / 0xFF bytes with long runs (text on white),
     // so Deflate shrinks the Gray8 strip by ~20–50× — far past the 8× of a true
@@ -452,10 +431,6 @@ fn write_bilevel_page<W: std::io::Write + std::io::Seek>(
     Ok(())
 }
 
-/// Extract the JB2 Sjbz mask as 8-bit grayscale (0=white, 255=black).
-///
-/// Returns a blank white buffer if no Sjbz chunk is present (pure IW44 page).
-/// Returns `Err` if an Sjbz chunk exists but decoding fails.
 // ---- Bilevel G4 writer (#579) ------------------------------------------------
 //
 // The `tiff` crate (0.9) has no CCITT encoder, so the G4 path hand-rolls the
@@ -491,22 +466,25 @@ fn encode_bilevel_g4_page(
 ) -> Result<(G4PagePlan, Vec<u8>), TiffError> {
     // #629: cold clone — the mask decode cache drops with the page.
     let page = doc.page(page_index)?.clone();
-    let width = page.width() as u32;
-    let height = page.height() as u32;
-    let dpi = page.dpi().max(1) as u32;
-    let mask = page
-        .extract_mask()
-        .map_err(TiffError::Doc)?
-        .filter(|m| m.width >= width && m.height >= height)
-        .unwrap_or_else(|| crate::bitmap::Bitmap::new(width, height));
+    let mask = display_mask(&page)?;
     let encoded = crate::smmr::encode_g4(&mask);
     let plan = G4PagePlan {
-        width,
-        height,
-        dpi,
+        width: mask.width,
+        height: mask.height,
+        dpi: page.dpi().max(1) as u32,
         encoded_len: encoded.len() as u32,
     };
     Ok((plan, encoded))
+}
+
+/// Observer for the G4 sizing pass: forwards cancellation, reports no
+/// progress (the pass writes nothing).
+struct SizingPass<'a>(&'a mut dyn ExportObserver);
+
+impl ExportObserver for SizingPass<'_> {
+    fn cancelled(&self) -> bool {
+        self.0.cancelled()
+    }
 }
 
 fn write_bilevel_g4_tiff<W: Write + Seek>(
@@ -514,19 +492,24 @@ fn write_bilevel_g4_tiff<W: Write + Seek>(
     mut w: W,
     observer: &mut dyn ExportObserver,
 ) -> Result<(), TiffError> {
-    let indices: Vec<usize> = crate::export_common::page_indices(doc, None).collect();
+    let indices: Vec<usize> = (0..doc.page_count()).collect();
 
     // Pass 1: discover the exact G4 strip sizes needed to resolve the complete
-    // IFD chain. The encoded payload is dropped after each page, leaving only
-    // small per-page metadata records in memory.
+    // IFD chain. The encoded payload is dropped as each page is built, leaving
+    // only small per-page metadata records in memory. The pass writes nothing,
+    // so it polls cancellation but reports no progress.
     let mut plans = Vec::with_capacity(indices.len());
-    for &page_index in &indices {
-        if observer.cancelled() {
-            return Err(TiffError::Cancelled);
-        }
-        let (plan, encoded) = encode_bilevel_g4_page(doc, page_index)?;
-        drop(encoded);
-        plans.push(plan);
+    let run = export_pages(
+        &indices,
+        &mut SizingPass(&mut *observer),
+        |i| encode_bilevel_g4_page(doc, i).map(|(plan, _)| plan),
+        |_, plan| {
+            plans.push(plan);
+            Ok(())
+        },
+    )?;
+    if run == PageRun::Cancelled {
+        return Err(TiffError::Cancelled);
     }
 
     let io = |e: std::io::Error| TiffError::Encode(e.to_string());
@@ -566,126 +549,147 @@ fn write_bilevel_g4_tiff<W: Write + Seek>(
     // Pass 2: re-encode and emit one page at a time. We use pass-1 metadata
     // for the IFD so the output layout remains byte-for-byte unchanged.
     let mut pos: u32 = 8;
-    for (idx, ((&page_index, plan), page_layout)) in
-        indices.iter().zip(&plans).zip(&layout).enumerate()
-    {
-        if observer.cancelled() {
-            return Err(TiffError::Cancelled);
-        }
-        let (emitted_plan, encoded) = encode_bilevel_g4_page(doc, page_index)?;
-        debug_assert_eq!(plan.encoded_len, emitted_plan.encoded_len);
-        if plan.encoded_len != emitted_plan.encoded_len {
-            return Err(TiffError::Encode(format!(
-                "G4 encoded length diverged between sizing and emission passes for page {}",
-                idx + 1
-            )));
-        }
+    let run = export_pages(
+        &indices,
+        observer,
+        |i| encode_bilevel_g4_page(doc, i),
+        |idx, (emitted_plan, encoded)| {
+            let (plan, page_layout) = (&plans[idx], &layout[idx]);
+            debug_assert_eq!(plan.encoded_len, emitted_plan.encoded_len);
+            if plan.encoded_len != emitted_plan.encoded_len {
+                return Err(TiffError::Encode(format!(
+                    "G4 encoded length diverged between sizing and emission passes for page {}",
+                    idx + 1
+                )));
+            }
 
-        debug_assert_eq!(pos, page_layout.strip_offset);
-        w.write_all(&encoded).map_err(io)?;
-        pos += emitted_plan.encoded_len;
-        while pos < page_layout.rational_offset {
-            w.write_all(&[0]).map_err(io)?;
-            pos += 1;
-        }
-        // X/Y resolution rationals (dpi / 1).
-        for _ in 0..2 {
-            w.write_all(&plan.dpi.to_le_bytes()).map_err(io)?;
-            w.write_all(&1u32.to_le_bytes()).map_err(io)?;
-        }
-        pos += 16;
-        while pos < page_layout.ifd_offset {
-            w.write_all(&[0]).map_err(io)?;
-            pos += 1;
-        }
+            debug_assert_eq!(pos, page_layout.strip_offset);
+            w.write_all(&encoded).map_err(io)?;
+            pos += emitted_plan.encoded_len;
+            while pos < page_layout.rational_offset {
+                w.write_all(&[0]).map_err(io)?;
+                pos += 1;
+            }
+            // X/Y resolution rationals (dpi / 1).
+            for _ in 0..2 {
+                w.write_all(&plan.dpi.to_le_bytes()).map_err(io)?;
+                w.write_all(&1u32.to_le_bytes()).map_err(io)?;
+            }
+            pos += 16;
+            while pos < page_layout.ifd_offset {
+                w.write_all(&[0]).map_err(io)?;
+                pos += 1;
+            }
 
-        w.write_all(&NTAGS.to_le_bytes()).map_err(io)?;
-        // Types: 3 = SHORT, 4 = LONG, 5 = RATIONAL.
-        w.write_all(&entry(256, 4, 1, plan.width)).map_err(io)?; // ImageWidth
-        w.write_all(&entry(257, 4, 1, plan.height)).map_err(io)?; // ImageLength
-        w.write_all(&entry(258, 3, 1, 1)).map_err(io)?; // BitsPerSample
-        w.write_all(&entry(259, 3, 1, 4)).map_err(io)?; // Compression = CCITT G4
-        w.write_all(&entry(262, 3, 1, 0)).map_err(io)?; // Photometric = WhiteIsZero
-        w.write_all(&entry(273, 4, 1, page_layout.strip_offset))
-            .map_err(io)?; // StripOffsets
-        w.write_all(&entry(277, 3, 1, 1)).map_err(io)?; // SamplesPerPixel
-        w.write_all(&entry(278, 4, 1, plan.height)).map_err(io)?; // RowsPerStrip
-        w.write_all(&entry(279, 4, 1, plan.encoded_len))
-            .map_err(io)?; // StripByteCounts
-        w.write_all(&entry(282, 5, 1, page_layout.rational_offset))
-            .map_err(io)?; // XResolution
-        w.write_all(&entry(283, 5, 1, page_layout.rational_offset + 8))
-            .map_err(io)?; // YResolution
-        let next = if idx + 1 < layout.len() {
-            layout[idx + 1].ifd_offset
-        } else {
-            0
-        };
-        w.write_all(&next.to_le_bytes()).map_err(io)?;
-        pos = page_layout.ifd_offset + ifd_size;
-        observer.on_progress(idx + 1, plans.len());
+            w.write_all(&NTAGS.to_le_bytes()).map_err(io)?;
+            // Types: 3 = SHORT, 4 = LONG, 5 = RATIONAL.
+            w.write_all(&entry(256, 4, 1, plan.width)).map_err(io)?; // ImageWidth
+            w.write_all(&entry(257, 4, 1, plan.height)).map_err(io)?; // ImageLength
+            w.write_all(&entry(258, 3, 1, 1)).map_err(io)?; // BitsPerSample
+            w.write_all(&entry(259, 3, 1, 4)).map_err(io)?; // Compression = CCITT G4
+            w.write_all(&entry(262, 3, 1, 0)).map_err(io)?; // Photometric = WhiteIsZero
+            w.write_all(&entry(273, 4, 1, page_layout.strip_offset))
+                .map_err(io)?; // StripOffsets
+            w.write_all(&entry(277, 3, 1, 1)).map_err(io)?; // SamplesPerPixel
+            w.write_all(&entry(278, 4, 1, plan.height)).map_err(io)?; // RowsPerStrip
+            w.write_all(&entry(279, 4, 1, plan.encoded_len))
+                .map_err(io)?; // StripByteCounts
+            w.write_all(&entry(282, 5, 1, page_layout.rational_offset))
+                .map_err(io)?; // XResolution
+            w.write_all(&entry(283, 5, 1, page_layout.rational_offset + 8))
+                .map_err(io)?; // YResolution
+            let next = if idx + 1 < layout.len() {
+                layout[idx + 1].ifd_offset
+            } else {
+                0
+            };
+            w.write_all(&next.to_le_bytes()).map_err(io)?;
+            pos = page_layout.ifd_offset + ifd_size;
+            Ok(())
+        },
+    )?;
+    if run == PageRun::Cancelled {
+        return Err(TiffError::Cancelled);
     }
     w.flush().map_err(io)?;
     Ok(())
 }
 
-fn extract_bilevel_pixels(page: &DjVuPage, w: u32, h: u32) -> Result<Vec<u8>, TiffError> {
-    let sjbz = match page.find_chunk(b"Sjbz") {
-        Some(d) => d,
-        None => return Ok(vec![0u8; (w * h) as usize]),
+/// The page's foreground mask at its display size and orientation
+/// (`true` = black).
+///
+/// Both bilevel writers read it, so they share one mask decode (JB2 with an
+/// inline or shared dictionary, or MMR), one rotation, and one fallback: a page
+/// without a mask is blank white, and so is any pixel a short mask misses.
+fn display_mask(page: &DjVuPage) -> Result<Bitmap, TiffError> {
+    let (w, h) = (page.width() as u32, page.height() as u32);
+    let rotation = page.rotation();
+    let (dw, dh) = match rotation {
+        Rotation::Cw90 | Rotation::Ccw90 => (h, w),
+        Rotation::None | Rotation::Rot180 => (w, h),
     };
-
-    let dict = page
-        .find_chunk(b"Djbz")
-        .and_then(|djbz| crate::jb2::decode_dict(djbz, None).ok());
-
-    let bm = crate::jb2::decode(sjbz, dict.as_ref())
-        .map_err(|e| TiffError::Encode(format!("JB2 decode failed: {e}")))?;
-
-    let wq = w as usize;
-    let mut pixels = vec![0u8; wq * h as usize];
-
-    // LUT byte-expansion: when the decoded mask covers the page, expand each
-    // packed mask byte to 8 Gray8 pixels via a 256-entry table instead of one
-    // `bm.get()` (stride mult + bit-extract) per pixel. MSB-first packing: pixel
-    // x is bit (7 - x%8) of byte x/8, matching `BILEVEL_GRAY8`.
-    if bm.width >= w && bm.height >= h {
-        let stride = bm.row_stride();
-        let nb_full = wq / 8;
-        let rem = wq % 8;
-        for y in 0..h as usize {
-            let row = &bm.data[y * stride..];
-            let out = &mut pixels[y * wq..(y + 1) * wq];
-            for bi in 0..nb_full {
-                out[bi * 8..bi * 8 + 8].copy_from_slice(&BILEVEL_GRAY8[row[bi] as usize]);
-            }
-            if rem > 0 {
-                let src = &BILEVEL_GRAY8[row[nb_full] as usize];
-                out[nb_full * 8..nb_full * 8 + rem].copy_from_slice(&src[..rem]);
+    let mask = match page.extract_mask()? {
+        Some(m) if rotation == Rotation::None && (m.width, m.height) == (w, h) => return Ok(m),
+        Some(m) => m,
+        None => return Ok(Bitmap::new(dw, dh)),
+    };
+    // Same turn as the renderer's `rotate_pixmap`: display pixel (dx, dy)
+    // reads native pixel (x, y).
+    let mut out = Bitmap::new(dw, dh);
+    for dy in 0..dh {
+        for dx in 0..dw {
+            let (x, y) = match rotation {
+                Rotation::None => (dx, dy),
+                Rotation::Cw90 => (dy, h - 1 - dx),
+                Rotation::Rot180 => (w - 1 - dx, h - 1 - dy),
+                Rotation::Ccw90 => (w - 1 - dy, dx),
+            };
+            if x < mask.width && y < mask.height && mask.get(x, y) {
+                out.set_black(dx, dy);
             }
         }
-        return Ok(pixels);
     }
+    Ok(out)
+}
 
-    // Fallback for the unexpected case where the mask is smaller than the page.
-    // Bitmap pixels: true = black foreground, false = white background.
-    for y in 0..h {
-        for x in 0..w {
-            pixels[(y * w + x) as usize] = if bm.get(x, y) { 255u8 } else { 0u8 };
+/// Expand a mask to 8-bit grayscale for a BlackIsZero TIFF: black = 0,
+/// white = 255.
+fn mask_to_gray8(mask: &Bitmap) -> Vec<u8> {
+    // LUT byte-expansion: expand each packed mask byte to 8 Gray8 pixels via a
+    // 256-entry table instead of one `get()` (stride mult + bit-extract) per
+    // pixel. MSB-first packing: pixel x is bit (7 - x%8) of byte x/8.
+    let wq = mask.width as usize;
+    let stride = mask.row_stride();
+    let (nb_full, rem) = (wq / 8, wq % 8);
+    let mut pixels = vec![0u8; wq * mask.height as usize];
+    if wq == 0 {
+        return pixels;
+    }
+    for (row, out) in mask
+        .data
+        .chunks_exact(stride)
+        .zip(pixels.chunks_exact_mut(wq))
+    {
+        for bi in 0..nb_full {
+            out[bi * 8..bi * 8 + 8].copy_from_slice(&BILEVEL_GRAY8[row[bi] as usize]);
+        }
+        if rem > 0 {
+            let src = &BILEVEL_GRAY8[row[nb_full] as usize];
+            out[nb_full * 8..].copy_from_slice(&src[..rem]);
         }
     }
-    Ok(pixels)
+    pixels
 }
 
 /// Maps each packed mask byte (MSB-first) to its 8 expanded Gray8 pixels —
-/// bit set (black) → 255, bit clear (white) → 0.
+/// bit set (black) → 0, bit clear (white) → 255.
 const BILEVEL_GRAY8: [[u8; 8]; 256] = {
     let mut lut = [[0u8; 8]; 256];
     let mut mb = 0usize;
     while mb < 256 {
         let mut j = 0usize;
         while j < 8 {
-            lut[mb][j] = if (mb >> (7 - j)) & 1 != 0 { 255u8 } else { 0u8 };
+            lut[mb][j] = if (mb >> (7 - j)) & 1 != 0 { 0u8 } else { 255u8 };
             j += 1;
         }
         mb += 1;
@@ -1106,13 +1110,17 @@ mod tests {
         let cursor = std::io::Cursor::new(&tiff_bytes);
         let mut decoder = tiff::decoder::Decoder::new(cursor).unwrap();
         let img = decoder.read_image().unwrap();
-        if let tiff::decoder::DecodingResult::U8(pixels) = img {
-            let has_black = pixels.contains(&255);
-            assert!(
-                has_black,
-                "bilevel JB2 page must have at least one black pixel"
-            );
-        }
+        let tiff::decoder::DecodingResult::U8(pixels) = img else {
+            panic!("expected Gray8 TIFF pixels");
+        };
+        assert!(
+            pixels.contains(&0),
+            "bilevel JB2 page must have at least one black pixel"
+        );
+        assert!(
+            pixels.contains(&255),
+            "bilevel JB2 page must have at least one white pixel"
+        );
     }
 
     /// Bilevel export on a page without JB2 mask returns a blank (all-white) page.
@@ -1121,14 +1129,89 @@ mod tests {
         // chicken.djvu is a color-only document with no JB2 mask
         let doc = load_doc("chicken.djvu");
         let page = doc.page(0).unwrap();
-        let w = page.width() as u32;
-        let h = page.height() as u32;
-
-        let pixels = extract_bilevel_pixels(page, w, h).unwrap();
-        assert!(
-            pixels.iter().all(|&p| p == 0),
-            "page without JB2 must be all-white (0)"
+        let mask = display_mask(page).unwrap();
+        assert_eq!(
+            (mask.width, mask.height),
+            (page.width() as u32, page.height() as u32)
         );
+        assert!(
+            mask_to_gray8(&mask).iter().all(|&p| p == 255),
+            "page without JB2 must be all-white (255)"
+        );
+    }
+
+    /// Decode the first page of a bilevel G4 TIFF back to its mask.
+    fn decode_first_g4_mask(tiff: &[u8]) -> Bitmap {
+        let rd32 = |o: usize| u32::from_le_bytes(tiff[o..o + 4].try_into().unwrap());
+        let rd16 = |o: usize| u16::from_le_bytes(tiff[o..o + 2].try_into().unwrap());
+        let ifd = rd32(4) as usize;
+        let tags: std::collections::BTreeMap<u16, u32> = (0..rd16(ifd) as usize)
+            .map(|i| (rd16(ifd + 2 + i * 12), rd32(ifd + 2 + i * 12 + 8)))
+            .collect();
+        let (w, h) = (tags[&256], tags[&257]);
+        let (off, len) = (tags[&273] as usize, tags[&279] as usize);
+        let mut chunk = Vec::with_capacity(4 + len);
+        chunk.extend_from_slice(&(w as u16).to_be_bytes());
+        chunk.extend_from_slice(&(h as u16).to_be_bytes());
+        chunk.extend_from_slice(&tiff[off..off + len]);
+        crate::smmr::decode_smmr(&chunk).expect("G4 strip must decode")
+    }
+
+    /// Both bilevel compressions write the page as it renders: display
+    /// orientation, black text on white, for every INFO rotation.
+    #[test]
+    fn bilevel_tiff_matches_rendered_page_in_every_rotation() {
+        for name in [
+            "boy_jb2.djvu",
+            "boy_jb2_rotate90.djvu",
+            "boy_jb2_rotate180.djvu",
+            "boy_jb2_rotate270.djvu",
+        ] {
+            let doc = load_fixture_doc(name);
+            let page = doc.page(0).unwrap();
+            let opts = RenderOptions {
+                width: page.width() as u32,
+                height: page.height() as u32,
+                ..Default::default()
+            };
+            let rendered = djvu_render::render_gray8(page, &opts).unwrap();
+            assert!(
+                rendered.data.iter().all(|&p| p == 0 || p == 255),
+                "{name}: a JB2-only page renders pure black and white"
+            );
+
+            let bilevel = |bilevel_compression| TiffOptions {
+                mode: TiffMode::Bilevel,
+                bilevel_compression,
+                ..Default::default()
+            };
+            let deflate = djvu_to_tiff(&doc, &bilevel(TiffBilevelCompression::Deflate)).unwrap();
+            let (w, h, gray) = decode_first_tiff_rgb(&deflate);
+            assert_eq!((w, h), (rendered.width, rendered.height), "{name}");
+            assert!(gray == rendered.data, "{name}: Deflate pixels differ");
+
+            let g4 = djvu_to_tiff(&doc, &bilevel(TiffBilevelCompression::G4)).unwrap();
+            let mask = decode_first_g4_mask(&g4);
+            assert_eq!((mask.width, mask.height), (w, h), "{name}");
+            assert!(
+                mask_to_gray8(&mask) == rendered.data,
+                "{name}: G4 pixels differ"
+            );
+        }
+    }
+
+    /// A page whose JB2 stream uses a shared dictionary (`Djbz` in an
+    /// included `DJVI` component) yields its mask; both bilevel writers read
+    /// it through `display_mask`. Before, the Deflate path looked only for an
+    /// inline dictionary and failed with "stream requires shared dict".
+    #[test]
+    fn bilevel_mask_resolves_shared_dictionary() {
+        let doc = load_fixture_doc("czech.djvu");
+        let page = doc.page(1).unwrap();
+        let expected = page.extract_mask().unwrap().expect("page 1 has a mask");
+        let mask = display_mask(page).unwrap();
+        assert_eq!((mask.width, mask.height), (expected.width, expected.height));
+        assert_eq!(mask.data, expected.data);
     }
 
     /// Color export on a rotated page forces the pixmap path (can_stream returns
@@ -1148,6 +1231,27 @@ mod tests {
         assert!(!tiff.is_empty());
         let magic = &tiff[..4];
         assert!(magic == b"II\x2A\x00" || magic == b"MM\x00\x2A");
+
+        // The IFD declares the display (rotated) size and holds the rotated
+        // pixels — not the rotated pixels laid out at the native size.
+        let mut decoder = tiff::decoder::Decoder::new(std::io::Cursor::new(&tiff)).unwrap();
+        let want = djvu_render::render_pixmap(
+            page,
+            &crate::render_size::RenderSize::at_scale(page, 1.0).options(),
+        )
+        .unwrap();
+        assert_eq!(decoder.dimensions().unwrap(), (want.width, want.height));
+        assert_eq!(
+            (want.width, want.height),
+            (page.height() as u32, page.width() as u32)
+        );
+        let tiff::decoder::DecodingResult::U8(rgb) = decoder.read_image().unwrap() else {
+            panic!("expected 8-bit RGB");
+        };
+        assert!(
+            rgb == want.to_rgb(),
+            "TIFF pixels must match the rotated render"
+        );
     }
 
     /// `TiffOptions::default()` selects color mode at 1.0 scale.
@@ -1326,13 +1430,19 @@ mod tests {
         let doc = load_multipage_g4_doc();
         let total = doc.page_count();
         assert!(total > 1, "fixture must contain multiple pages");
-        let mut observer = CancelOnPollObserver {
-            // `total` sizing polls, then one written page, then cancellation
-            // immediately before the second emission page.
-            cancel_on_poll: total + 2,
-            polls: Cell::new(0),
-            progress: Vec::new(),
-        };
+        // Cancel as soon as the first page is written. Counting polls would
+        // tie the test to one batching mode: the `parallel` build also polls
+        // before each batch.
+        struct CancelAfterFirstPage(Vec<(usize, usize)>);
+        impl ExportObserver for CancelAfterFirstPage {
+            fn on_progress(&mut self, done: usize, total: usize) {
+                self.0.push((done, total));
+            }
+            fn cancelled(&self) -> bool {
+                !self.0.is_empty()
+            }
+        }
+        let mut observer = CancelAfterFirstPage(Vec::new());
 
         let error = djvu_to_tiff_writer_with_observer(
             &doc,
@@ -1343,7 +1453,6 @@ mod tests {
         .expect_err("G4 emission pass must observe cancellation");
 
         assert!(matches!(error, TiffError::Cancelled));
-        assert_eq!(observer.polls.get(), total + 2);
-        assert_eq!(observer.progress, vec![(1, total)]);
+        assert_eq!(observer.0, vec![(1, total)]);
     }
 }

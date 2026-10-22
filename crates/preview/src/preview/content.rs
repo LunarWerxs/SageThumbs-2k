@@ -572,18 +572,35 @@ impl std::io::Seek for DirBudget<'_> {
     }
 }
 
+/// Opens a big ZIP's directory through [`DirBudget`]. An archive that starts at byte 0 opens from
+/// its directory alone; prepended data (a self-extractor) takes the detecting open, which may
+/// scan the file and so may run over the budget.
+fn open_big_zip<'a>(
+    path: &str,
+    left: &'a std::cell::Cell<u64>,
+) -> Option<zip::ZipArchive<DirBudget<'a>>> {
+    let reader = || -> Option<DirBudget<'a>> {
+        Some(DirBudget {
+            // Small buffer: the per-entry seeks below throw it away every time.
+            inner: std::io::BufReader::with_capacity(4096, std::fs::File::open(path).ok()?),
+            left,
+        })
+    };
+    left.set(ZIP_DIR_CAP);
+    if let Ok(zip) = st2k_codecs::container::zipguard::open_unprefixed(reader()?) {
+        return Some(zip);
+    }
+    left.set(ZIP_DIR_CAP);
+    st2k_codecs::container::zipguard::open(reader()?).ok()
+}
+
 /// `(name, uncompressed size, is_dir)` for a ZIP too big to read whole: the `zip` crate seeks
 /// to the end-of-central-directory record and reads the directory, and each entry's name and
 /// size come from that directory (plus the 30-byte local header it checks). `None` if the
 /// directory is unreadable or over [`ZIP_DIR_CAP`], or its entries take over [`ZIP_LIST_TIME`].
 fn big_zip_entries(path: &str) -> Option<Vec<(String, u64, bool)>> {
     let budget = std::cell::Cell::new(ZIP_DIR_CAP);
-    let reader = DirBudget {
-        // Small buffer: the per-entry seeks below throw it away every time.
-        inner: std::io::BufReader::with_capacity(4096, std::fs::File::open(path).ok()?),
-        left: &budget,
-    };
-    let mut zip = st2k_codecs::container::zipguard::open(reader).ok()?;
+    let mut zip = open_big_zip(path, &budget)?;
     // The directory is parsed; what follows is the bounded local-header peeks. Each is a seek of
     // its own on this window's thread, so tens of thousands of entries spread over a slow disk
     // are given up on after ZIP_LIST_TIME rather than waited for.

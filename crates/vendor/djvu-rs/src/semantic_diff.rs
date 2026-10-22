@@ -433,30 +433,37 @@ mod tests {
         use crate::metadata::DjVuMetadata;
 
         let original = fixture("DjVu3Spec_bundled.djvu");
-        let edited = DocumentEditor::apply(
-            &original,
-            &EditRequest::new(vec![EditOperation::SetDocumentMetadata {
-                metadata: DjVuMetadata {
-                    title: Some("Edited title".to_string()),
-                    ..Default::default()
-                },
-            }]),
-        )
-        .expect("edit applies");
+        let set_title = |bytes: &[u8], title: &str| {
+            DocumentEditor::apply(
+                bytes,
+                &EditRequest::new(vec![EditOperation::SetDocumentMetadata {
+                    metadata: DjVuMetadata {
+                        title: Some(title.to_string()),
+                        ..Default::default()
+                    },
+                }]),
+            )
+            .expect("edit applies")
+        };
+        let first = set_title(&original, "Edited title");
+        let second = set_title(&first, "Second title");
 
-        let diff = semantic_diff(&original, &edited, None).expect("diff");
-        for plane in &diff.planes {
-            match plane.plane {
-                "metadata" => assert_eq!(plane.status, PlaneStatus::Diverge),
-                // Metadata lives in a document-level chunk; every other
-                // semantic plane must be unaffected by the edit.
-                _ => assert_eq!(
-                    plane.status,
-                    PlaneStatus::Match,
-                    "unexpected divergence in {}: {:?}",
-                    plane.plane,
-                    plane.details
-                ),
+        // The first edit adds the shared annotation component that DjVuLibre
+        // reads metadata from, as `djvused set-meta` does; later edits reuse it.
+        for (before, after, graph_changes) in [(&original, &first, true), (&first, &second, false)]
+        {
+            let diff = semantic_diff(before, after, None).expect("diff");
+            for plane in &diff.planes {
+                let expected = match plane.plane {
+                    "metadata" => PlaneStatus::Diverge,
+                    "component_graph" if graph_changes => PlaneStatus::Diverge,
+                    _ => PlaneStatus::Match,
+                };
+                assert_eq!(
+                    plane.status, expected,
+                    "unexpected status of {}: {:?}",
+                    plane.plane, plane.details
+                );
             }
         }
     }

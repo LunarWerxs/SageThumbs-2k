@@ -261,30 +261,52 @@ fn arb_simple_string(max_len: usize) -> impl Strategy<Value = String> {
 }
 
 fn arb_maparea() -> impl Strategy<Value = MapArea> {
-    // NOTE: Border style strategy is `1..=8` (non-empty). The encoder emits
-    // `(border <style>)` and the parser only restores `Some(Border)` when
-    // there's a non-empty atom after `border`, so `Some(Border{style:""})`
-    // round-trips to `None`. That is an asymmetric representation, not a
-    // bug we want to test for here — it was found by proptest while
-    // building this file (#195).
+    // NOTE: Border styles are drawn from the DjVuLibre border options. The
+    // encoder emits `(<style>)`, and the parser restores `Some(Border)` only
+    // for a known border keyword; any other option lands in `extra`.
     (
         arb_simple_string(32),
         arb_simple_string(32),
         arb_shape(),
         prop::option::of(
-            prop::collection::vec(prop::char::range('a', 'z'), 1..=8).prop_map(|cs| Border {
-                style: cs.iter().collect(),
+            prop::sample::select(vec![
+                "none",
+                "xor",
+                "border #12AB34",
+                "shadow_in",
+                "shadow_out 3",
+                "shadow_ein 7",
+                "shadow_eout",
+            ])
+            .prop_map(|style| Border {
+                style: style.to_string(),
             }),
         ),
         prop::option::of(arb_color().prop_map(|c| Highlight { color: c })),
+        prop::option::of(arb_simple_string(8)),
+        prop::collection::vec(
+            prop::sample::select(vec![
+                "(border_avis)",
+                "(opacity 50)",
+                "(width 2)",
+                "(lineclr #FF0000)",
+                "(arrow)",
+            ])
+            .prop_map(str::to_string),
+            0..3,
+        ),
     )
-        .prop_map(|(url, description, shape, border, highlight)| MapArea {
-            url,
-            description,
-            shape,
-            border,
-            highlight,
-        })
+        .prop_map(
+            |(url, description, shape, border, highlight, target, extra)| MapArea {
+                url,
+                description,
+                shape,
+                border,
+                highlight,
+                target,
+                extra,
+            },
+        )
 }
 
 fn arb_annotation() -> impl Strategy<Value = Annotation> {
@@ -297,11 +319,21 @@ fn arb_annotation() -> impl Strategy<Value = Annotation> {
             "fore".to_string(),
             "back".to_string(),
         ])),
+        prop::collection::vec(
+            prop::sample::select(vec![
+                "(align center top)",
+                "(metadata (Title \"A \\\"quoted\\\" title\"))",
+                "(zoom page)",
+            ])
+            .prop_map(str::to_string),
+            0..3,
+        ),
     )
-        .prop_map(|(background, zoom, mode)| Annotation {
+        .prop_map(|(background, zoom, mode, extra)| Annotation {
             background,
             zoom,
             mode,
+            extra,
         })
 }
 
@@ -322,6 +354,8 @@ fn map_areas_eq(a: &MapArea, b: &MapArea) -> Result<(), TestCaseError> {
     prop_assert!(maparea_shapes_eq(&a.shape, &b.shape), "shape mismatch");
     prop_assert_eq!(&a.border, &b.border);
     prop_assert_eq!(&a.highlight, &b.highlight);
+    prop_assert_eq!(&a.target, &b.target);
+    prop_assert_eq!(&a.extra, &b.extra);
     Ok(())
 }
 
@@ -339,6 +373,7 @@ proptest! {
         prop_assert_eq!(&ann.background, &ann2.background);
         prop_assert_eq!(ann.zoom, ann2.zoom);
         prop_assert_eq!(&ann.mode, &ann2.mode);
+        prop_assert_eq!(&ann.extra, &ann2.extra);
         prop_assert_eq!(areas.len(), areas2.len());
         for (a, b) in areas.iter().zip(areas2.iter()) {
             map_areas_eq(a, b)?;
@@ -362,6 +397,7 @@ proptest! {
         prop_assert_eq!(&ann.background, &ann2.background);
         prop_assert_eq!(ann.zoom, ann2.zoom);
         prop_assert_eq!(&ann.mode, &ann2.mode);
+        prop_assert_eq!(&ann.extra, &ann2.extra);
         prop_assert_eq!(areas.len(), areas2.len());
         for (a, b) in areas.iter().zip(areas2.iter()) {
             map_areas_eq(a, b)?;

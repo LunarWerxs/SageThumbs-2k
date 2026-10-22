@@ -30,6 +30,19 @@ use windows::core::{Error, Result, HRESULT};
 use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
 use windows_registry::{Key, CURRENT_USER, LOCAL_MACHINE};
+
+/// windows-registry returns `windows_result` errors; this module returns the windows 0.62
+/// `Error`. Both carry the same HRESULT, so the conversion just carries it across.
+trait RegistryResultExt<T> {
+    fn core(self) -> Result<T>;
+}
+
+impl<T> RegistryResultExt<T> for windows_registry::Result<T> {
+    fn core(self) -> Result<T> {
+        self.map_err(|e| Error::from_hresult(HRESULT(e.code().0)))
+    }
+}
+
 mod propstore;
 use propstore::*;
 mod displaced;
@@ -96,7 +109,7 @@ pub(crate) const WIC_IMAGE_EXTS: &[&str] = &[
 /// `HKLM\SOFTWARE\Classes`, opened for writing. See the module doc for why this and never
 /// `CLASSES_ROOT`.
 fn machine_classes() -> Result<Key> {
-    LOCAL_MACHINE.create(MACHINE_CLASSES)
+    LOCAL_MACHINE.create(MACHINE_CLASSES).core()
 }
 
 /// Outcome tally of one best-effort per-extension pass, so a pass that silently wrote
@@ -170,7 +183,7 @@ pub fn register(dll_path: &str) -> Result<()> {
 
     let classes = machine_classes()?;
     // "Approved Shell Extensions" is mandatory on locked-down systems.
-    let approved = LOCAL_MACHINE.create(APPROVED)?;
+    let approved = LOCAL_MACHINE.create(APPROVED).core()?;
     // One settings snapshot for all four per-extension sweeps below.
     let fmt = settings::format_enabled_snapshot();
 
@@ -327,16 +340,22 @@ fn register_preview_handler(
     classes
         .create(format!(
             "CLSID\\{CLSID_PREVIEW_HANDLER_STR}\\InprocServer32"
-        ))?
-        .set_string("ThreadingModel", "Both")?;
+        ))
+        .core()?
+        .set_string("ThreadingModel", "Both")
+        .core()?;
     // The AppID on our CLSID points the shell at the out-of-process preview host.
     classes
-        .create(format!("CLSID\\{CLSID_PREVIEW_HANDLER_STR}"))?
-        .set_string("AppID", PREVHOST_APPID)?;
+        .create(format!("CLSID\\{CLSID_PREVIEW_HANDLER_STR}"))
+        .core()?
+        .set_string("AppID", PREVHOST_APPID)
+        .core()?;
     // The machine-wide registered-handlers list (value name = CLSID, data = name).
     LOCAL_MACHINE
-        .create(PREVIEW_HANDLERS)?
-        .set_string(CLSID_PREVIEW_HANDLER_STR, PV_NAME)?;
+        .create(PREVIEW_HANDLERS)
+        .core()?
+        .set_string(CLSID_PREVIEW_HANDLER_STR, PV_NAME)
+        .core()?;
     // Hook each enabled extension's preview slot; unhook disabled ones (mirrors the
     // thumbnail per-extension loop, gated by the same Settings format list). A slot another
     // product owns is skipped, not counted, so this pass legitimately writes nothing on a
@@ -358,10 +377,10 @@ fn register_preview_handler(
 /// Shared by the machine-wide and the per-user registration paths, which configure alike.
 fn write_inproc_server(classes: &Key, clsid: &str, name: &str, dll_path: &str) -> Result<()> {
     let base = format!("CLSID\\{clsid}");
-    classes.create(&base)?.set_string("", name)?;
-    let inproc = classes.create(format!("{base}\\InprocServer32"))?;
-    inproc.set_string("", dll_path)?;
-    inproc.set_string("ThreadingModel", "Apartment")
+    classes.create(&base).core()?.set_string("", name).core()?;
+    let inproc = classes.create(format!("{base}\\InprocServer32")).core()?;
+    inproc.set_string("", dll_path).core()?;
+    inproc.set_string("ThreadingModel", "Apartment").core()
 }
 
 /// Register one in-proc COM server: `CLSID\{guid}` (friendly name) +
@@ -375,7 +394,7 @@ fn register_inproc_server(
     approved: &Key,
 ) -> Result<()> {
     write_inproc_server(classes, clsid_str, name, dll_path)?;
-    approved.set_string(clsid_str, name)?;
+    approved.set_string(clsid_str, name).core()?;
     Ok(())
 }
 
@@ -413,7 +432,7 @@ fn hook_ext(classes: &Key, ext: &str, pass: &mut Pass) {
 /// `SystemFileAssociations`), but it must be counted and its HRESULT logged. Shared by
 /// [`hook_ext`], [`hook_ext_preview`], and [`register_user`]'s per-user loop.
 fn set_shellex_key(root: &Key, path: &str, clsid: &str) -> Result<()> {
-    root.create(path)?.set_string("", clsid)
+    root.create(path).core()?.set_string("", clsid).core()
 }
 
 /// Remove one extension's thumbnail `shellex` keys — but only the ones that

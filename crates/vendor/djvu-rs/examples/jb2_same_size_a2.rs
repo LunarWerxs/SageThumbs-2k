@@ -15,10 +15,10 @@ fn run(path: &str, thresholds: &[f32]) {
     let n = doc.page_count();
     let mut masks = Vec::new();
     for i in 0..n {
-        if let Ok(page) = doc.page(i) {
-            if let Ok(Some(m)) = page.extract_mask() {
-                masks.push(m);
-            }
+        if let Ok(page) = doc.page(i)
+            && let Ok(Some(m)) = page.extract_mask()
+        {
+            masks.push(m);
         }
     }
     // Baseline: default lossless encode.
@@ -34,8 +34,10 @@ fn run(path: &str, thresholds: &[f32]) {
         base_total
     );
     for &frac in thresholds {
-        let mut opts = Jb2EncodeOptions::default();
-        opts.same_size_rec6 = Some(frac);
+        let opts = Jb2EncodeOptions {
+            same_size_rec6: Some(frac),
+            ..Jb2EncodeOptions::default()
+        };
         let mut total = 0usize;
         let (mut rt_ok, mut rt_fail) = (0usize, 0usize);
         for m in &masks {

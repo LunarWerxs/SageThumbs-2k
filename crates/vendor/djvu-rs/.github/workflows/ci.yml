@@ -17,11 +17,11 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  # ── Fast lint gate (runs in ~15s) ────────────────────────────────────────────
+  # ── Fast lint gate ───────────────────────────────────────────────────────────
   lint:
     name: Lint (fmt + clippy)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
 
@@ -56,12 +56,22 @@ jobs:
       - name: Feature hygiene (decode-only default tree)
         run: scripts/check_feature_hygiene.sh
 
+      # Broken or private intra-doc links fail here instead of shipping to
+      # docs.rs. Every feature docs.rs documents, except ocr-tesseract (it
+      # needs the system Tesseract library) and wasm-threads (nightly only).
+      - name: Rustdoc (no broken links)
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: >-
+          cargo doc --workspace --exclude djvu-py --no-deps
+          --features cli,epub,tiff,async,parallel,mmap,serde,image,wasm-lazy,ocr-onnx,ocr-neural,experimental,iw44-probe
+
   # ── Tests ────────────────────────────────────────────────────────────────────
   # stable: every push + PRs, full suite on main
   test-stable:
     name: Test (stable)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
 
@@ -75,20 +85,23 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cargo-nextest
 
-      # main: all 452 tests in one pass — slow PDF/IW44 run in parallel with fast ones
+      # `async` adds the djvu_async / export_async unit tests (lazy indirect
+      # loading, async export sinks); no other required job runs them.
+      # main: every test in one pass — slow PDF/IW44 run in parallel with fast ones
       - name: Test (all)
         if: github.ref == 'refs/heads/main'
-        run: cargo nextest run --profile ci --workspace --exclude djvu-py --features cli,tiff
+        run: cargo nextest run --profile ci --workspace --exclude djvu-py --features cli,tiff,async
 
       # PR / other branch: fast tests only (~440 tests, skip 200s PDF + large IW44)
       - name: Test (fast — skip slow PDF + IW44)
         if: github.ref != 'refs/heads/main'
         run: >
-          cargo nextest run --profile ci --workspace --exclude djvu-py --features cli,tiff
+          cargo nextest run --profile ci --workspace --exclude djvu-py --features cli,tiff,async
           --filter-expr 'not (binary(pdf_conversion) or test(iw44_new_decode_big))'
 
       # nextest does not run doctests; this compiles every ```rust block in
-      # README.md via the ReadmeDoctests include in src/lib.rs (doc-sync gate).
+      # README.md and docs/guide.md via the ReadmeDoctests / GuideDoctests
+      # includes in src/lib.rs (doc-sync gate).
       - name: README doctests
         run: cargo test --doc --features cli,tiff,async,serde,image,epub
 
@@ -128,7 +141,7 @@ jobs:
     name: Test (beta)
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
 
@@ -231,6 +244,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
+          components: clippy
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
@@ -241,8 +255,10 @@ jobs:
         run: cargo check --target wasm32-unknown-unknown --features wasm
 
       # Lazy Range-based browser open (#588): wasm + async + wasm-bindgen-futures.
-      - name: cargo check --target wasm32-unknown-unknown (wasm-lazy)
-        run: cargo check --target wasm32-unknown-unknown --features wasm-lazy
+      # Clippy, not just check: wasm32 std stubs (e.g. a `File` without `Drop`)
+      # trigger lints the host build never sees (#863).
+      - name: cargo clippy --target wasm32-unknown-unknown (wasm-lazy)
+        run: cargo clippy --target wasm32-unknown-unknown --features wasm-lazy -- -D warnings
 
       # Pure no_std build for wasm32 (no std feature, no wasm-bindgen).
       # This is the strictest test of the README "no_std compatible — IFF/BZZ/JB2/IW44/ZP
@@ -336,12 +352,13 @@ jobs:
         run: cargo test --features ocr-onnx ocr_onnx
 
   # ── Python bindings (djvu-py) ────────────────────────────────────────────────
-  # Non-required (informational): builds the extension module via maturin into
-  # a uv-managed venv and runs the pytest suite covering the public API surface,
-  # including the round-41 (PY_GIL_DETACH/PY_ZEROCOPY, #530) additions — buffer
-  # protocol, zero-copy numpy/PIL views, Pixmap lifetime safety, and GIL release.
-  # Not part of the branch-protection required-checks list (see CLAUDE.md);
-  # kept fast: one Python version, cached cargo build. See djvu-py/Makefile.
+  # Required check: builds the extension module via maturin into a uv-managed
+  # venv and runs the pytest suite covering the public API surface, including
+  # the round-41 (PY_GIL_DETACH/PY_ZEROCOPY, #530) additions — buffer protocol,
+  # zero-copy numpy/PIL views, Pixmap lifetime safety, and GIL release — plus
+  # every Python example in djvu-py/README.md and GUIDE.md
+  # (tests/test_doc_examples.py). Listed in CLAUDE.md's required checks; kept
+  # fast: one Python version, cached cargo build. See djvu-py/Makefile.
   djvu-py:
     name: djvu-py (pytest)
     runs-on: ubuntu-latest
@@ -367,6 +384,11 @@ jobs:
 
       - name: Build + test djvu-py (maturin develop + pytest)
         run: make -C djvu-py py-test
+
+      # mypy stubtest: the shipped djvu_rs.pyi must match the built module
+      # (names, signatures, TypedDict shapes). Reuses the venv and build above.
+      - name: Type stubs match the module (stubtest)
+        run: make -C djvu-py py-stubtest
 
   # ── Licenses & security audit (combined — both are fast, one runner) ─────────
   deps-check:

@@ -4,7 +4,7 @@
 //! previous Candle/TrOCR scaffold accepted a model path and then failed during
 //! `recognize`, which made the feature look supported when it was not. Until a
 //! specific model family, preprocessing contract, decoder, and fixture are wired
-//! up, [`CandleBackend::load`] returns a clear [`OcrError::InitFailed`] instead.
+//! up, [`CandleBackend::load`](crate::ocr_neural::CandleBackend::load) returns a clear [`OcrError::InitFailed`](crate::ocr::OcrError::InitFailed) instead.
 //!
 //! Use the `ocr-tesseract` feature for the supported OCR backend. The
 //! `ocr-neural-candle` feature name is kept as a no-op compatibility alias and
@@ -54,7 +54,10 @@ mod tests {
 
     #[test]
     fn load_always_returns_init_failed() {
-        let err = CandleBackend::load("/some/model/dir").unwrap_err();
+        // `unwrap_err` needs `Debug` on the backend, which it does not implement.
+        let Err(err) = CandleBackend::load("/some/model/dir") else {
+            panic!("load must fail");
+        };
         assert!(matches!(err, OcrError::InitFailed(_)));
     }
 

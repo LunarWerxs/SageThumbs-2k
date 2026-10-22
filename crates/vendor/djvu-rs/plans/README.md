@@ -13,18 +13,25 @@ tests, docs sync, CI/DX guardrails, and scoped #695/#692/#694 slices. Full
 AC5 ResourceLimits plumbing, tile viewer API (#691), neural OCR (#693), and
 full PyPI/npm publish matrix are intentionally **not** planned here.
 
+> **Status audit 2026-09-20.** Every row below is DONE on `main` @ `a282619`
+> (v0.33.0). The plan is kept as a record; nothing here is left to execute.
+> The deferred findings in the "rejected" table now have issues: banded
+> render #811, banded encode #812, per-layer cache eviction #813, optimizer
+> roadmap #814, fallible `Pixmap::new` #815, BM44/PM44 in the conformance
+> corpus #827.
+
 ## Execution order & status
 
 | # | Title | Related issue(s) | Effort | Risk | Depends on | Status |
 |---|-------|------------------|--------|------|------------|--------|
-| 01 | Sync `djvu-py/pyproject.toml` version with crate | #692 | S | LOW | — | ready |
+| 01 | Sync `djvu-py/pyproject.toml` version with crate | #692 | S | LOW | — | DONE (version derived from `djvu-py/Cargo.toml`, 0.33.0 = crate) |
 | 02 | Mirror missing CI gates in `scripts/check.sh` (+ TIFF tests) | — (DX/CI), supports #694 | S | LOW | — | DONE |
-| 03 | Fix README TIFF encode/export feature accuracy + sync assert | #694 (docs) | S | LOW | — | ready |
-| 04 | Characterization tests + input matrix for encoder ingestion | #694 | M | LOW | 03 (docs matrix wording) | ready |
-| 05 | Typed `RenderError` for output pixel ceiling (AC6 slice) | #695 | M | MED | — | ready |
-| 06 | Re-export `ResourceLimits` + document ceilings / open AC5 | #695 | S | LOW | prefer after pull of #734 docs | ready |
-| 07 | Archive stale body of `docs/jb2-size-gap-plan.md` | — (docs) | S | LOW | — | ready |
-| 08 | Remove stale `tests/wasm_browser.rs` reference | #692 | S | LOW | — | ready |
+| 03 | Fix README TIFF encode/export feature accuracy + sync assert | #694 (docs) | S | LOW | — | DONE (README TIFF rows carry the `--features tiff` note, verified 2026-09-20) |
+| 04 | Characterization tests + input matrix for encoder ingestion | #694 | M | LOW | 03 (docs matrix wording) | DONE (`tests/encoder_ingestion.rs`) |
+| 05 | Typed `RenderError` for output pixel ceiling (AC6 slice) | #695 | M | MED | — | DONE (`RenderError` in `src/djvu_render.rs`) |
+| 06 | Re-export `ResourceLimits` + document ceilings / open AC5 | #695 | S | LOW | prefer after pull of #734 docs | DONE (`ResourceLimits` re-exported; `docs/api-compatibility.md` "Configurable budgets") |
+| 07 | Archive stale body of `docs/jb2-size-gap-plan.md` | — (docs) | S | LOW | — | DONE (`docs/jb2-size-gap-plan.md` header: "Plan complete") |
+| 08 | Remove stale `tests/wasm_browser.rs` reference | #692 | S | LOW | — | DONE (stale comment removed from `src/wasm.rs`, 2026-09-20) |
 
 Status values: `ready` | `IN PROGRESS` | `DONE` | `BLOCKED (…) ` | `REJECTED (…)`
 
@@ -48,12 +55,12 @@ Then **04** (needs 03), then **05**/**06** for #695, then **07**/**08** anytime.
 
 | Finding | Why rejected / deferred |
 |---------|-------------------------|
-| Full caller-supplied `ResourceLimits` on all parse/render entry points (AC5) | L effort, MED–HIGH SemVer/API risk; needs design spike after **05**/**06**. Tracked open on #695. |
-| Fallible `Pixmap::new` (stop silent empty buffer) | Correctness smell, but API of infallible constructor is load-bearing; defer until after typed render limit (**05**). |
+| Full caller-supplied `ResourceLimits` on all parse/render entry points (AC5) | Landed: `ParseOptions::limits` on `parse_with_options` / `from_bytes_with_options`, `render_pixmap_with_limits`; #695 closed. |
+| Fallible `Pixmap::new` (stop silent empty buffer) | Unblocked by **05**; now tracked as #815. |
 | Full PyPI wheel matrix + npm OIDC publish (#692) | L+ release infra; do version sync (**01**) and smoke later, not this pass. |
-| Tile-first progressive viewer API (#691) | Direction/L architecture; not weak-executor safe without a design plan. |
-| Model-specific neural OCR (#693) | Direction/L; experimental backends intentionally limited. |
-| Add BM44/PM44 to `conformance/corpus.json` | Valid gap; MED risk of dashboard/accepted-difference churn — skip until someone owns conformance run. |
+| Tile-first progressive viewer API (#691) | Shipped in #744/#746/#747/#748; issue closed. |
+| Model-specific neural OCR (#693) | Shipped in four slices (#745, #749, …); issue closed. |
+| Add BM44/PM44 to `conformance/corpus.json` | Landed in #827: both fixtures are corpus rows. Adding them exposed an IW44 inverse-transform edge bug on planes under 128 px; after the fix they match DjVuLibre with zero mismatched pixels. |
 | Make quality.yml fail-closed / remove `\|\| true` | Intentional non-gating quality channel; do not change without maintainer ask. |
 | Open-ended "make JB2/IW44 faster" | Forbidden without measurement harness + `PERF_EXPERIMENTS.md` entry. |
 | README source-only Python/WASM install text | Accurate today, not drift; change only after real publish. |

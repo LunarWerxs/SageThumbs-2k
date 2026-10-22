@@ -154,7 +154,7 @@ impl ComponentGraph {
             let chunks =
                 parse_form_body(body).map_err(|error| GraphError::Malformed(error.to_string()))?;
 
-            if form != expected_form(entry.kind) || !is_component_form(form) {
+            if !form_matches_kind(form, entry.kind) {
                 validation_errors.push(GraphError::InvalidComponentType {
                     id: entry.id.clone(),
                     form,
@@ -407,16 +407,15 @@ impl ComponentGraph {
     }
 }
 
-fn expected_form(kind: DirmComponentKind) -> [u8; 4] {
+/// Whether a component FORM type agrees with its DIRM kind. A page is
+/// `FORM:DJVU`, or a legacy `FORM:BM44`/`FORM:PM44` image that DjVuLibre
+/// (`djvm -c`) bundles as a page.
+fn form_matches_kind(form: [u8; 4], kind: DirmComponentKind) -> bool {
     match kind {
-        DirmComponentKind::Page => *b"DJVU",
-        DirmComponentKind::Shared => *b"DJVI",
-        DirmComponentKind::Thumbnail => *b"THUM",
+        DirmComponentKind::Page => crate::dirm::is_page_form(&form),
+        DirmComponentKind::Shared | DirmComponentKind::SharedAnno => form == *b"DJVI",
+        DirmComponentKind::Thumbnail => form == *b"THUM",
     }
-}
-
-fn is_component_form(form: [u8; 4]) -> bool {
-    form == *b"DJVU" || form == *b"DJVI" || form == *b"THUM"
 }
 
 fn classify_component(
@@ -424,7 +423,7 @@ fn classify_component(
     chunks: &[crate::iff::IffChunk<'_>],
     directory_kind: DirmComponentKind,
 ) -> ComponentNodeKind {
-    if form == *b"DJVU" {
+    if crate::dirm::is_page_form(&form) {
         ComponentNodeKind::Page
     } else if form == *b"THUM" {
         ComponentNodeKind::Thumbnail
@@ -442,20 +441,18 @@ fn classify_component(
     } else {
         match directory_kind {
             DirmComponentKind::Page => ComponentNodeKind::Page,
-            DirmComponentKind::Shared => ComponentNodeKind::SharedOther,
+            DirmComponentKind::Shared | DirmComponentKind::SharedAnno => {
+                ComponentNodeKind::SharedOther
+            }
             DirmComponentKind::Thumbnail => ComponentNodeKind::Thumbnail,
         }
     }
 }
 
 fn component_id_from_incl(data: &[u8]) -> Result<String, GraphError> {
-    let end = data
-        .iter()
-        .rposition(|byte| *byte != 0 && !byte.is_ascii_whitespace())
-        .map_or(0, |index| index + 1);
-    core::str::from_utf8(&data[..end])
+    crate::dirm::incl_target(data)
         .map(str::to_owned)
-        .map_err(|_| GraphError::Malformed("INCL component id is not valid UTF-8".to_string()))
+        .ok_or_else(|| GraphError::Malformed("INCL component id is not valid UTF-8".to_string()))
 }
 
 fn consume_visit(visits: &mut usize) -> bool {
@@ -523,19 +520,16 @@ mod tests {
 
     fn bundled(components: Vec<FixtureComponent>) -> Vec<u8> {
         let bodies = components.iter().map(component_body).collect::<Vec<_>>();
-        let ids = components
+        let entries = components
             .iter()
-            .map(|component| component.id.to_string())
+            .zip(&bodies)
+            .map(|(component, body)| crate::dirm::DirmComponent {
+                kind: DirmComponentKind::from_flag(component.dirm_flag),
+                id: component.id.to_string(),
+                size: u32::try_from(8 + body.len()).unwrap(),
+            })
             .collect::<Vec<_>>();
-        let flags = components
-            .iter()
-            .map(|component| component.dirm_flag)
-            .collect::<Vec<_>>();
-        let sizes = bodies
-            .iter()
-            .map(|body| u32::try_from(8 + body.len()).unwrap())
-            .collect::<Vec<_>>();
-        let mut dirm = DirmPayload::build_bundled(components.len(), &flags, &ids, &sizes);
+        let mut dirm = DirmPayload::build_bundled(&entries);
 
         let emit = |dirm: &DirmPayload| {
             let dirm_chunk = Chunk::Leaf {

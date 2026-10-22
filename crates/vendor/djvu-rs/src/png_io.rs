@@ -1,11 +1,11 @@
 //! Image file → [`Pixmap`] decoders.
 //!
 //! Provides:
-//! - [`decode_png_to_pixmap`] — decode PNG into the RGBA [`Pixmap`] format used
+//! - [`decode_png_to_pixmap`](crate::png_io::decode_png_to_pixmap) — decode PNG into the RGBA [`Pixmap`] format used
 //!   throughout djvu-rs (8/16-bit, palette, and low bit depths — see
 //!   [`crate::ingest::IngestPolicy`] and `docs/encoder-ingestion.md`).
-//! - [`decode_jpeg_file_to_pixmap`] — decode a JPEG file into [`Pixmap`].
-//! - [`decode_image_to_pixmap`] — unified dispatcher: routes by file extension
+//! - [`decode_jpeg_file_to_pixmap`](crate::png_io::decode_jpeg_file_to_pixmap) — decode a JPEG file into [`Pixmap`].
+//! - [`decode_image_to_pixmap`](crate::png_io::decode_image_to_pixmap) — unified dispatcher: routes by file extension
 //!   (`png`, `jpg`/`jpeg`, `tif`/`tiff`) and falls back to magic-byte sniffing
 //!   for extension-less or ambiguous paths. TIFF support is gated by
 //!   `#[cfg(feature = "tiff")]`.
@@ -538,7 +538,7 @@ mod tiff_ingest {
     /// A lazily-decoding, strictly-forward TIFF page reader (step 5 of the
     /// encoder peak-memory plan): one page's [`Pixmap`] materializes only
     /// when [`Self::next_page`] is called, and only one page's decoded
-    /// pixels are ever resident at a time — instead of [`decode_pages`]'s
+    /// pixels are ever resident at a time — instead of `decode_pages`'s
     /// whole-file `Vec<Pixmap>`.
     ///
     /// The underlying `tiff` decoder is strictly forward-only (advancing to
@@ -587,7 +587,7 @@ mod tiff_ingest {
 
         /// Decode and return the next page in order, advancing the decoder.
         /// Callers drive this from a source closure indexed `0..page_count`,
-        /// where `page_count` comes from [`count_pages`] on the same file;
+        /// where `page_count` comes from `count_pages` on the same file;
         /// calling it more times than the file has pages returns a TIFF
         /// error from the underlying decoder rather than panicking.
         pub fn next_page(&mut self) -> Result<Pixmap, BoxError> {

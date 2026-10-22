@@ -4,7 +4,7 @@ use super::*;
 
 /// `HKCU\Software\Classes` — the per-user half of `HKEY_CLASSES_ROOT`.
 pub(super) fn user_classes() -> Result<Key> {
-    CURRENT_USER.create(r"Software\Classes")
+    CURRENT_USER.create(r"Software\Classes").core()
 }
 
 /// Register the thumbnail provider + classic context menu for THIS USER ONLY, pointing at

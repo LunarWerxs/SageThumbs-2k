@@ -15,16 +15,16 @@ fn run(path: &str) {
     let mut near_px = 0u64;
     let mut hist: Vec<u32> = Vec::new();
     for i in 0..doc.page_count() {
-        if let Ok(page) = doc.page(i) {
-            if let Ok(Some(m)) = page.extract_mask() {
-                // max_dim_delta=2 px, budget 5% resampled Hamming (cjb2-ish).
-                let s = analyze_jb2_cross_size_refinement(&m, &[], 2, 0.05);
-                fresh += s.fresh_ccs;
-                cand += s.candidate_ccs;
-                near += s.near_matches;
-                near_px += s.near_match_pixels;
-                hist.extend(s.best_hamming);
-            }
+        if let Ok(page) = doc.page(i)
+            && let Ok(Some(m)) = page.extract_mask()
+        {
+            // max_dim_delta=2 px, budget 5% resampled Hamming (cjb2-ish).
+            let s = analyze_jb2_cross_size_refinement(&m, &[], 2, 0.05);
+            fresh += s.fresh_ccs;
+            cand += s.candidate_ccs;
+            near += s.near_matches;
+            near_px += s.near_match_pixels;
+            hist.extend(s.best_hamming);
         }
     }
     println!("== {} ==", path);

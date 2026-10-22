@@ -35,7 +35,7 @@ use djvu_rs::{
     iw44_encode::{Iw44EncodeOptions, encode_iw44_color, probe},
 };
 
-/// `BAND_BUCKETS` from `djvu-iw44/src/lib.rs` — not exported (encoder/decoder
+/// `BAND_BUCKETS` from `djvu-iw44/src/tables.rs` — not exported (encoder/decoder
 /// shared spec constant, `pub(crate)`), so mirrored here for display purposes
 /// only. Band 0 = DC (coarsest); band 9 = finest detail.
 const BAND_BUCKETS: [(usize, usize); 10] = [

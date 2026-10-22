@@ -202,6 +202,8 @@ mod serde_tests {
                     b: 0,
                 },
             }),
+            target: None,
+            extra: Vec::new(),
         };
 
         let json = serde_json::to_string(&area).expect("serialize");
@@ -223,6 +225,7 @@ mod serde_tests {
             }),
             zoom: Some(100),
             mode: Some("color".to_string()),
+            extra: Vec::new(),
         };
 
         let json = serde_json::to_string(&ann).expect("serialize");

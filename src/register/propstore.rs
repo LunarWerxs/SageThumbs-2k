@@ -65,16 +65,20 @@ pub(super) fn register_property_handler(
         dll_path,
         approved,
     )?;
-    let clsid_key = classes.create(format!("CLSID\\{CLSID_PROPERTY_STORE_STR}"))?;
+    let clsid_key = classes
+        .create(format!("CLSID\\{CLSID_PROPERTY_STORE_STR}"))
+        .core()?;
     // Property handlers prefer "Both" (the shared helper defaults to Apartment).
     clsid_key
-        .create("InprocServer32")?
-        .set_string("ThreadingModel", "Both")?;
+        .create("InprocServer32")
+        .core()?
+        .set_string("ThreadingModel", "Both")
+        .core()?;
     // The handler initialises with `IInitializeWithFile` (its extractors need the real path).
     // Windows loads property handlers in its isolated property host by default, and a
     // file-initialised handler is not loaded there unless it declares this value, so without
     // it the indexer never asked us for anything. Removed with the CLSID tree in `unregister`.
-    clsid_key.set_u32("DisableProcessIsolation", 1)?;
+    clsid_key.set_u32("DisableProcessIsolation", 1).core()?;
     for (ext, _) in FORMATS {
         if fmt.enabled(ext) {
             let _ = hook_ext_propstore(classes, ext);
@@ -112,9 +116,11 @@ pub(super) fn hook_ext_propstore(classes: &Key, ext: &str) -> Result<()> {
         return Ok(()); // a real handler already owns this extension — leave it alone
     }
     LOCAL_MACHINE
-        .create(&handler)?
-        .set_string("", CLSID_PROPERTY_STORE_STR)?;
-    let a = classes.create(&assoc)?;
+        .create(&handler)
+        .core()?
+        .set_string("", CLSID_PROPERTY_STORE_STR)
+        .core()?;
+    let a = classes.create(&assoc).core()?;
     // A third-party app can write these SystemFileAssociations values directly, without ever
     // registering a property handler — so the `handler` guard above (which only looked at
     // PropertyHandlers\.<ext>) can't see it. Fill each value only where it's genuinely empty,

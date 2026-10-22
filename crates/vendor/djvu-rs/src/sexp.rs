@@ -22,12 +22,56 @@ use alloc::{
 
 /// A node in a parsed S-expression tree.
 ///
-/// Quoted strings and unquoted atoms both reduce to [`SExpr::Atom`]; no current
-/// consumer needs to tell them apart.
+/// Unquoted atoms and `"`-quoted strings stay distinct so that a form the
+/// caller does not interpret can be printed back unchanged
+/// ([`SExpr::write_to`]); readers that do not care use [`SExpr::text`].
 #[derive(Debug)]
 pub(crate) enum SExpr {
     Atom(String),
+    Str(String),
     List(Vec<SExpr>),
+}
+
+impl SExpr {
+    /// The text of an atom or a quoted string; `None` for a list.
+    pub(crate) fn text(&self) -> Option<&str> {
+        match self {
+            SExpr::Atom(s) | SExpr::Str(s) => Some(s),
+            SExpr::List(_) => None,
+        }
+    }
+
+    /// Print the node back as S-expression text: one space between list
+    /// items, quoted strings re-escaped. Reading the output back yields the
+    /// same tree.
+    pub(crate) fn write_to(&self, out: &mut String) {
+        match self {
+            SExpr::Atom(s) => out.push_str(s),
+            SExpr::Str(s) => write_quoted(s, out),
+            SExpr::List(items) => {
+                out.push('(');
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        out.push(' ');
+                    }
+                    item.write_to(out);
+                }
+                out.push(')');
+            }
+        }
+    }
+}
+
+/// Append `s` as a `"`-quoted string, backslash-escaping `"` and `\`.
+pub(crate) fn write_quoted(s: &str, out: &mut String) {
+    out.push('"');
+    for c in s.chars() {
+        if c == '"' || c == '\\' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('"');
 }
 
 /// Maximum nesting depth for parsed lists.
@@ -175,7 +219,7 @@ fn parse_one(tokens: &[Token<'_>], pos: &mut usize, depth: usize) -> Option<SExp
         Some(Token::Quoted(s)) => {
             let s = s.clone();
             *pos += 1;
-            Some(SExpr::Atom(s))
+            Some(SExpr::Str(s))
         }
         None => None,
     }
@@ -186,10 +230,7 @@ mod tests {
     use super::*;
 
     fn atom(e: &SExpr) -> Option<&str> {
-        match e {
-            SExpr::Atom(s) => Some(s.as_str()),
-            SExpr::List(_) => None,
-        }
+        e.text()
     }
 
     #[test]
@@ -200,8 +241,8 @@ mod tests {
         let SExpr::List(items) = &exprs[0] else {
             panic!("expected list")
         };
-        let SExpr::Atom(s) = &items[1] else {
-            panic!("expected quoted atom")
+        let SExpr::Str(s) = &items[1] else {
+            panic!("expected quoted string")
         };
         assert_eq!(s, "Café — Кафе");
     }
@@ -218,12 +259,29 @@ mod tests {
     }
 
     #[test]
-    fn quoted_and_atom_both_reduce_to_atom() {
+    fn quoted_and_atom_share_text() {
         let exprs = parse_sexprs(r#"(title "My Book")"#);
         let SExpr::List(items) = &exprs[0] else {
             panic!("expected list")
         };
+        assert!(matches!(items[0], SExpr::Atom(_)));
+        assert!(matches!(items[1], SExpr::Str(_)));
         assert_eq!(atom(&items[1]), Some("My Book"));
+    }
+
+    #[test]
+    fn write_to_prints_back_an_equivalent_tree() {
+        let source = "(metadata  (Title \"A \\\"quoted\\\" \\\\ name\")\n (Year 1999) ( ) )";
+        let exprs = parse_sexprs(source);
+        let mut printed = String::new();
+        exprs[0].write_to(&mut printed);
+        assert_eq!(
+            printed,
+            "(metadata (Title \"A \\\"quoted\\\" \\\\ name\") (Year 1999) ())"
+        );
+        let mut again = String::new();
+        parse_sexprs(&printed)[0].write_to(&mut again);
+        assert_eq!(again, printed);
     }
 
     #[test]

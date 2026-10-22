@@ -36,15 +36,70 @@ pub(crate) fn form_byte_range(offset: u32, size_be: [u8; 4]) -> Range<u64> {
     begin..begin.saturating_add(8).saturating_add(size)
 }
 
+/// Whether a FORM of this type is a page.
+///
+/// Besides `FORM:DJVU`, DjVuLibre treats a legacy `FORM:BM44`/`FORM:PM44`
+/// image file as a one-page document, and `djvm -c` bundles it as a page.
+/// Every reader, writer, and validator asks this one function.
+pub(crate) fn is_page_form(form_type: &[u8]) -> bool {
+    matches!(form_type, b"DJVU" | b"BM44" | b"PM44")
+}
+
+/// The DIRM component name an `INCL` chunk payload refers to.
+///
+/// Writers pad the name with a trailing NUL or whitespace; both are stripped.
+/// Returns `None` when the name is not UTF-8.
+pub(crate) fn incl_target(data: &[u8]) -> Option<&str> {
+    let end = data
+        .iter()
+        .rposition(|byte| *byte != 0 && !byte.is_ascii_whitespace())
+        .map_or(0, |index| index + 1);
+    core::str::from_utf8(&data[..end]).ok()
+}
+
 /// Component classification from a DIRM per-component flags byte (low 6 bits).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DirmComponentKind {
     /// A renderable page (`FORM:DJVU`).
     Page,
-    /// A shared dictionary (`FORM:DJVI`).
+    /// A shared include component (`FORM:DJVI`), e.g. a symbol dictionary.
     Shared,
+    /// The document's shared annotation (`FORM:DJVI`, DIRM flag 3). DjVuLibre
+    /// keeps document metadata in its `(metadata …)` block.
+    SharedAnno,
     /// A thumbnail (`FORM:THUM`).
     Thumbnail,
+}
+
+impl DirmComponentKind {
+    /// Whether the component is a `FORM:DJVI` include (plain or annotation).
+    pub(crate) fn is_include(self) -> bool {
+        matches!(self, Self::Shared | Self::SharedAnno)
+    }
+
+    /// Kind from a DIRM per-component flags byte. Only the low 6 bits carry the
+    /// type; an unknown type reads as a shared include, as in DjVuLibre.
+    pub(crate) fn from_flag(flag: u8) -> Self {
+        match flag & 0x3f {
+            1 => Self::Page,
+            2 => Self::Thumbnail,
+            3 => Self::SharedAnno,
+            _ => Self::Shared,
+        }
+    }
+
+    /// The DIRM flags byte this crate writes for the kind: the type alone, with
+    /// the name (0x80) and title (0x40) bits clear. Inverse of
+    /// [`Self::from_flag`].
+    #[cfg(feature = "std")]
+    pub(crate) fn flag(self) -> u8 {
+        match self {
+            Self::Shared => 0,
+            Self::Page => 1,
+            Self::Thumbnail => 2,
+            Self::SharedAnno => 3,
+        }
+    }
 }
 
 /// One DIRM component descriptor: its kind and resolver id.
@@ -56,10 +111,22 @@ pub(crate) struct DirmComponent {
     pub id: String,
     /// Component byte length from the DIRM size table (`FORM` header included),
     /// or 0 when the writer left the table zeroed (readers then fall back to
-    /// the component's own `FORM` boundaries). Consumed by the async lazy
-    /// loader only.
-    #[cfg_attr(not(feature = "async"), allow(dead_code))]
+    /// the component's own `FORM` boundaries). Read by the async lazy loader
+    /// and written by the directory builders.
+    #[cfg_attr(not(feature = "std"), allow(dead_code))]
     pub size: u32,
+}
+
+#[cfg(test)]
+impl DirmComponent {
+    /// A directory entry with an unknown (zero) size, for test fixtures.
+    pub(crate) fn new(kind: DirmComponentKind, id: &str) -> Self {
+        Self {
+            kind,
+            id: id.to_string(),
+            size: 0,
+        }
+    }
 }
 
 /// Owned, round-trippable model of a `DIRM` chunk payload.
@@ -188,11 +255,7 @@ impl DirmPayload {
         let mut out = Vec::with_capacity(n);
         let mut pos = flags_start + n;
         for (i, &flag) in meta[flags_start..flags_start + n].iter().enumerate() {
-            let kind = match flag & 0x3f {
-                1 => DirmComponentKind::Page,
-                2 => DirmComponentKind::Thumbnail,
-                _ => DirmComponentKind::Shared,
-            };
+            let kind = DirmComponentKind::from_flag(flag);
             let id = read_nt_string(&meta, &mut pos).unwrap_or_default();
             if flag & 0x80 != 0 {
                 let _ = read_nt_string(&meta, &mut pos);
@@ -207,62 +270,163 @@ impl DirmPayload {
     }
 
     /// Build a bundled `DIRM` (offset table present, zero-initialized) from
-    /// component descriptors. Offsets are filled in by the caller once the final
+    /// the directory entries. Offsets are filled in by the caller once the final
     /// byte layout is known (a zeroed table is rejected by DjVuLibre's DjVmDir,
-    /// #657). `sizes` are the per-component byte lengths (`FORM` header
-    /// included) for the 24-bit metadata size table; pass `&[]` to zero it
-    /// (readers then fall back to `FORM` boundaries).
+    /// #657). Each entry's `size` is its byte length (`FORM` header included)
+    /// for the 24-bit metadata size table; 0 means unknown (readers then fall
+    /// back to `FORM` boundaries).
     #[cfg(feature = "std")]
-    pub fn build_bundled(count: usize, flags: &[u8], ids: &[String], sizes: &[u32]) -> Self {
+    pub fn build_bundled(components: &[DirmComponent]) -> Self {
         Self {
             // Bundled bit + directory version 1: version 0 has a different
             // plain-section layout in DjVuLibre's DjVmDir and is rejected in
             // practice (#657); every real-world DIRM observed writes 0x81.
             flags: BUNDLED_FLAG | 1,
-            nfiles: count as u16,
-            offsets: vec![0; count],
-            metadata: build_metadata(count, flags, ids, sizes),
+            nfiles: components.len() as u16,
+            offsets: vec![0; components.len()],
+            metadata: build_metadata(components),
         }
     }
 
-    /// Build an indirect `DIRM` (no offset table) from component descriptors.
+    /// Rewrite the 24-bit size table in the metadata to `sizes`.
+    ///
+    /// DjVuLibre trusts these sizes when it reads a bundled component, so an
+    /// edit that changes a component's length must update them. A size is the
+    /// component's `FORM` header plus its declared length, without the pad
+    /// byte. The metadata stays byte-identical when the table already matches,
+    /// when it is all zeros (sizes unknown, readers use `FORM` boundaries), or
+    /// when it cannot be decoded. Returns whether the metadata changed.
     #[cfg(feature = "std")]
-    pub fn build_indirect(count: usize, flags: &[u8], ids: &[String]) -> Self {
+    pub fn update_sizes(&mut self, sizes: &[u32]) -> bool {
+        let n = self.nfiles as usize;
+        if sizes.len() != n {
+            return false;
+        }
+        let Ok(mut meta) = crate::bzz::bzz_decode(&self.metadata) else {
+            return false;
+        };
+        let Some(table) = meta.get_mut(..n * 3) else {
+            return false;
+        };
+        if table.iter().all(|&b| b == 0) {
+            return false;
+        }
+        let new: Vec<u8> = sizes
+            .iter()
+            .flat_map(|&size| {
+                let [_, a, b, c] = size.min(0xff_ffff).to_be_bytes();
+                [a, b, c]
+            })
+            .collect();
+        if *table == *new {
+            return false;
+        }
+        table.copy_from_slice(&new);
+        self.metadata = crate::bzz_encode::bzz_encode(&meta);
+        true
+    }
+
+    /// Insert a component descriptor at `index` (0 ..= `nfiles`).
+    ///
+    /// The new entry carries only a kind and an id, so readers use the id as
+    /// its name and title. Every existing entry, including its
+    /// name and title strings, is kept byte for byte. The new size and offset
+    /// are zero until [`Self::update_sizes`] and the caller's offset pass
+    /// fill them in.
+    #[cfg(feature = "std")]
+    pub fn insert_component(
+        &mut self,
+        index: usize,
+        kind: DirmComponentKind,
+        id: &str,
+    ) -> Result<(), &'static str> {
+        let n = self.nfiles as usize;
+        if index > n {
+            return Err("DIRM insert index out of range");
+        }
+        let nfiles = u16::try_from(n + 1).map_err(|_| "DIRM component count overflow")?;
+        let meta =
+            crate::bzz::bzz_decode(&self.metadata).map_err(|_| "DIRM metadata is not valid BZZ")?;
+        let sizes = meta.get(..n * 3).ok_or("DIRM size table truncated")?;
+        let old_flags = meta.get(n * 3..n * 4).ok_or("DIRM flags table truncated")?;
+
+        // Per component: id, then name and title when its flags say so.
+        let mut pos = n * 4;
+        let mut entries = Vec::with_capacity(n);
+        for &flag in old_flags {
+            let start = pos;
+            let strings = 1 + usize::from(flag & 0x80 != 0) + usize::from(flag & 0x40 != 0);
+            for _ in 0..strings {
+                let nul = meta
+                    .get(pos..)
+                    .and_then(|rest| rest.iter().position(|&b| b == 0))
+                    .ok_or("DIRM component string truncated")?;
+                pos += nul + 1;
+            }
+            entries.push(&meta[start..pos]);
+        }
+        let tail = &meta[pos..];
+
+        let mut new_id = id.as_bytes().to_vec();
+        new_id.push(0);
+        let mut out = Vec::with_capacity(meta.len() + 4 + new_id.len());
+        out.extend_from_slice(&sizes[..index * 3]);
+        out.extend_from_slice(&[0, 0, 0]);
+        out.extend_from_slice(&sizes[index * 3..]);
+        out.extend_from_slice(&old_flags[..index]);
+        out.push(kind.flag());
+        out.extend_from_slice(&old_flags[index..]);
+        for entry in &entries[..index] {
+            out.extend_from_slice(entry);
+        }
+        out.extend_from_slice(&new_id);
+        for entry in &entries[index..] {
+            out.extend_from_slice(entry);
+        }
+        out.extend_from_slice(tail);
+
+        self.nfiles = nfiles;
+        if self.is_bundled() {
+            self.offsets.insert(index, 0);
+        }
+        self.metadata = crate::bzz_encode::bzz_encode(&out);
+        Ok(())
+    }
+
+    /// Build an indirect `DIRM` (no offset table) from the directory entries;
+    /// `size` as in [`Self::build_bundled`].
+    #[cfg(feature = "std")]
+    pub fn build_indirect(components: &[DirmComponent]) -> Self {
         Self {
             // Directory version 1 (see build_bundled), bundled bit clear.
             flags: 0x01,
-            nfiles: count as u16,
+            nfiles: components.len() as u16,
             offsets: Vec::new(),
-            metadata: build_metadata(count, flags, ids, &[]),
+            metadata: build_metadata(components),
         }
     }
 }
 
-/// Build the BZZ-compressed DIRM metadata tail from component descriptors.
+/// Build the BZZ-compressed DIRM metadata tail from the directory entries.
 ///
 /// Layout: sizes(3b × N — component byte lengths, or zeroed when unknown so
 /// readers use `FORM` boundaries), flags(1b × N), ids(null-terminated),
 /// names(null-terminated, mirrors ids), and titles (N empty, null-terminated
 /// strings).
 #[cfg(feature = "std")]
-fn build_metadata(count: usize, flags: &[u8], ids: &[String], sizes: &[u32]) -> Vec<u8> {
+fn build_metadata(components: &[DirmComponent]) -> Vec<u8> {
     let mut meta = Vec::new();
-    for i in 0..count {
-        let size = sizes.get(i).copied().unwrap_or(0).min(0xff_ffff);
-        meta.extend_from_slice(&size.to_be_bytes()[1..]);
+    for c in components {
+        meta.extend_from_slice(&c.size.min(0xff_ffff).to_be_bytes()[1..]);
     }
-    for &f in flags {
-        meta.push(f);
+    meta.extend(components.iter().map(|c| c.kind.flag()));
+    for _ in 0..2 {
+        for c in components {
+            meta.extend_from_slice(c.id.as_bytes());
+            meta.push(0);
+        }
     }
-    for id in ids {
-        meta.extend_from_slice(id.as_bytes());
-        meta.push(0);
-    }
-    for id in ids {
-        meta.extend_from_slice(id.as_bytes());
-        meta.push(0);
-    }
-    meta.extend(core::iter::repeat_n(0u8, count));
+    meta.extend(core::iter::repeat_n(0u8, components.len()));
     crate::bzz_encode::bzz_encode(&meta)
 }
 
@@ -388,11 +552,30 @@ mod tests {
         assert!(DirmPayload::decode(&[0x80, 0x00]).is_err());
     }
 
+    fn entry(kind: DirmComponentKind, id: &str, size: u32) -> DirmComponent {
+        DirmComponent {
+            kind,
+            id: id.to_string(),
+            size,
+        }
+    }
+
+    #[test]
+    fn flag_round_trips_every_kind() {
+        use DirmComponentKind::*;
+        for kind in [Shared, Page, Thumbnail, SharedAnno] {
+            assert_eq!(DirmComponentKind::from_flag(kind.flag()), kind);
+            assert_eq!(DirmComponentKind::from_flag(kind.flag() | 0xc0), kind);
+        }
+        assert_eq!(DirmComponentKind::from_flag(5), Shared);
+    }
+
     #[test]
     fn build_bundled_components_roundtrip() {
-        let ids = vec!["page1".to_string(), "dict".to_string()];
-        let flags = vec![1u8, 0u8]; // page, shared
-        let p = DirmPayload::build_bundled(2, &flags, &ids, &[]);
+        let p = DirmPayload::build_bundled(&[
+            entry(DirmComponentKind::Page, "page1", 0),
+            entry(DirmComponentKind::Shared, "dict", 0),
+        ]);
         assert!(p.is_bundled());
         assert_eq!(p.nfiles, 2);
         assert_eq!(p.offsets, vec![0, 0]);
@@ -411,9 +594,65 @@ mod tests {
     }
 
     #[test]
+    fn insert_component_keeps_existing_entries() {
+        let mut dirm = DirmPayload::build_bundled(&[
+            entry(DirmComponentKind::Shared, "dict.iff", 100),
+            entry(DirmComponentKind::Page, "p1.djvu", 200),
+        ]);
+        dirm.insert_component(1, DirmComponentKind::SharedAnno, "shared_anno.iff")
+            .unwrap();
+
+        assert_eq!(dirm.nfiles, 3);
+        assert_eq!(dirm.offsets.len(), 3);
+        let parts: Vec<_> = dirm
+            .components()
+            .into_iter()
+            .map(|c| (c.kind, c.id, c.size))
+            .collect();
+        assert_eq!(
+            parts,
+            [
+                (DirmComponentKind::Shared, "dict.iff".to_string(), 100),
+                (
+                    DirmComponentKind::SharedAnno,
+                    "shared_anno.iff".to_string(),
+                    0
+                ),
+                (DirmComponentKind::Page, "p1.djvu".to_string(), 200),
+            ]
+        );
+        assert!(
+            dirm.insert_component(4, DirmComponentKind::SharedAnno, "x")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn flag_three_decodes_as_shared_annotation() {
+        let p = DirmPayload::build_bundled(&[
+            entry(DirmComponentKind::Shared, "dict", 0),
+            entry(DirmComponentKind::SharedAnno, "anno", 0),
+            entry(DirmComponentKind::Thumbnail, "t", 0),
+        ]);
+        let kinds: Vec<_> = p.components().iter().map(|c| c.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                DirmComponentKind::Shared,
+                DirmComponentKind::SharedAnno,
+                DirmComponentKind::Thumbnail
+            ]
+        );
+        assert!(kinds[0].is_include() && kinds[1].is_include());
+        assert!(!kinds[2].is_include());
+    }
+
+    #[test]
     fn build_indirect_has_no_offset_table() {
-        let ids = vec!["a.djvu".to_string(), "b.djvu".to_string()];
-        let p = DirmPayload::build_indirect(2, &[1, 1], &ids);
+        let p = DirmPayload::build_indirect(&[
+            entry(DirmComponentKind::Page, "a.djvu", 0),
+            entry(DirmComponentKind::Page, "b.djvu", 0),
+        ]);
         assert!(!p.is_bundled());
         assert!(p.offsets.is_empty());
         let bytes = p.encode();
@@ -429,16 +668,26 @@ mod tests {
 
     #[test]
     fn components_reads_name_and_title_when_flags_set() {
-        // flag & 0x80 → skip extra name string (line 191)
-        // flag & 0x40 → skip extra title string (line 194)
-        let ids = vec!["pg1".to_string(), "pg2".to_string()];
-        let flags = vec![0x81u8, 0x41u8]; // 0x81: page + has-name; 0x41: page + has-title
-        let p = DirmPayload::build_indirect(2, &flags, &ids);
+        // Per component: id, then a name when flag & 0x80, then a title when
+        // flag & 0x40. 0x81: page + name; 0x41: page + title.
+        let mut meta = vec![0u8; 6];
+        meta.extend_from_slice(&[0x81, 0x41]);
+        meta.extend_from_slice(b"pg1\0name1\0pg2\0title2\0");
+        let p = DirmPayload {
+            flags: 0x01,
+            nfiles: 2,
+            offsets: Vec::new(),
+            metadata: crate::bzz_encode::bzz_encode(&meta),
+        };
         let comps = p.components();
-        assert_eq!(comps.len(), 2);
-        // component 0 reads an extra name string (0x80 bit), component 1 reads
-        // an extra title string (0x40 bit); the stream position advances for each
-        assert_eq!(comps[0].id, "pg1");
+        let parts: Vec<_> = comps.iter().map(|c| (c.kind, c.id.as_str())).collect();
+        assert_eq!(
+            parts,
+            [
+                (DirmComponentKind::Page, "pg1"),
+                (DirmComponentKind::Page, "pg2")
+            ]
+        );
     }
 
     #[test]
@@ -455,5 +704,32 @@ mod tests {
         assert!(comps.iter().all(|c| c.kind == DirmComponentKind::Page));
         assert_eq!(comps[0].id, "p0000");
         assert_eq!(comps[1].id, "p0001");
+    }
+
+    #[test]
+    fn update_sizes_rewrites_only_a_known_changed_table() {
+        let pages = |a, b| {
+            [
+                entry(DirmComponentKind::Page, "a.djvu", a),
+                entry(DirmComponentKind::Page, "b.djvu", b),
+            ]
+        };
+        let sizes = |p: &DirmPayload| p.components().iter().map(|c| c.size).collect::<Vec<_>>();
+
+        let mut known = DirmPayload::build_bundled(&pages(100, 200));
+        let before = known.metadata.clone();
+        assert!(!known.update_sizes(&[100, 200]), "matching table is kept");
+        assert_eq!(known.metadata, before);
+        assert!(known.update_sizes(&[100, 301]));
+        assert_eq!(sizes(&known), [100, 301]);
+        assert_eq!(known.components()[1].id, "b.djvu");
+
+        let mut unknown = DirmPayload::build_bundled(&pages(0, 0));
+        let before = unknown.metadata.clone();
+        assert!(
+            !unknown.update_sizes(&[100, 200]),
+            "zero table means unknown"
+        );
+        assert_eq!(unknown.metadata, before);
     }
 }

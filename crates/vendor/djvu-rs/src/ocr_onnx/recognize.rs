@@ -11,7 +11,7 @@
 //! 1. Crop the line from the page pixmap (clamped to the page).
 //! 2. Resize to height [`REC_HEIGHT`] keeping aspect ratio (the same
 //!    fixed-point bilinear resampler the detector uses), pad the width up to
-//!    a bucket of [`REC_WIDTH_BUCKET`] so a handful of tract plans serve all
+//!    a bucket of `REC_WIDTH_BUCKET` so a handful of tract plans serve all
 //!    line lengths.
 //! 3. Normalize to `(v/255 − 0.5)/0.5` in **BGR** channel order (the pinned
 //!    config's `DecodeImage: img_mode: BGR`); padded columns hold 0.0
@@ -33,14 +33,7 @@ use crate::text::Rect;
 use super::manifest::{ModelManifest, REC_CYRILLIC_CONFIG, REC_CYRILLIC_MODEL, default_models_dir};
 use super::preprocess;
 
-type OnnxPlan = tract_onnx::prelude::SimplePlan<
-    tract_onnx::prelude::TypedFact,
-    Box<dyn tract_onnx::prelude::TypedOp>,
-    tract_onnx::prelude::Graph<
-        tract_onnx::prelude::TypedFact,
-        Box<dyn tract_onnx::prelude::TypedOp>,
-    >,
->;
+type OnnxPlan = tract_onnx::prelude::Arc<tract_onnx::prelude::TypedRunnableModel>;
 
 /// Fixed recognizer input height (the model's trained line height).
 pub const REC_HEIGHT: u32 = 48;
@@ -313,7 +306,7 @@ impl TextRecognizer {
         })?;
 
         let output = result[0]
-            .to_array_view::<f32>()
+            .to_plain_array_view::<f32>()
             .map_err(|e| OcrError::RecognitionFailed(format!("recognizer output error: {e}")))?;
         let shape = output.shape().to_vec();
         if shape.len() != 3 || shape[0] != 1 || shape[2] != class_count {

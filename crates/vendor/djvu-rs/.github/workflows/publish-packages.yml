@@ -16,6 +16,8 @@ on:
     paths:
       - 'djvu-py/**'
       - 'scripts/build_wasm_dual.sh'
+      - 'scripts/third_party_notices.py'
+      - 'scripts/about.toml'
       - 'scripts/check_package_versions.sh'
       - 'scripts/smoke_python_wheel.py'
       - 'scripts/smoke_npm_package.mjs'
@@ -308,8 +310,16 @@ jobs:
         with:
           version: v0.13.1
 
+      - name: Install cargo-about
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+
       - name: Build dual wasm package
         run: OUT="$PWD/npm-pkg" make wasm
+
+      - name: Verify third-party notices
+        run: test -s npm-pkg/THIRD_PARTY_NOTICES
 
       - name: Verify npm package version
         env:

@@ -4,7 +4,7 @@ exclude = ["fuzz", "tests/no_std_smoke"]
 
 [package]
 name = "djvu-rs"
-version = "0.35.0"
+version = "0.43.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -36,22 +36,22 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 thiserror = "2"
 wide = "0.7"
-djvu-zp = { version = "0.35.0", path = "crates/djvu-zp", default-features = false }
-djvu-bzz = { version = "0.35.0", path = "crates/djvu-bzz", default-features = false }
-djvu-iff = { version = "0.35.0", path = "crates/djvu-iff", default-features = false }
-djvu-bitmap = { version = "0.35.0", path = "crates/djvu-bitmap", default-features = false }
-djvu-jb2 = { version = "0.35.0", path = "crates/djvu-jb2", default-features = false }
-djvu-pixmap = { version = "0.35.0", path = "crates/djvu-pixmap", default-features = false }
-djvu-iw44 = { version = "0.35.0", path = "crates/djvu-iw44", default-features = false }
+djvu-zp = { version = "0.43.0", path = "crates/djvu-zp", default-features = false }
+djvu-bzz = { version = "0.43.0", path = "crates/djvu-bzz", default-features = false }
+djvu-iff = { version = "0.43.0", path = "crates/djvu-iff", default-features = false }
+djvu-bitmap = { version = "0.43.0", path = "crates/djvu-bitmap", default-features = false }
+djvu-jb2 = { version = "0.43.0", path = "crates/djvu-jb2", default-features = false }
+djvu-pixmap = { version = "0.43.0", path = "crates/djvu-pixmap", default-features = false }
+djvu-iw44 = { version = "0.43.0", path = "crates/djvu-iw44", default-features = false }
 # Used only by the djvu CLI binary.
 clap = { version = "4", features = ["derive"], optional = true }
 png = { version = "0.17", optional = true }
-# `deflate-flate2` + `flate2` only (NOT the `deflate` umbrella): zip 2.x's
+# `deflate-flate2` only (NOT the `deflate` umbrella): zip's
 # `deflate` also enables `deflate-zopfli`, dragging zopfli + bumpalo into the
 # build for a compression backend we never select (#509). zip declares flate2
 # without a backend, so we depend on flate2 directly (below) to pick the
 # pure-Rust backend via feature unification.
-zip = { version = "2", default-features = false, features = ["deflate-flate2", "flate2"], optional = true }
+zip = { version = "9", default-features = false, features = ["deflate-flate2"], optional = true }
 # Backend selector for zip's deflate (see comment on `zip` above).
 flate2 = { version = "1", default-features = false, features = ["rust_backend"], optional = true }
 miniz_oxide = { version = "0.8", optional = true }
@@ -76,10 +76,10 @@ wasm-bindgen-rayon = { version = "1.3", optional = true }
 tesseract = { version = "0.15", optional = true }
 # Dev-only allocation profiling (#600): global allocator for examples/alloc_profile.rs.
 dhat = { version = "0.3", optional = true }
-# Floor 0.22.2: RUSTSEC-2026-0217 fix (tract-nnef tensor-parser OOB read); the
-# patched 0.21.x line pins `time <0.3.42`, which is itself vulnerable
-# (RUSTSEC-2026-0009). 0.23.x needs Rust 1.91 > our MSRV 1.88.
-tract-onnx = { version = "0.22.2", optional = true }
+# 0.23 drops `liquid` (and its unmaintained `anymap2`, RUSTSEC-2026-0319).
+# It needs Rust 1.91: the `ocr-onnx` feature alone has that higher MSRV; the
+# crate's default and other features keep MSRV 1.88.
+tract-onnx = { version = "0.23", optional = true }
 # SHA-256 verification of OCR model weights against docs/ocr-model-manifest.toml
 # (#693): unverified weights are never loaded.
 sha2 = { version = "0.10", optional = true }
@@ -162,7 +162,7 @@ futures = "0.3"
 # minimal (rt/macros/io-util/sync) — consumers bring their own tokio; only the
 # doc-sync gate needs `fs` here.
 tokio = { version = "1", features = ["fs", "rt", "macros", "io-util", "sync"] }
-zip = { version = "2", default-features = false, features = ["deflate-flate2", "flate2"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 # Backend for the dev zip's deflate — mirrors the normal-deps trick so test
 # builds without the `epub` feature still give flate2 a backend.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
@@ -175,7 +175,7 @@ ab_glyph = "0.2"
 
 [[bin]]
 name = "djvu"
-path = "src/bin/djvu.rs"
+path = "src/bin/djvu/main.rs"
 required-features = ["cli"]
 
 [[example]]
@@ -239,6 +239,10 @@ name = "jb2_same_size_a2"
 required-features = ["experimental"]
 
 [[example]]
+name = "jb2_aligned_refine"
+required-features = ["experimental"]
+
+[[example]]
 name = "jb2_crosssize_b1probe"
 required-features = ["experimental"]
 
@@ -278,6 +282,16 @@ harness = false
 name = "viewer"
 harness = false
 
+
+# Dev builds keep only line tables (panics and backtraces still name file and
+# line) and drop debug info for dependencies: full debug info for 84 examples
+# and 26 benches let a local target/ reach 290 GB. For a debugger session,
+# set `debug = true` temporarily.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
 
 [profile.release]
 lto = "fat"

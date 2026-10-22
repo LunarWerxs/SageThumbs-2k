@@ -7,7 +7,9 @@
 //! * `cjb2` vs `EncodeQuality::Lossless` on the same PBM raster.
 //!
 //! It records the tool versions, repository SHA, encoded bytes, wall time,
-//! peak RSS (when the platform exposes it), and a decoded-quality gate.  It
+//! peak RSS (when the platform exposes it), and a decoded-quality gate.  For
+//! photo cases it also runs `c44` a second time with our slice schedule, so
+//! the size ratio can be read at an equal number of slices.  It
 //! deliberately measures existing profiles; no lossy or experimental option
 //! is enabled by this harness.
 //!
@@ -31,6 +33,7 @@ use std::process::{Command, ExitCode, Output, Stdio};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use djvu_rs::djvu_encode::{EncodeQuality, PageEncoder};
+use djvu_rs::iw44_encode::Iw44EncodeOptions;
 use djvu_rs::{Bitmap, Pixmap, quality};
 use serde_json::{Value, json};
 
@@ -290,6 +293,22 @@ struct Measurement {
     bytes: u64,
     median_ms: f64,
     peak_rss_kb: Option<u64>,
+}
+
+/// `c44 -slice` argument for the slice schedule `EncodeQuality::Photo` uses:
+/// one chunk boundary every `slices_per_chunk` slices, up to `total_slices`.
+/// The default `c44` schedule is `74,89,99`, one slice short of ours, so the
+/// plain size ratio compares two different quality points.
+fn matched_slice_schedule() -> String {
+    let options = Iw44EncodeOptions::default();
+    let step = usize::from(options.slices_per_chunk.max(1));
+    let total = usize::from(options.total_slices);
+    let mut ends: Vec<usize> = (step..total).step_by(step).collect();
+    ends.push(total);
+    ends.iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn json_f64(value: f64) -> Value {
@@ -600,6 +619,7 @@ fn case_value(
     baseline: &Measurement,
     ours: &Measurement,
     quality_value: Value,
+    matched_value: Value,
     ocr_value: Value,
 ) -> Value {
     let ratio = ours.bytes as f64 / baseline.bytes.max(1) as f64;
@@ -627,6 +647,7 @@ fn case_value(
         "size_gap_pct": (ratio - 1.0) * 100.0,
         "encode_time_ratio_ours_over_baseline": ours.median_ms / baseline.median_ms.max(f64::EPSILON),
         "quality": quality_value,
+        "matched_baseline": matched_value,
         "ocr": ocr_value,
         "status": "pass",
     })
@@ -673,7 +694,7 @@ fn measure_case(spec: CaseSpec, config: &Config, exe: &Path) -> Result<Value, St
         "--mode".to_owned(),
         spec.mode.as_str().to_owned(),
         "--input".to_owned(),
-        raster_arg,
+        raster_arg.clone(),
         "--output".to_owned(),
         ours_path.display().to_string(),
     ];
@@ -711,6 +732,7 @@ fn measure_case(spec: CaseSpec, config: &Config, exe: &Path) -> Result<Value, St
         ));
     }
 
+    let mut matched_value = Value::Null;
     let quality_value = match spec.mode {
         Mode::Photo => {
             let source_pm = raster.as_pixmap().ok_or("source PPM conversion failed")?;
@@ -720,6 +742,7 @@ fn measure_case(spec: CaseSpec, config: &Config, exe: &Path) -> Result<Value, St
             let ours_pm = ours_raster
                 .as_pixmap()
                 .ok_or("ours PPM conversion failed")?;
+            matched_value = matched_baseline(exe, &temp, &raster_arg, &source_pm, ours.bytes)?;
             let baseline_quality = quality::compare_color(&source_pm, &baseline_pm);
             let ours_quality = quality::compare_color(&source_pm, &ours_pm);
             json!({
@@ -783,8 +806,51 @@ fn measure_case(spec: CaseSpec, config: &Config, exe: &Path) -> Result<Value, St
         &baseline,
         &ours,
         quality_value,
+        matched_value,
         ocr_value,
     ))
+}
+
+/// Encodes the photo raster with `c44` at our slice schedule and reports its
+/// bytes and decoded PSNR next to the size ratio at that equal slice count.
+fn matched_baseline(
+    exe: &Path,
+    temp: &TempDir,
+    raster_arg: &str,
+    source_pm: &Pixmap,
+    ours_bytes: u64,
+) -> Result<Value, String> {
+    let schedule = matched_slice_schedule();
+    let path = temp.0.join("matched.djvu");
+    let args = vec![
+        "--external-worker".to_owned(),
+        "c44".to_owned(),
+        "-slice".to_owned(),
+        schedule.clone(),
+        raster_arg.to_owned(),
+        path.display().to_string(),
+    ];
+    // Only the bytes and the decoded quality matter here, not the timing.
+    let matched = run_measured(exe, &args, &path, 1, false)?;
+    let raster_path = temp.0.join("matched.ppm");
+    render_with_ddjvu(&path, Mode::Photo, 0, &raster_path)?;
+    let pm = parse_raster_for_mode(
+        &fs::read(&raster_path).map_err(|error| format!("read matched raster: {error}"))?,
+        Mode::Photo,
+    )
+    .and_then(|raster| raster.as_pixmap())
+    .ok_or("invalid matched render")?;
+    if pm.width != source_pm.width || pm.height != source_pm.height {
+        return Err("matched c44 render changed dimensions".into());
+    }
+    let ratio = ours_bytes as f64 / matched.bytes.max(1) as f64;
+    Ok(json!({
+        "tool": "c44",
+        "slice": schedule,
+        "bytes": matched.bytes,
+        "psnr_db": json_f64(quality::compare(source_pm, &pm).psnr_db),
+        "size_ratio_ours_over_matched": ratio,
+    }))
 }
 
 #[derive(Debug)]
@@ -890,7 +956,11 @@ fn scorecard(config: Config) -> Result<(), String> {
                     .as_f64()
                     .map(|ratio| format!("{ratio:.3}x"))
                     .unwrap_or_else(|| "-".into());
-                eprintln!("{:<28} {:<13} size {}", case.name, status, ratio);
+                let matched = value["matched_baseline"]["size_ratio_ours_over_matched"]
+                    .as_f64()
+                    .map(|ratio| format!(" (equal slices {ratio:.3}x)"))
+                    .unwrap_or_default();
+                eprintln!("{:<28} {:<13} size {}{}", case.name, status, ratio, matched);
                 case_values.push(value);
             }
             Err(error) => {

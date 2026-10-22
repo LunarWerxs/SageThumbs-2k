@@ -50,12 +50,15 @@ Exposed today: open / `from_bytes`, page metadata, render (including region /
 progressive / coarse), text extraction, typed exceptions, zero-copy buffer
 views, and document export — `to_pdf` / `write_pdf`, `to_epub` / `write_epub`,
 `to_cbz` / `write_cbz`, `to_tiff` / `write_tiff`. Each `to_*` returns bytes;
-each `write_*` streams to a file and holds one page at a time.
+each `write_*` streams to a file and holds one page at a time. `Editor` edits
+annotations, text layers, metadata and bookmarks, exchanged as dicts in the
+serde shape of the Rust models; `save` validates and replaces the file
+atomically.
 
 **Not exposed in the Python bindings** (use the Rust crate / CLI instead):
 
 - encode / `PageEncoder`
-- document mutation (`DjVuDocumentMut`)
+- structural edits: merge, split, page insert / remove, indirect documents
 
 ### Typed exceptions
 
@@ -65,9 +68,14 @@ each `write_*` streams to a file and holds one page at a time.
 | `djvu_rs.DecodeError` | Parse / decode / render failures |
 | `djvu_rs.IoError` | Filesystem failures from `Document.open` and the `write_*` exporters |
 | `djvu_rs.ExportError` | PDF / EPUB / CBZ / TIFF conversion failures |
+| `djvu_rs.EditError` | An `Editor` change or save the file cannot take |
 | `djvu_rs.PageIndexError` | Out-of-range `Document.page` (also an `IndexError`) |
 
 ### Smoke tests
+
+`smoke_npm_package.mjs` also fails when a class declared in `djvu_rs.d.ts` is
+not exported by the dual loader `djvu_rs.js` (0.41.0 shipped without
+`WasmRenderRequest` that way).
 
 ```sh
 pip install dist/djvu_rs-*.whl
@@ -91,6 +99,22 @@ make wasm                    # → examples/wasm/pkg
 The package includes TypeScript declarations (`djvu_rs.d.ts`) and both wasm
 artifacts under `scalar/` and `simd128/`. Runtime selection uses
 `WebAssembly.validate()` on a SIMD probe.
+
+The default build uses `FEATURES=wasm-lazy`, so the package ships the lazy
+HTTP Range loaders (`WasmLazyDocument`, `WasmLazyIndirectDocument`) next to
+the eager `WasmDocument`. `FEATURES=wasm make wasm` builds the smaller
+eager-only package. Its `README.md` is
+[`examples/wasm/README.npm.md`](../examples/wasm/README.npm.md), not the Rust
+crate README.
+
+`THIRD_PARTY_NOTICES` lists every crate linked into the `.wasm` binaries with
+its license text. `scripts/third_party_notices.py` generates it from the build's
+own dependency graph (target `wasm32-unknown-unknown`, the same `FEATURES`) using
+[cargo-about](https://github.com/EmbarkStudios/cargo-about); install it with
+`cargo install cargo-about --locked --features cli`. The release workflow
+requires it, while a local `make wasm` without cargo-about skips the file
+with a warning. Copyleft licenses never reach this file: `cargo-deny`
+(`deny.toml`) rejects any license outside the permissive allow-list.
 
 ### Smoke tests
 
@@ -140,5 +164,7 @@ checksums as workflow artifacts for manual verification.
 ## Related docs
 
 - [`RELEASING.md`](../RELEASING.md) — crates.io tag flow
-- [`djvu-py/README.md`](../djvu-py/README.md) — Python quick start
+- [`djvu-py/README.md`](../djvu-py/README.md) — Python quick start (the PyPI page);
+  [`djvu-py/GUIDE.md`](../djvu-py/GUIDE.md) — Python reference
+- [`examples/wasm/README.npm.md`](../examples/wasm/README.npm.md) — JavaScript quick start (the npm page)
 - [`examples/wasm/README.md`](../examples/wasm/README.md) — wasm demo + npm layout

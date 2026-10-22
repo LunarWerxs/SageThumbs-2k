@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- #611 zero-copy bench: plain copying render() vs render_into_pixmap()+view().
+<!-- #611 zero-copy bench: plain copying render() vs render_request()+view().
      Serve the repo root (fixtures needed):
        python3 -m http.server 8080
      then open http://localhost:8080/examples/wasm/bench_zero_copy.html -->
@@ -7,7 +7,7 @@
 <title>djvu-rs #611 zero-copy bench</title>
 <pre id="log">loading…</pre>
 <script type="module">
-import init, { WasmDocument, WasmPixmap } from './pkg/djvu_rs.js';
+import init, { WasmDocument, WasmPixmap, WasmRenderRequest } from './pkg/djvu_rs.js';
 
 const log = (m) => { document.getElementById('log').textContent += m + "\n"; console.log(m); };
 const median = (v) => { const s = [...v].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
@@ -33,10 +33,11 @@ async function bench(fixtureUrl, dpi, frames) {
 
   // B: reused WasmPixmap + zero-copy view per frame.
   const pm = new WasmPixmap();
+  const req = new WasmRenderRequest(dpi);
   const b = [];
   for (let i = 0; i < frames; i++) {
     const t0 = performance.now();
-    page.render_into_pixmap(dpi, pm);
+    page.render_request(req, pm);
     const view = pm.view();          // zero-copy; consumed below
     if (view.length !== bytes) throw new Error(`length mismatch ${view.length} vs ${bytes}`);
     b.push(performance.now() - t0);
@@ -45,16 +46,23 @@ async function bench(fixtureUrl, dpi, frames) {
   // C: progressive session, copying vs reused-buffer.
   const n = page.bg44_chunk_count();
   const t0 = performance.now();
-  for (let c = 0; c < n; c++) page.render_progressive(dpi, c);
+  for (let c = 0; c < n; c++) {
+    req.set_step(c);
+    page.render_request(req, pm);
+    pm.to_bytes();
+  }
   const progCopy = performance.now() - t0;
   const t1 = performance.now();
-  for (let c = 0; c < n; c++) page.render_progressive_into_pixmap(dpi, c, pm);
+  for (let c = 0; c < n; c++) {
+    req.set_step(c);
+    page.render_request(req, pm);
+  }
   const progReuse = performance.now() - t1;
 
   const mb = (bytes / 1048576).toFixed(1);
   log(`${fixtureUrl} @ ${dpi}dpi  frame=${mb}MB  frames=${frames}`);
   log(`  A render() copy        median ${median(a).toFixed(2)} ms`);
-  log(`  B into_pixmap+view     median ${median(b).toFixed(2)} ms  (delta = transfer overhead removed: ${(median(a) - median(b)).toFixed(2)} ms, ${(100 * (median(a) - median(b)) / median(a)).toFixed(1)}% of total)`);
+  log(`  B render_request+view  median ${median(b).toFixed(2)} ms  (delta = transfer overhead removed: ${(median(a) - median(b)).toFixed(2)} ms, ${(100 * (median(a) - median(b)) / median(a)).toFixed(1)}% of total)`);
   log(`  C progressive x${n}: copy ${progCopy.toFixed(1)} ms, reuse ${progReuse.toFixed(1)} ms`);
 
   // Lifetime check: a stale view after re-render must not report a silently
@@ -62,7 +70,7 @@ async function bench(fixtureUrl, dpi, frames) {
   const view = pm.view();
   const beforeLen = view.length;
   // Force potential memory growth with a large fresh render.
-  page.render_into_pixmap(Math.min(dpi * 2, 600), pm);
+  page.render_request(new WasmRenderRequest(Math.min(dpi * 2, 600)), pm);
   const stale = view.length;      // 0 (detached) or beforeLen; must not be junk
   log(`  lifetime: stale view length after growth-render = ${stale} (was ${beforeLen}) -> ${stale === 0 ? "detached (safe)" : stale === beforeLen ? "still mapped (same buffer)" : "UNSAFE"}`);
   const fresh = pm.view();

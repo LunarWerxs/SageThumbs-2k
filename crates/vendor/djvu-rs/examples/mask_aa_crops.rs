@@ -13,7 +13,7 @@
 #![allow(deprecated)]
 
 use djvu_rs::djvu_document::DjVuDocument;
-use djvu_rs::djvu_render::{self, RenderOptions, RenderRect, Resampling, UserRotation};
+use djvu_rs::djvu_render::{RenderOptions, RenderRect, RenderRequest, Resampling, UserRotation};
 use std::path::PathBuf;
 
 fn opts(w: u32, h: u32, mask_aa: bool) -> RenderOptions {
@@ -97,6 +97,12 @@ fn main() {
         std::process::exit(1);
     });
     let (pw, ph) = (page.width() as u32, page.height() as u32);
+    // The crop window comes from the unrotated mask, and a render region is
+    // in display coordinates, so the two agree only on an upright page.
+    if page.rotation() != djvu_rs::Rotation::None {
+        eprintln!("page {page_idx} is rotated; pick an upright page");
+        std::process::exit(2);
+    }
     println!("{file} page {page_idx}: native {pw}x{ph}");
 
     let mask = page
@@ -122,9 +128,13 @@ fn main() {
         let nearest_opts = opts(full_w, full_h, false);
         let aa_opts = opts(full_w, full_h, true);
 
-        let nearest = djvu_render::render_region(page, region, &nearest_opts)
+        let nearest = RenderRequest::new(nearest_opts)
+            .region(region)
+            .pixmap(page)
             .expect("nearest region render should succeed");
-        let aa = djvu_render::render_region(page, region, &aa_opts)
+        let aa = RenderRequest::new(aa_opts)
+            .region(region)
+            .pixmap(page)
             .expect("AA region render should succeed");
 
         let nearest_path = out_dir.join(format!("mask_aa_{zoom}x_nearest.png"));

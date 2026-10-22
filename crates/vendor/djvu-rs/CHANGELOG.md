@@ -5,6 +5,204 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.43.0](https://github.com/matyushkin/djvu-rs/compare/v0.42.0...v0.43.0) (2026-10-16)
+
+
+### Features
+
+* **npm:** ship THIRD_PARTY_NOTICES for crates linked into the .wasm ([#950](https://github.com/matyushkin/djvu-rs/issues/950)) ([208d9b2](https://github.com/matyushkin/djvu-rs/commit/208d9b259698755e3669bc6d1a65f10cde7e7aeb))
+
+
+### Bug Fixes
+
+* **deps:** bump zip 2 -&gt; 9; every zip 2.x release is yanked, so fresh ([208d9b2](https://github.com/matyushkin/djvu-rs/commit/208d9b259698755e3669bc6d1a65f10cde7e7aeb))
+
+## [0.42.0](https://github.com/matyushkin/djvu-rs/compare/v0.41.0...v0.42.0) (2026-10-09)
+
+
+### Bug Fixes
+
+* **npm:** export WasmRenderRequest, ship lazy Range loaders, npm-specific README ([#945](https://github.com/matyushkin/djvu-rs/issues/945)) ([45175c7](https://github.com/matyushkin/djvu-rs/commit/45175c7b9aea7f92d5f06e09f905820ff89f86a3))
+
+
+### Performance Improvements
+
+* **bzz:** use the inlined ZP bit coder in the BZZ encoder ([#938](https://github.com/matyushkin/djvu-rs/issues/938)) ([51cbe70](https://github.com/matyushkin/djvu-rs/commit/51cbe700a2af84c138a8c0ffa0d6ba858d4447d0))
+* **iw44:** convert colour to YCbCr a row at a time in the encoder ([#935](https://github.com/matyushkin/djvu-rs/issues/935)) ([7461e8a](https://github.com/matyushkin/djvu-rs/commit/7461e8a5b92152101ac38ca80b383fd21dd2407f))
+* **iw44:** inline the ZP bit coder in the encoder's coefficient passes ([#937](https://github.com/matyushkin/djvu-rs/issues/937)) ([186a385](https://github.com/matyushkin/djvu-rs/commit/186a3850760516d72dad4d7d850f8cc43ea49b7e))
+* **iw44:** scatter encoder blocks into zigzag order with NEON transposes ([#939](https://github.com/matyushkin/djvu-rs/issues/939)) ([fe16571](https://github.com/matyushkin/djvu-rs/commit/fe16571da3b1b4c545418b0bc9cbbcae50a17cdb))
+* **zp:** emit the encoder's shift bits in one step ([#933](https://github.com/matyushkin/djvu-rs/issues/933)) ([553d03e](https://github.com/matyushkin/djvu-rs/commit/553d03e79d70192bbf6a3bf99be70f5135dc73b1))
+
+
+### Documentation
+
+* slim README to a task-first landing page ([#942](https://github.com/matyushkin/djvu-rs/issues/942)) ([2ef05f5](https://github.com/matyushkin/djvu-rs/commit/2ef05f570f1316454c1284b74474e5bc6b4f63a7))
+* **packaging:** describe the npm README, wasm-lazy default, export check ([#946](https://github.com/matyushkin/djvu-rs/issues/946)) ([8d2a83b](https://github.com/matyushkin/djvu-rs/commit/8d2a83b63631bc6fe958948ea1595ac1d1f61339))
+* **py:** slim djvu-py README to a task-first landing page ([#943](https://github.com/matyushkin/djvu-rs/issues/943)) ([e460771](https://github.com/matyushkin/djvu-rs/commit/e4607712cf2430791c7d6331219bb613beb26e7f))
+
+## [0.41.0](https://github.com/matyushkin/djvu-rs/compare/v0.40.3...v0.41.0) (2026-10-05)
+
+
+### Features
+
+* **scorecard:** compare IW44 with c44 at an equal slice count ([#926](https://github.com/matyushkin/djvu-rs/issues/926)) ([2bfeba5](https://github.com/matyushkin/djvu-rs/commit/2bfeba5e09ab139e31721c08ff7421ce5897e4f9))
+
+
+### Performance Improvements
+
+* **iw44:** remove a store-forwarding stall in the decoder's row pass ([#930](https://github.com/matyushkin/djvu-rs/issues/930)) ([4536b6c](https://github.com/matyushkin/djvu-rs/commit/4536b6ceb2a513af74e6f0aadb311cc75bc0792f))
+* **iw44:** skip quiet blocks in the encoder's slice passes ([#928](https://github.com/matyushkin/djvu-rs/issues/928)) ([4e56bc4](https://github.com/matyushkin/djvu-rs/commit/4e56bc420a40e5086188ba215ac8ff5e90a4f188))
+* **iw44:** speed up the encoder's forward wavelet with NEON ([#929](https://github.com/matyushkin/djvu-rs/issues/929)) ([f740368](https://github.com/matyushkin/djvu-rs/commit/f74036853583be1fb7230b11cf6ef9b5b46b1c35))
+
+## [0.40.3](https://github.com/matyushkin/djvu-rs/compare/v0.40.2...v0.40.3) (2026-10-04)
+
+
+### Performance Improvements
+
+* **iw44:** gather each encoder plane in its own memory ([#919](https://github.com/matyushkin/djvu-rs/issues/919)) ([a924890](https://github.com/matyushkin/djvu-rs/commit/a924890dc7cf86c6ff85021de7e1cf393963c7db))
+* **jb2:** code white runs of direct tiles in one ZP call ([#921](https://github.com/matyushkin/djvu-rs/issues/921)) ([4ce7059](https://github.com/matyushkin/djvu-rs/commit/4ce70598439dd671e0d4edf194dc1303e6430109))
+* **jb2:** find connected components on packed bits ([#922](https://github.com/matyushkin/djvu-rs/issues/922)) ([659438f](https://github.com/matyushkin/djvu-rs/commit/659438f35507bc18cffec9a453cb63bda3e113f9))
+* **jb2:** keep dictionary rows as words for the refinement search ([#923](https://github.com/matyushkin/djvu-rs/issues/923)) ([9214f92](https://github.com/matyushkin/djvu-rs/commit/9214f9244204c9758dfae20000380bff46dde1f5))
+* **jb2:** reject refinement candidates by a centre-aligned ink grid ([#924](https://github.com/matyushkin/djvu-rs/issues/924)) ([cdfdd3d](https://github.com/matyushkin/djvu-rs/commit/cdfdd3d5f6b562ec864d14590c876a891a1e4492))
+
+## [0.40.2](https://github.com/matyushkin/djvu-rs/compare/v0.40.1...v0.40.2) (2026-10-03)
+
+
+### Bug Fixes
+
+* **bench:** decode the large JB2 page with its shared dictionary ([#906](https://github.com/matyushkin/djvu-rs/issues/906)) ([#908](https://github.com/matyushkin/djvu-rs/issues/908)) ([54fde7c](https://github.com/matyushkin/djvu-rs/commit/54fde7cfbc9a5125fed7bd2ec2d1df47a552ec4e))
+* **bench:** make bzz_decode and the large IW44 benches measure real work ([#915](https://github.com/matyushkin/djvu-rs/issues/915)) ([#916](https://github.com/matyushkin/djvu-rs/issues/916)) ([3e64096](https://github.com/matyushkin/djvu-rs/commit/3e640960476a3d1991c3179c3ee2565d66fd5881))
+
+## [0.40.1](https://github.com/matyushkin/djvu-rs/compare/v0.40.0...v0.40.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* **deps:** tract 0.23 for ocr-onnx; that feature now needs Rust 1.91 ([#897](https://github.com/matyushkin/djvu-rs/issues/897)) ([d5ae893](https://github.com/matyushkin/djvu-rs/commit/d5ae8936cf6347ff8d694f702f095a6ff6d035f1))
+
+
+### Performance Improvements
+
+* a banded background decodes only the columns a tile reads ([#890](https://github.com/matyushkin/djvu-rs/issues/890)) ([6e9095c](https://github.com/matyushkin/djvu-rs/commit/6e9095cecde542eecd8ad9da1e1ebf50aad0a651))
+* a Lanczos-3 region filters only its own window ([#887](https://github.com/matyushkin/djvu-rs/issues/887)) ([1dfbbab](https://github.com/matyushkin/djvu-rs/commit/1dfbbaba36fb4c29d21969c7a1b1571df84892b8))
+
+## [0.40.0](https://github.com/matyushkin/djvu-rs/compare/v0.39.0...v0.40.0) (2026-09-30)
+
+
+### Features
+
+* one render call in the Python and wasm bindings ([#884](https://github.com/matyushkin/djvu-rs/issues/884)) ([d122a36](https://github.com/matyushkin/djvu-rs/commit/d122a360b7aae14eb939d1c145cbd8bcd43a8cfc))
+
+## [0.39.0](https://github.com/matyushkin/djvu-rs/compare/v0.38.1...v0.39.0) (2026-09-30)
+
+
+### Features
+
+* deprecate the render_* variants in favour of RenderRequest ([#882](https://github.com/matyushkin/djvu-rs/issues/882)) ([86ea96a](https://github.com/matyushkin/djvu-rs/commit/86ea96af1501d8bb448fdd9235603a21b8082f23))
+* one RenderRequest for every render ([#881](https://github.com/matyushkin/djvu-rs/issues/881)) ([f9dd177](https://github.com/matyushkin/djvu-rs/commit/f9dd1774ac4cdb2478768675e7ed85f1ab0b4620))
+* tiles support anti-aliasing and Lanczos-3 ([#879](https://github.com/matyushkin/djvu-rs/issues/879)) ([0784912](https://github.com/matyushkin/djvu-rs/commit/0784912f0a37365336da6b9f411b737658ef1dac))
+
+## [0.38.1](https://github.com/matyushkin/djvu-rs/compare/v0.38.0...v0.38.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* Lanczos-3 fallback no longer halves an anti-aliased render ([#877](https://github.com/matyushkin/djvu-rs/issues/877)) ([cbbaa79](https://github.com/matyushkin/djvu-rs/commit/cbbaa79044d37a7bdfe0b15d539f6fc63f697614))
+
+## [0.38.0](https://github.com/matyushkin/djvu-rs/compare/v0.37.0...v0.38.0) (2026-09-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* render_region with opts.aa now returns a crop of the anti-aliased page, which is opts.width/2 x opts.height/2; the region addresses that halved page. Before, it returned an unsmoothed crop of the full-size canvas.
+* render_into / render_into_with_limits / DjVuPage::render_into return RenderError::UnsupportedOption for options that need a whole pixmap (anti-aliasing, Lanczos-3 at a scaled size, or a combined INFO + user rotation), as render_streaming does, instead of writing an unrotated, unfiltered buffer. Check RenderOptions::can_stream or use render_pixmap. The image-crate DjVuDecoder now decodes in display orientation: its default size and with_size are after the INFO rotation. Anti-aliasing now halves progressive frames, ProgressiveDecoder frames and render_coarse output, and render_coarse applies Lanczos-3.
+* `DjvmError::ComponentDescriptorCountMismatch` is removed; no writer can produce it any more. `DjvmStreamWriter::add_component` now ignores the name (0x80) and title (0x40) bits and writes unknown component types as shared (0).
+* PDF export of a document with a page that cannot be rendered now returns an error instead of writing a blank page.
+* on pages with a non-zero INFO rotation, the (x, y, w, h) arguments of Page::render_region (and Python Page.render_region) address the rotated page, not the unrotated one. Upright pages are unchanged.
+* on a page with a 90° or 270° INFO rotation, `RenderOptions::fit_to_width/height/box` set `width`/`height` in the native orientation (sides swapped against the requested display size), `Page::size_at_dpi` and the wasm `width_at`/`height_at` return the display size, and PDF pages carry `/Rotate`. Upright pages are unchanged.
+* **mut:** `DjVuDocumentMut::set_metadata`/`remove_metadata` and `PageMut::set_metadata`/`remove_metadata` now return `Result<(), MutError>`. They fail when the existing annotation chunk does not parse (new `MutError::Annotation`), for an indirect DJVM, or for a legacy BM44/PM44 root.
+
+### Features
+
+* **async:** lazy loading for indirect DJVM documents ([#856](https://github.com/matyushkin/djvu-rs/issues/856)) ([af7a850](https://github.com/matyushkin/djvu-rs/commit/af7a850331da1b07c2cf34f4f2259f277644e69a))
+* **djvm:** write indirect indexes with shared components ([#857](https://github.com/matyushkin/djvu-rs/issues/857)) ([74a72da](https://github.com/matyushkin/djvu-rs/commit/74a72da5b506b71912f131c88bd4eccbcf13d7c2))
+* **jb2:** aligned refinement in bundles, colour masks and chunk_encode ([#859](https://github.com/matyushkin/djvu-rs/issues/859)) ([b166f05](https://github.com/matyushkin/djvu-rs/commit/b166f05e8c3a00874cca336519fdd6eb4c412da0))
+* **jb2:** lossless dictionary encoding with center-aligned refinement ([#858](https://github.com/matyushkin/djvu-rs/issues/858)) ([75e6d4b](https://github.com/matyushkin/djvu-rs/commit/75e6d4bf411df63028a3e53f7fdfee6036b9a4a4))
+* **mut:** write metadata where DjVuLibre reads it ([#853](https://github.com/matyushkin/djvu-rs/issues/853)) ([7e751a9](https://github.com/matyushkin/djvu-rs/commit/7e751a912d6220ebefb47d488c23c64ecc9d50da))
+* **py:** ship type stubs with TypedDict shapes ([#855](https://github.com/matyushkin/djvu-rs/issues/855)) ([1067b8a](https://github.com/matyushkin/djvu-rs/commit/1067b8aeae8d9956d2bb53fbb758d5f6ca91e926))
+* **wasm:** lazy indirect DJVM documents in the browser ([#862](https://github.com/matyushkin/djvu-rs/issues/862)) ([658d56f](https://github.com/matyushkin/djvu-rs/commit/658d56fa0b504135867d6ee620c27d24b2de05a7))
+
+
+### Bug Fixes
+
+* bilevel TIFF pages render as they display ([#868](https://github.com/matyushkin/djvu-rs/issues/868)) ([737bc7c](https://github.com/matyushkin/djvu-rs/commit/737bc7cc1e15b3530fd6a51e51d5946d27adee49))
+* clear wasm32 clippy drop_non_drop lints ([#863](https://github.com/matyushkin/djvu-rs/issues/863)) ([25d3e8a](https://github.com/matyushkin/djvu-rs/commit/25d3e8a47f89b9d8946e67e647f9a5bca69c4968))
+* **jb2:** decode our own output up to the 64 MP page limit ([#860](https://github.com/matyushkin/djvu-rs/issues/860)) ([c77d12f](https://github.com/matyushkin/djvu-rs/commit/c77d12f1e4ee3375ec92190685209f86f383aa0e))
+* one page-export loop and error policy for every exporter ([#870](https://github.com/matyushkin/djvu-rs/issues/870)) ([6da938d](https://github.com/matyushkin/djvu-rs/commit/6da938daaf9c74f54902f88a7c1c6c8d0ee5afc9))
+* one render pipeline behind every render entry point ([#872](https://github.com/matyushkin/djvu-rs/issues/872)) ([bda7813](https://github.com/matyushkin/djvu-rs/commit/bda7813b0eafdb2bd85ac0c9119efc6476a06b0c))
+* one render size for rotated pages ([#866](https://github.com/matyushkin/djvu-rs/issues/866)) ([70d393e](https://github.com/matyushkin/djvu-rs/commit/70d393e6446a80004e5f2b0cc77be75bea8b4840))
+* one whole-pixmap rule for streaming and the tile cache ([#867](https://github.com/matyushkin/djvu-rs/issues/867)) ([0e3201d](https://github.com/matyushkin/djvu-rs/commit/0e3201d5b30c7e1eec5ad34423d3969a08d17b4a))
+* page regions in display coordinates on rotated pages ([#869](https://github.com/matyushkin/djvu-rs/issues/869)) ([2160b1e](https://github.com/matyushkin/djvu-rs/commit/2160b1ef59f794ebe4a96925d88db3769a3515c5))
+* parallel exports report the first failing page ([#874](https://github.com/matyushkin/djvu-rs/issues/874)) ([c496fea](https://github.com/matyushkin/djvu-rs/commit/c496fea8af60785ecdf2f53fcd28287e66b43d68))
+* region renders honor anti-aliasing and Lanczos-3 ([#875](https://github.com/matyushkin/djvu-rs/issues/875)) ([b58d9ad](https://github.com/matyushkin/djvu-rs/commit/b58d9ad26f60be4efb4fde6dd3df0c5fff3e6341))
+
+
+### Performance Improvements
+
+* keep the bilinear row loop out of composite_into ([#873](https://github.com/matyushkin/djvu-rs/issues/873)) ([c79c5ee](https://github.com/matyushkin/djvu-rs/commit/c79c5eee9807e1a7cdf007cb2a20bb662ea62fc8))
+
+
+### Code Refactoring
+
+* one DIRM component table for every bundle writer ([#871](https://github.com/matyushkin/djvu-rs/issues/871)) ([f4dd12c](https://github.com/matyushkin/djvu-rs/commit/f4dd12c09afc0bb07b9cde0ecf23e7ed5fbca55f))
+
+## [0.37.0](https://github.com/matyushkin/djvu-rs/compare/v0.36.0...v0.37.0) (2026-09-27)
+
+
+### Features
+
+* **py:** edit annotations, text layers, metadata and bookmarks ([#851](https://github.com/matyushkin/djvu-rs/issues/851)) ([2af3b34](https://github.com/matyushkin/djvu-rs/commit/2af3b341d83f98a74178c13284c8b21fb526df59))
+
+
+### Bug Fixes
+
+* **mut:** keep NAVM directly after DIRM when writing metadata ([#850](https://github.com/matyushkin/djvu-rs/issues/850)) ([e0b1a92](https://github.com/matyushkin/djvu-rs/commit/e0b1a92b32d03fc240062048177bd2b831b0ecbc))
+
+## [0.36.0](https://github.com/matyushkin/djvu-rs/compare/v0.35.2...v0.36.0) (2026-09-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **annotation:** `MapArea` has new public fields `target` and `extra`, and `Annotation` has a new public field `extra`; struct literals must set them. `Border::style` now holds the DjVuLibre option without parentheses (for example `xor`, `border #FF0000`, `shadow_in 4`) and is encoded as `(<style>)`.
+
+### Features
+
+* **annotation:** keep every annotation form DjVuLibre writes ([#843](https://github.com/matyushkin/djvu-rs/issues/843)) ([c0e3efb](https://github.com/matyushkin/djvu-rs/commit/c0e3efbdc42456cd2dfd80cb8d662246957b4521))
+
+
+### Bug Fixes
+
+* **djvm:** treat legacy FORM:BM44/PM44 image files as pages ([#845](https://github.com/matyushkin/djvu-rs/issues/845)) ([523454f](https://github.com/matyushkin/djvu-rs/commit/523454fa49f71839cee8240c22b86a9f110c0869))
+
+## [0.35.2](https://github.com/matyushkin/djvu-rs/compare/v0.35.1...v0.35.2) (2026-09-24)
+
+
+### Bug Fixes
+
+* **dirm:** read the shared annotation like DjVuLibre ([#833](https://github.com/matyushkin/djvu-rs/issues/833)) ([#837](https://github.com/matyushkin/djvu-rs/issues/837)) ([25f74c0](https://github.com/matyushkin/djvu-rs/commit/25f74c059ab22f5a7edf8dec622cb071b998077a))
+* **djvm:** keep component ids, INCL targets and DIRM types in merge and split ([#841](https://github.com/matyushkin/djvu-rs/issues/841)) ([7b0a2d5](https://github.com/matyushkin/djvu-rs/commit/7b0a2d55204bfc71a417269d9c95a28677e5c405))
+* **mut:** update the DIRM size table when a bundled edit resizes a component ([#840](https://github.com/matyushkin/djvu-rs/issues/840)) ([6387a79](https://github.com/matyushkin/djvu-rs/commit/6387a790de995837b8506e8cbad91d96a76dd26e))
+* **text:** decode sibling zones against the previous sibling, write version 1 ([#839](https://github.com/matyushkin/djvu-rs/issues/839)) ([a823717](https://github.com/matyushkin/djvu-rs/commit/a8237174c26afb29cbacf76176194af8c37c0ccf))
+
+## [0.35.1](https://github.com/matyushkin/djvu-rs/compare/v0.35.0...v0.35.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **iw44:** honour crcb_half like DjVuLibre ([#830](https://github.com/matyushkin/djvu-rs/issues/830)) ([#832](https://github.com/matyushkin/djvu-rs/issues/832)) ([279dad0](https://github.com/matyushkin/djvu-rs/commit/279dad09ad0498a3c6849dddd7693f43daf6525d))
+* **iw44:** match DjVuLibre inverse transform on small planes ([#827](https://github.com/matyushkin/djvu-rs/issues/827)) ([#828](https://github.com/matyushkin/djvu-rs/issues/828)) ([75a1fb9](https://github.com/matyushkin/djvu-rs/commit/75a1fb92aced2d59417ddfe737eb0f18208323db))
+* **render:** match DjVuLibre's native BG/FG44 upscale ([#831](https://github.com/matyushkin/djvu-rs/issues/831)) ([#834](https://github.com/matyushkin/djvu-rs/issues/834)) ([d2d0496](https://github.com/matyushkin/djvu-rs/commit/d2d049618d02d6ed46ace017dd9c948f9ccf80da))
+
 ## [0.35.0](https://github.com/matyushkin/djvu-rs/compare/v0.34.0...v0.35.0) (2026-09-22)
 
 

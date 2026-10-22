@@ -1,7 +1,9 @@
 //! DjVu document metadata parser — phase 4 extension.
 //!
-//! Parses METa (plain text) and METz (BZZ-compressed) metadata chunks into a
-//! structured [`DjVuMetadata`] value.
+//! Parses the `(metadata …)` block into a structured [`DjVuMetadata`] value.
+//! DjVuLibre reads that block from `ANTa`/`ANTz` annotation chunks; older
+//! files may carry it in METa (plain text) or METz (BZZ-compressed) chunks,
+//! which DjVuLibre ignores. djvu-rs writers emit only the annotation form.
 //!
 //! ## Key public types
 //!
@@ -60,6 +62,7 @@ pub enum MetadataError {
 /// does not define structured types beyond that.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct DjVuMetadata {
     /// Document title.
     pub title: Option<String>,
@@ -174,15 +177,17 @@ fn parse_metadata_text(text: &str) -> DjVuMetadata {
     // Look for a top-level (metadata ...) list
     for expr in &sexprs {
         if let SExpr::List(items) = expr
-            && let Some(SExpr::Atom(head)) = items.first()
+            && let Some(head) = items.first().and_then(SExpr::text)
         {
             if !head.eq_ignore_ascii_case("metadata") {
                 continue;
             }
             for item in &items[1..] {
                 if let SExpr::List(pair) = item
-                    && let (Some(SExpr::Atom(key)), Some(SExpr::Atom(val))) =
-                        (pair.first(), pair.get(1))
+                    && let (Some(key), Some(val)) = (
+                        pair.first().and_then(SExpr::text),
+                        pair.get(1).and_then(SExpr::text),
+                    )
                 {
                     store_kv(&mut meta, key, val);
                 }

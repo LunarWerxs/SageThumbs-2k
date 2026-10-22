@@ -28,3 +28,19 @@ diff -ruN pristine/djvu-rs/Cargo.toml patched/djvu-rs/Cargo.toml
 +# our cargo-machete gate would otherwise flag the vendored copy on every run.
 +[package.metadata.cargo-machete]
 +ignored = ["flate2", "wide"]
+diff -ruN pristine/djvu-rs/src/djvu_document/mmap.rs patched/djvu-rs/src/djvu_document/mmap.rs
+--- pristine/djvu-rs/src/djvu_document/mmap.rs
++++ patched/djvu-rs/src/djvu_document/mmap.rs
+@@ -33,6 +33,12 @@
+     /// the identical allocation `_backing` erases) so
+     /// [`MmapDocument::advise_page_willneed`] can call `memmap2::Mmap::advise_range`
+     /// directly — the type-erased `Backing` alias can't expose that method.
++    // SageThumbs 2K vendoring: only the unix-only advise_page_willneed reads this field, so
++    // a Windows build (clippy -D warnings) sees it as dead code.
++    #[cfg_attr(
++        not(unix),
++        allow(dead_code, reason = "read only by the unix-only advise_page_willneed")
++    )]
+     pub(super) mmap: Arc<memmap2::Mmap>,
+     pub(super) doc: DjVuDocument,
+ }

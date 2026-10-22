@@ -6,12 +6,15 @@
 
 use crate::text::{TextLayer, TextZone, TextZoneKind};
 
+/// Text-layer format version written after the text (`DjVuTXT::Zone::version`).
+const TEXT_VERSION: u8 = 1;
+
 /// Encode a [`TextLayer`] to TXTa binary format (uncompressed).
 ///
 /// The binary format is:
 /// - u24be: text length
 /// - UTF-8 text bytes
-/// - u8: version (0)
+/// - u8: version (1, DjVuLibre `DjVuTXT::Zone::version`; it rejects others)
 /// - zone tree (recursive)
 ///
 /// Coordinates are converted from top-left origin (as stored in `TextZone`)
@@ -29,12 +32,13 @@ pub fn encode_text_layer(layer: &TextLayer, page_height: u32) -> Vec<u8> {
     // UTF-8 text
     buf.extend_from_slice(text_bytes);
 
-    // Version byte
-    buf.push(0);
+    // Version byte. DjVuLibre throws "Text version unexpected" on anything
+    // but 1.
+    buf.push(TEXT_VERSION);
 
     // Encode zone tree
     if let Some(root) = layer.zones.first() {
-        encode_zone(&mut buf, root, None, None, &layer.text, page_height);
+        let _ = encode_zone(&mut buf, root, None, None, &layer.text, page_height);
     }
 
     buf
@@ -48,7 +52,7 @@ fn encode_zone(
     prev: Option<&ZoneCtx>,
     full_text: &str,
     page_height: u32,
-) {
+) -> ZoneCtx {
     // Type byte
     let type_byte = match zone.kind {
         TextZoneKind::Page => 1u8,
@@ -68,13 +72,26 @@ fn encode_zone(
     let width = zone.rect.width as i32;
     let height = zone.rect.height as i32;
 
-    // Find text_start: byte offset of zone.text within full_text
-    let text_start = full_text.find(&zone.text).unwrap_or(0) as i32;
+    // Find text_start: byte offset of zone.text within full_text. Search from
+    // where the zone can begin (end of the previous sibling, else start of the
+    // parent), so a repeated word maps to its own occurrence, not the first
+    // one on the page.
+    let search_from = prev
+        .map(|p| p.text_start + p.text_len)
+        .or(parent.map(|p| p.text_start))
+        .unwrap_or(0)
+        .max(0) as usize;
+    let text_start = full_text
+        .get(search_from..)
+        .and_then(|rest| rest.find(&zone.text))
+        .map(|offset| search_from + offset)
+        .or_else(|| full_text.find(&zone.text))
+        .unwrap_or(0) as i32;
     let text_len = zone.text.len() as i32;
 
-    // Apply inverse delta encoding to match the decoder in text.rs parse_zone.
-    // Note: the decoder stores parent's text_start/text_len in prev, not the
-    // sibling's. So dts for siblings = text_start - (parent_ts + parent_tl).
+    // Apply inverse delta encoding to match DjVuLibre `DjVuTXT::Zone::decode`
+    // (and text.rs `parse_zone`): a sibling is relative to the previous
+    // sibling's own box and text span, the first child to its parent.
     let (dx, dy, dts) = if let Some(prev) = prev {
         match type_byte {
             1 | 4 | 5 => {
@@ -121,29 +138,16 @@ fn encode_zone(
 
     let mut prev_child: Option<ZoneCtx> = None;
     for child in &zone.children {
-        encode_zone(
+        prev_child = Some(encode_zone(
             buf,
             child,
             Some(&ctx),
             prev_child.as_ref(),
             full_text,
             page_height,
-        );
-
-        let child_bl_y =
-            (page_height as i32).saturating_sub(child.rect.y as i32 + child.rect.height as i32);
-
-        // Match the decoder: prev_child stores the PARENT's text_start/text_len
-        // (see text.rs parse_zone), not the child's.
-        prev_child = Some(ZoneCtx {
-            x: child.rect.x as i32,
-            y: child_bl_y,
-            width: child.rect.width as i32,
-            height: child.rect.height as i32,
-            text_start,
-            text_len,
-        });
+        ));
     }
+    ctx
 }
 
 #[derive(Clone)]
@@ -343,5 +347,57 @@ mod tests {
         let decoded = crate::text::parse_text_layer(&encoded, page_height)
             .expect("sibling lines must roundtrip");
         assert_eq!(decoded.zones[0].children.len(), 2);
+    }
+
+    /// A repeated word must keep its own text span: `find` over the whole
+    /// page used to map the second "the" to the first one.
+    #[test]
+    fn repeated_words_keep_their_own_offsets() {
+        let text = "the cat the";
+        let word = |x: u32, text: &str| TextZone {
+            kind: TextZoneKind::Word,
+            rect: Rect {
+                x,
+                y: 10,
+                width: 20,
+                height: 10,
+            },
+            text: text.into(),
+            children: vec![],
+        };
+        let layer = TextLayer {
+            text: text.into(),
+            zones: vec![TextZone {
+                kind: TextZoneKind::Page,
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 100,
+                    height: 50,
+                },
+                text: text.into(),
+                children: vec![TextZone {
+                    kind: TextZoneKind::Line,
+                    rect: Rect {
+                        x: 0,
+                        y: 10,
+                        width: 80,
+                        height: 10,
+                    },
+                    text: text.into(),
+                    children: vec![word(0, "the"), word(30, "cat"), word(60, "the")],
+                }],
+            }],
+        };
+        let encoded = encode_text_layer(&layer, 50);
+        // Third word: a sibling delta against "cat" (bytes 4..7), starting at 8.
+        let decoded = crate::text::parse_text_layer(&encoded, 50).unwrap();
+        let line = &decoded.zones[0].children[0];
+        let words: Vec<&str> = line.children.iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(words, ["the", "cat", "the"]);
+        assert_eq!(
+            line.children.iter().map(|w| w.rect.x).collect::<Vec<_>>(),
+            [0, 30, 60]
+        );
     }
 }

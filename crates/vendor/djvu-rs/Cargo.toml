@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.88"
 name = "djvu-rs"
-version = "0.35.0"
+version = "0.43.0"
 build = false
 exclude = [
     ".cargo/config.toml",
@@ -175,7 +175,7 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "djvu"
-path = "src/bin/djvu.rs"
+path = "src/bin/djvu/main.rs"
 required-features = ["cli"]
 
 [[example]]
@@ -320,6 +320,11 @@ path = "examples/iw44_forward_transform_probe.rs"
 required-features = ["iw44-probe"]
 
 [[example]]
+name = "jb2_aligned_refine"
+path = "examples/jb2_aligned_refine.rs"
+required-features = ["experimental"]
+
+[[example]]
 name = "jb2_crosssize_b1probe"
 path = "examples/jb2_crosssize_b1probe.rs"
 required-features = ["experimental"]
@@ -453,6 +458,10 @@ name = "txtz_ocr_demo"
 path = "examples/txtz_ocr_demo.rs"
 required-features = ["pdf"]
 
+[[example]]
+name = "writer_conformance"
+path = "examples/writer_conformance.rs"
+
 [[test]]
 name = "cli_diff"
 path = "tests/cli_diff.rs"
@@ -518,6 +527,10 @@ name = "decode_peak_memory"
 path = "tests/decode_peak_memory.rs"
 
 [[test]]
+name = "djvm_peak_memory"
+path = "tests/djvm_peak_memory.rs"
+
+[[test]]
 name = "document_and_render"
 path = "tests/document_and_render.rs"
 
@@ -568,6 +581,10 @@ path = "tests/indirect_resolver.rs"
 [[test]]
 name = "iw44_rate_target"
 path = "tests/iw44_rate_target.rs"
+
+[[test]]
+name = "legacy_iw44_pages"
+path = "tests/legacy_iw44_pages.rs"
 
 [[test]]
 name = "metadata_roundtrip"
@@ -647,31 +664,31 @@ version = "0.3"
 optional = true
 
 [dependencies.djvu-bitmap]
-version = "0.35.0"
+version = "0.43.0"
 default-features = false
 
 [dependencies.djvu-bzz]
-version = "0.35.0"
+version = "0.43.0"
 default-features = false
 
 [dependencies.djvu-iff]
-version = "0.35.0"
+version = "0.43.0"
 default-features = false
 
 [dependencies.djvu-iw44]
-version = "0.35.0"
+version = "0.43.0"
 default-features = false
 
 [dependencies.djvu-jb2]
-version = "0.35.0"
+version = "0.43.0"
 default-features = false
 
 [dependencies.djvu-pixmap]
-version = "0.35.0"
+version = "0.43.0"
 default-features = false
 
 [dependencies.djvu-zp]
-version = "0.35.0"
+version = "0.43.0"
 default-features = false
 
 [dependencies.flate2]
@@ -749,7 +766,7 @@ features = [
 optional = true
 
 [dependencies.tract-onnx]
-version = "0.22.2"
+version = "0.23"
 optional = true
 
 [dependencies.wasm-bindgen]
@@ -768,11 +785,8 @@ optional = true
 version = "0.7"
 
 [dependencies.zip]
-version = "2"
-features = [
-    "deflate-flate2",
-    "flate2",
-]
+version = "9"
+features = ["deflate-flate2"]
 optional = true
 default-features = false
 
@@ -829,16 +843,19 @@ features = [
 ]
 
 [dev-dependencies.zip]
-version = "2"
-features = [
-    "deflate-flate2",
-    "flate2",
-]
+version = "9"
+features = ["deflate-flate2"]
 default-features = false
 
 [profile.bench]
 lto = "fat"
 codegen-units = 1
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = 0
 
 [profile.release]
 lto = "fat"

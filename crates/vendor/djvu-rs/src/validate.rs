@@ -1,7 +1,7 @@
 //! Layered, non-rendering validation for DjVu byte streams.
 //!
 //! The validator implements the structural, dependency, codec, and resource
-//! layers. [`Layer::Semantic`] is intentionally part of the public schema now,
+//! layers. [`Layer::Semantic`](crate::validate::Layer::Semantic) is intentionally part of the public schema now,
 //! but has no checks until a later validator slice.
 //! By default codec validation is probe-level: it checks IW44 headers and BZZ
 //! streams but never renders pixels. Set [`ValidateOptions::decode_pages`] to
@@ -137,7 +137,7 @@ pub struct ResourceEstimate {
     /// Sum of every page's pixel area.
     pub total_pixels: u64,
     /// Estimated peak decoded-page memory in bytes: the largest page's area
-    /// times [`DECODED_BYTES_PER_PIXEL`].
+    /// times `DECODED_BYTES_PER_PIXEL`.
     pub peak_decoded_bytes: u64,
 }
 
@@ -1173,7 +1173,11 @@ fn page_component_id(
     records
         .iter()
         .filter(|record| {
-            record.id == *b"FORM" && record.depth == 1 && record.form_type == Some(*b"DJVU")
+            record.id == *b"FORM"
+                && record.depth == 1
+                && record
+                    .form_type
+                    .is_some_and(|form_type| crate::dirm::is_page_form(&form_type))
         })
         .nth(page_index)
         .and_then(|record| component_offsets.get(&record.offset))
@@ -1346,10 +1350,11 @@ mod tests {
         let page = iff::partial_emit(*b"DJVU", &page_parts).expect("small page");
         let page_len = u32::from_be_bytes(page[8..12].try_into().expect("FORM length")) as usize;
         let page_body = page[12..12 + page_len].to_vec();
-        let ids = ["page.djvu".to_string()];
-        let flags = [1u8];
-        let sizes = [u32::try_from(8 + page_body.len()).expect("small page")];
-        let mut dirm = DirmPayload::build_bundled(1, &flags, &ids, &sizes);
+        let mut dirm = DirmPayload::build_bundled(&[crate::dirm::DirmComponent {
+            kind: crate::dirm::DirmComponentKind::Page,
+            id: "page.djvu".to_string(),
+            size: u32::try_from(8 + page_body.len()).expect("small page"),
+        }]);
         let emit = |dirm: &DirmPayload| {
             let dirm = Chunk::Leaf {
                 id: *b"DIRM",

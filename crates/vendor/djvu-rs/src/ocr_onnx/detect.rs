@@ -2,7 +2,7 @@
 //!
 //! [`TextDetector`] loads the pinned detection model through
 //! [`manifest`](super::manifest) (weights are SHA-256-verified, never trusted
-//! blindly), preprocesses pages with [`preprocess`](super::preprocess), and
+//! blindly), preprocesses pages with [`preprocess`], and
 //! turns the model's probability map into axis-aligned text-region rectangles
 //! in page coordinates.
 //!
@@ -28,14 +28,7 @@ use crate::text::Rect;
 use super::manifest::{DET_MODEL, ModelManifest, default_models_dir};
 use super::preprocess;
 
-type OnnxPlan = tract_onnx::prelude::SimplePlan<
-    tract_onnx::prelude::TypedFact,
-    Box<dyn tract_onnx::prelude::TypedOp>,
-    tract_onnx::prelude::Graph<
-        tract_onnx::prelude::TypedFact,
-        Box<dyn tract_onnx::prelude::TypedOp>,
-    >,
->;
+type OnnxPlan = tract_onnx::prelude::Arc<tract_onnx::prelude::TypedRunnableModel>;
 
 /// Compiled plans kept per input size.
 const PLAN_CACHE_CAPACITY: usize = 4;
@@ -140,7 +133,7 @@ impl TextDetector {
             .map_err(|e| OcrError::RecognitionFailed(format!("detector inference failed: {e}")))?;
 
         let output = result[0]
-            .to_array_view::<f32>()
+            .to_plain_array_view::<f32>()
             .map_err(|e| OcrError::RecognitionFailed(format!("detector output error: {e}")))?;
         let expected: &[usize] = &[1, 1, in_h as usize, in_w as usize];
         if output.shape() != expected {

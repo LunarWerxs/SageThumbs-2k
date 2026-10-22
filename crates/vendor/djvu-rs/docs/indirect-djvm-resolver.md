@@ -42,5 +42,19 @@ and thumbnails are resolved and format-checked but are not yet exposed by the
 high-level page model.
 
 The existing `parse_with_resolver` callback, which receives only `&str`, is
-kept for compatibility. Async/lazy loading and mutable-document adapters will
-adopt the same component vocabulary in follow-up slices of issue #687.
+kept for compatibility.
+
+## Async lazy loading
+
+With the `async` feature, `djvu_async::LazyIndirectDocument` uses the same
+`ComponentId` through `AsyncComponentResolver`, the async twin of
+`ComponentResolver`. A closure returning a future implements it.
+`from_index` reads only the index bytes. `page_async(i)` resolves page `i`
+and each shared `DJVI` it includes, once, and caches the parsed page.
+Thumbnails are never resolved.
+
+The error rules differ from the sync reader in one way: a resolver failure
+(`AsyncLazyError::Resolve`) is not cached, so a later `page_async` call asks
+the resolver again. A page that is not `FORM:DJVU` or a shared component that
+is not `FORM:DJVI` returns `DocError::ComponentKindMismatch` inside
+`AsyncLazyError::Parse`.

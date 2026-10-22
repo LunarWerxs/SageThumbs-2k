@@ -15923,3 +15923,1207 @@ hot path pays one relaxed atomic increment per layer touched.
 total is over the ceiling — thirteen atomic loads a page instead of twelve
 read locks, so cheaper than before, but O(pages). A heap keyed by tick would
 make it O(evicted); nothing measured asks for it yet.
+
+### IW44 ignored the half-chroma flag at render time — DjVuLibre `crcb_half` reconstruction — **Kept** (2026-09-23)
+
+**Issue.** #830. IW44 colour chunks (major version 1, minor ≥ 2) carry a
+`crcb_half` flag: the high bit of the delay byte is clear. #561
+(CARTE_CHROMA_HEADER) established that the Cb/Cr planes are still decoded at
+full size, which is true. It then concluded that the flag means nothing. That
+part was wrong. DjVuLibre's `IWPixmap::get_pixmap()` passes `fast=crcb_half`
+to `Map::image()`. In fast mode the chroma planes are inverse-transformed only
+down to scale 2 (`backward(..., 32, 2)`), and each surviving sample is repeated
+over its 2×2 block. The finest chroma detail band is decoded but never drawn.
+The flag acts only at subsample 1; for subsample ≥ 2 the `i >= 4` guard makes
+it a no-op.
+
+We rendered such chroma at full resolution, so every half-chroma image
+differed from `ddjvu`. On a 127×127 synthetic `c44 -crcbhalf` image, 74.6 %
+of pixels differed by more than 4, max Δ 140, mean Δ 16.3.
+
+**Approach.** `crates/djvu-iw44/src/lib.rs`:
+
+- `decode_chunk` records `chroma_half = minor >= 2 && delay_byte & 0x80 == 0`.
+  Cb/Cr `PlaneDecoder`s stay full size (the #561 finding stands).
+- At subsample 1 with `chroma_half`, chroma reconstructs through the existing
+  compact scale-2 path (`ZIGZAG_INV_SUB2` + the transform stopped at step 2),
+  which is exactly DjVuLibre's even samples. Luma is unchanged.
+- `convert_rgb_rows` reads chroma row `row/2`, column `col/2` via
+  `ycbcr_row_from_i16_half` (nearest neighbour, the 2×2 repeat). Its old
+  `#[allow(dead_code)]` is gone; `upsample_chroma_row_bilinear` (#422) is
+  removed — DjVuLibre never interpolates here.
+- `reconstruct_band` takes a subsample (1 or 2), so the banded path (#813
+  family) reconstructs the chroma band on the compact plane. Banded output
+  equals whole-plane output (tested with keep 1 and 3 bands).
+
+**Numbers.**
+
+- 104 synthetic `c44` colour files (sizes × delay × `-crcbhalf`): all
+  bit-exact vs `ddjvu` at tolerance 0, including every half-chroma file.
+- `carte.djvu` BG44 at native size: bit-exact (was 21 % off at tolerance 0).
+  Full page at tolerance 4: 3.54 % / mean 0.528 → **1.17 % / 0.324**. The rest
+  is #831 (BG upscale origin), a separate bug.
+- New fixture `tests/fixtures/chicken_crcbhalf.djvu` (181×239, `c44
+  -crcbhalf`): bit-exact, added to `conformance/corpus.json`.
+- `to_rgb`, release, best of 7×10, main → branch: carte 7.155 → **3.832 ms
+  (−46 %)**, colorbook 5.581 → 5.427/5.679 ms, chicken 0.256 → 0.252/0.265
+  ms, history 9.197 → 9.260/9.387 ms. Pages without the flag are within noise;
+  carte is faster because two of its three planes stop one transform level
+  early and are a quarter the size.
+
+**Guard.** `compact_scale2_transform_matches_djvulibre_fast_mode` (10 plane
+sizes against a port of DjVuLibre's `backward` with `end=2`),
+`crcb_half_page_matches_ddjvu` (fixture digest = `ddjvu` pixels, banded ==
+whole), `carte_v12_allocates_full_size_chroma_planes` (now also asserts the
+flag), carte digest `0xb00a_964b_8159_1671` = `ddjvu`'s render of BG44 alone.
+
+**Decision.** Kept. Correctness fix with a speed-up on the affected pages.
+
+**Corrections to older entries.** ENCODER_INTEROP_FIX ("full-resolution
+chroma, never `crcb_half`") and CARTE_CHROMA_HEADER (#561) are right about
+plane size but wrong that the flag is inert. CHROMA_BILINEAR (#422) had the
+right premise (half-resolution chroma exists) but the wrong filter:
+DjVuLibre repeats, it does not interpolate. The encoder's `chroma_half`
+option still emits full chroma; emitting a real `crcb_half` stream is now
+possible and could be a future size experiment.
+
+### Native-size BG/FG44 upscale — DjVuLibre's exact rules, not a centre-aligned approximation (#831, 2026-09-24)
+
+**Issue.** #831. At page size, a reduced BG44 (`red` = 2..12) or FG44 was
+enlarged with #279's centre-aligned bilinear mapping, counted from the top.
+DjVuLibre counts rows from the **bottom** (DjVu coordinates grow upwards) and
+uses its own coordinate table. Every page whose height is not a multiple of
+`red` was shifted by one or more page rows. Tolerance 4, width 99999:
+colorbook 53/62 pages over the 0.8 % gate, czech 52/85, history 2/3 (page 0 at
+36.7 %), carte 1/1 (1.17 %). The CI baseline for colorbook page 0 (0.7488 %)
+was this bug.
+
+**Approach.** Port DjVuLibre's rules for a render at page size
+(`native_bg_red` / `native_fg_red`, both `0` for any other size):
+
+- `compute_red`: the `red` in 1..=12 with `ceil(page / red) == plane` on both
+  axes.
+- BG, `GPixmapScaler` with `prepare_coord(1, red)`: `scaler_coord(k) = beg +
+  (red/2 + 16k) / red`, `beg = (16 + red) / (2 red) - 8`, clamped to
+  `(len - 1) * 16` (red 3: −5, 0, 6, 11, 16, 22). Rows from the bottom
+  (`scaler_rows`). Vertical pass rounded to 8 bits, then horizontal, both
+  `lo + ((up - lo) f + 8) >> 4` (`scaler_lerp`, written in its exact
+  unsigned form).
+- FG44, `GPixmap::stencil`: the whole cell `(x / red, y_from_bottom / red)`,
+  no interpolation (`fg_native_frac`).
+- The column table (`precompute_bilinear_x`) and `bg_rows_needed` (banded
+  path, #811) follow the same coordinates. Down-scaled and zoomed renders
+  keep the #279 mapping.
+
+**Numbers.**
+
+- 360 native pages over 21 fixtures: **all bit-exact vs `ddjvu` at tolerance
+  0** (the two rotated `boy_jb2` fixtures are skipped by the harness on `main`
+  too — a size check before rotation). Before: the counts above.
+- Conformance corpus: colorbook grows from page 0 to all 62 pages, history (3)
+  is added; the local gate passes. czech and carte also render bit-exact but
+  fail the *semantic* gate (DIRM thumbnails / shared-annotation type, and
+  annotation-carried metadata) — filed separately.
+- Speed, `cargo bench --bench render`, criterion vs a saved `main` baseline:
+  - First version: **+32…39 %** on every native render (watchmaker,
+    cable, navm). Isolation runs showed the cost was not the new arithmetic
+    — forcing the old mapping through the new code was *slower* (+37…46 %).
+    The per-pixel `bg_at` closure was compiled out of line
+    (`composite_rows_bilinear_one::{closure#17}` in `nm`).
+  - Second version: the per-pixel step became a free `#[inline(always)]`
+    function (`bg_row_pixel`) that matched on a three-way `BgRow` enum.
+    Native renders came back to −0.2…−2.9 %, but `palette_native_cached`
+    stayed at +4.2…+7.7 %, and CI's same-runner re-check flagged the *zoom*
+    path: `render_page/dpi/144…600` (boy.djvu, 100 dpi, so 1.44–6× zoom)
+    **+8.9…+18.8 %**, locally +11…+13 %. On a page without a mask every pixel
+    is background, so the per-pixel `match` on the enum sat in the hottest
+    loop and LLVM did not unswitch it.
+  - Fix: the pixel loop is a local `macro_rules!` expanded once per `BgRow`
+    variant; each copy calls its own sampler (`bg_scaled_pixel` /
+    `bg_blend_pixel`) directly. Criterion vs the same `main` baselines:
+    `render_page/dpi/*` within ±0.7 % (p > 0.05),
+    `render_corpus_color` **−15.8 %**,
+    `render_native_stages/render_pixmap/watchmaker_color` **−16.5 %**,
+    `…/cable_bilevel` **−20.6 %**, `color_native_cached` **−15.2 %**,
+    `bilevel_native_cached` **−18.9 %**, `palette_native_cached` **−13.0 %**,
+    `render_colorbook` and the downscale cases within ±1.0 % (no change).
+    The loop on `main` also tested `Option<vb>` per pixel; specialising it
+    away is where the native gain comes from. Output unchanged: 360/360
+    pages still bit-exact vs `ddjvu`.
+  - Rejected: a whole-row eager horizontal pass (one load per pixel) —
+    **+3.6…+10 %**; most of the row is background, but the extra pass and
+    store cost more than the lazy blend.
+  - Rejected (no effect): the unsigned `scaler_lerp` form alone did not move
+    the palette case (kept anyway: exact and simpler).
+
+**Guard.** `native_reduced_bg_fg_matches_ddjvu_digest` in
+`tests/document_and_render.rs` — colorbook page 9 (2208×3646, BG 736×1216 red
+3, `3646 % 3 == 1`; FG44 184×304 red 12): four regions, `render_region` and
+`render_region_tiled`, FNV-1a of RGB = `ddjvu -page=10` (3.5.28). Fails on
+`main` at the first region. Unit tests: `scaler_coord` (red 2 and 3, clamp),
+`scaler_rows` (bottom origin), `scaler_lerp` (floor, not truncation),
+`fg_native_frac`, `compute_red`.
+
+**Decision.** Kept. Correctness fix, and native renders are 13–21 % faster
+than `main`; zoom and downscale unchanged.
+
+**Corrections to older entries.** #279's centre-aligned BG sampling and
+nearest-cell FG44 (see `tests/diff_tolerance.md`) were close approximations
+for page-size renders; the exact rules are the bottom-origin
+`GPixmapScaler` table and the bottom-origin FG cell. The "tolerance-4 native
+ceiling" of 0.8 % no longer needs its colorbook headroom.
+
+### JB2 center-aligned record-4 refinement — `Lossless` switches to the dictionary — **Kept** (2026-09-27)
+
+**Issue.** The encoder parity scorecard put the public JB2 `Lossless` profile
+at up to 2.1× `cjb2` (cable 4,720 vs 2,248 B; Chinese cookbook 140 vs 67 B).
+
+**Cause.** Profile choice, not the dictionary. `PageEncoder` `Lossless`
+called `encode_jb2`, which writes direct record-3 tiles with no symbol
+dictionary. The exact-match dictionary (`encode_jb2_dict`) already brings
+cable to about 1.13×. The rest is glyph matching: `cjb2` refines near-twins.
+
+**Approach.** Center-aligned refinement (`AlignedRefine`):
+
+- Candidates: dict entries within ±`max_dim_delta` px per axis, same size
+  included, newest first.
+- Distance: Hamming count under the decoder's own refinement alignment
+  (`row_shift`/`col_shift` of the centers), computed byte-wise with a 16-bit
+  shift window and early exit. A unit test checks it against a per-pixel
+  count for every size pair within ±3 px. Earlier attempts (#322) resampled
+  the reference, so the refinement context mispredicted.
+- Prefilter: ink-count difference is a lower bound on the distance, so most
+  candidates never get a pixel scan. The budget shrinks to the best match.
+- Emission: record 4 (refine, add to dict, blit), so a refined glyph can be
+  the reference for later ones. Record 6 (blit only) was measured too.
+
+New public `encode_jb2_lossless(bitmap)`: dictionary + `AlignedRefine::LOSSLESS`
+(±2 px, 20 %, record 4). It also runs `encode_jb2` and keeps the smaller
+stream. Pages whose components exceed the decoder's record or symbol-pixel
+limits (conservative check: every component counted as decoded) get
+`encode_jb2` only. `PageEncoder` `Lossless` + `BilevelCodec::Jb2` now calls it.
+
+**Numbers.** Sjbz bytes, first 8 masks per corpus
+(`examples/jb2_aligned_refine.rs`), round-trip exact everywhere:
+
+| Corpus | direct tiles | dict (exact match) | rec-4 d=2 20 % | vs dict |
+|---|---:|---:|---:|---:|
+| cable (2) | 31,166 | 9,107 | 8,548 | −6.1 % |
+| Chinese cookbook (5) | 191,523 | 155,103 | 142,664 | −8.0 % |
+| watchmaker (8) | 374,155 | 92,650 | 73,858 | −20.3 % |
+| conquete_paix (8) | 61,609 | 17,294 | 16,970 | −1.9 % |
+| pathogenic_bacteria (7) | 196,138 | 148,969 | 134,237 | −9.9 % |
+| war_1812 (8) | 543,604 | 384,639 | 358,283 | −6.9 % |
+
+Sweep: d ∈ {1,2,3} × budget ∈ {10,20,30 %}. d=2/20 % is at or within 0.8 %
+of the best on every corpus; d=3 costs up to 30 % more time on war_1812 for
+≤0.8 % gain. Record 6 at the same settings *loses* (+0.1…+120 %): without
+the dict entry, later glyphs refine against the older, worse reference.
+
+Scorecard vs `cjb2` 3.5.29 (`ddjvu` pixel-exact on all three):
+cable **1.011×** (was 2.100×), Chinese cookbook **0.985×** (was 2.090×), map
+atlas **0.952×** (unchanged — direct tiles win there, so they are kept).
+Earlier DjVuLibre check: `ddjvu` pixel-identical on 8 pages × record 4 and 6.
+
+**Speed.** Aligned search vs exact-match dict: 0–8 % on five corpora,
+war_1812 +170 % (318 → 857 ms for 8 pages; dense page of many similar glyphs).
+A scan cap (8…64 comparisons per component) lost most of war_1812's gain, so
+there is no cap. `Lossless` page encode vs the old direct tiles: cable
+16.6 → 21.9 ms, map atlas 29.6 → 149.4 ms (both encodings run), still faster
+than `cjb2` on all three pages.
+
+**Decision.** Kept. `encode_jb2_dict*` defaults are byte-identical (the
+aligned path runs only through `encode_jb2_lossless` or the experimental
+`Jb2EncodeOptions::aligned_refine`).
+
+**Open.** `chunk_encode` and the multi-page bundle path do not use aligned
+refinement yet. Direct `encode_jb2` output above 16 MP does not decode in our
+decoder (per-page symbol budget, `ImageTooLarge`) — pre-existing, and
+`encode_jb2_lossless` still returns it when the dictionary path is over the
+limits.
+
+### JB2 aligned refinement in bundles, colour masks and `chunk_encode` — **Kept** (2026-09-28)
+
+**Issue.** JB2_ALIGNED_REC4 (2026-09-27) put center-aligned record-4
+refinement into the single-page `Lossless` path only. The bilevel multi-page
+bundle (`encode_djvm_bundle_jb2*`), the colour mask of `PageEncoder`
+`Quality`/`Archival`, the layered multi-page path and `chunk_encode::Jb2Chunk`
+still used the exact-match dictionary or direct tiles.
+
+**Approach.** `Jb2EncodeOptions` is not `#[non_exhaustive]`, so a new public
+field would be a semver break. Instead, new entry points take the setting as
+an argument: `encode_jb2_lossless_with_shared`,
+`encode_jb2_dict_with_blits_refined`, `encode_jb2_dict_with_symbols_refined`.
+The old functions delegate and stay byte-identical.
+
+- Bundle pages: `encode_jb2_lossless_with_shared` (dictionary with
+  refinement against the shared `Djbz` symbols too; keeps direct tiles when
+  smaller; direct tiles over the decoder limits).
+- Colour masks (single page and layered bundle):
+  `AlignedRefine::LOSSLESS`. No direct-tile fallback — FGbz needs the blit
+  list. The blit order does not change, so FGbz indices stay valid.
+- `Jb2Chunk`: `encode_jb2_lossless`.
+
+**Bug found on the way.** Both decoders align a refinement on the
+reference's content box (ours crops dict entries; DjVuLibre uses the
+`LibRect` bounding box). A caller-supplied shared symbol with blank border
+rows decoded 2,441 pixels wrong. Such symbols are now not refinement
+references (`NOT_REFINABLE`); `cluster_shared_symbols` output is always
+tight, so real bundles lose nothing.
+
+**Numbers.** `examples/_refine_everywhere.rs` (scratch), first 8 masks,
+round-trip exact everywhere.
+
+Bilevel bundle, Djbz + Σ Sjbz, shared = `cluster_shared_symbols(·, 2)`:
+
+| Corpus | before | after | Δ | time before → after |
+|---|---:|---:|---:|---|
+| cable (2) | 8,971 | 8,391 | −6.5 % | 23 → 66 ms |
+| Chinese cookbook (5) | 155,144 | 142,602 | −8.1 % | 148 → 297 ms |
+| watchmaker (8) | 88,343 | 70,739 | −19.9 % | 206 → 422 ms |
+| conquete_paix (8) | 17,328 | 17,009 | −1.8 % | 248 → 729 ms |
+| pathogenic_bacteria (7) | 136,582 | 124,065 | −9.2 % | 155 → 372 ms |
+| war_1812 (8) | 384,536 | 358,179 | −6.9 % | 378 → 1,000 ms |
+
+Time includes the direct-tile encode that `encode_jb2_lossless_with_shared`
+runs for the size comparison (sequential here; bundle pages run in parallel
+under `parallel`).
+
+Colour `Quality` pages rendered at native size, whole `PageEncoder` output
+(`examples/_colour_pages.rs`, first 4 pages, best of 3):
+
+| Corpus | before | after | Δ | time before → after |
+|---|---:|---:|---:|---|
+| watchmaker | 48,204 | 38,870 | −19.4 % | 267 → 263 ms |
+| goody_twoshoes | 111,542 | 109,550 | −1.8 % | 534 → 595 ms |
+| map atlas (2) | 360,226 | 361,804 | +0.4 % | 324 → 454 ms |
+| cyrillic_simonovich | 40,876 | 37,394 | −8.5 % | 41 → 90 ms |
+
+The layered bundle (`encode_djvm_layered_shared`) moves the same way:
+watchmaker 47,412 → 38,540 B, map atlas 360,226 → 361,830 B.
+
+`big_scanned_page` (62 MP) Quality mask: 73,903 → 73,900 B, but neither
+stream decodes in our decoder (`ImageTooLarge`, 16 MP per-page symbol
+budget) — pre-existing, handled separately.
+
+**Decision.** Kept. Text-heavy colour and bilevel output shrinks 2–20 %.
+Map atlas loses 0.4 % and 130 ms: few repeats, so refinement rarely beats a
+new symbol. A plain-dict fallback there would need a second full encode.
+
+**Reason.** Same lossless lever as JB2_ALIGNED_REC4, now on every JB2 write
+path. Guards: `bundle_pages_refine_against_shared_symbols` (incl. an untight
+shared symbol), `quality_color_refines_near_copies_and_keeps_colors`,
+`layered_shared_refines_near_copies_and_round_trips`.
+
+### JB2 per-page work budget and oversized-component splitting — **Kept** (2026-09-28)
+
+**Issue.** Our own JB2 output above 16 MP did not decode in our decoder
+(`ImageTooLarge`). Three causes:
+
+1. The decoder's per-page cap counted 16 MP of symbol pixels. Direct
+   `encode_jb2` tiles cover every page pixel, so any page over 16 MP failed.
+2. The dictionary encoders emitted a component with a bounding box over the
+   16 MP per-symbol limit as one symbol (a scan's dark border, for example).
+3. The encoder refined large components with no view of the page budget.
+
+**Approach.**
+
+- Decoder (`crates/djvu-jb2/src/lib.rs`): the page cap is now a work budget,
+  `MAX_PAGE_SYMBOL_WORK = 64 M` units. A direct pixel costs 1 unit, a
+  refinement pixel (records 4–6) costs `REFINE_PIXEL_WORK = 4`. Refinement
+  decodes at ≈ 15 ns/px and direct at ≈ 4 ns/px on low-entropy input, so
+  16 MP of refinement (the old fuzz worst case) and 64 MP of direct cost about
+  the same. The Djbz dictionary loop is unchanged. Every stream that passed
+  the old 16 MP cap still passes.
+- Encoder (`crates/djvu-jb2/src/encode.rs`):
+  - `extract_ccs` splits a component over 16 MP into 4096² pieces, each
+    cropped to its own ink.
+  - If the page's component boxes still add up past the budget (nested
+    components), it cuts every component wider than 1024 px into 1024²
+    pieces. Only such pages change.
+  - The dictionary encoder tracks decode work and codes a would-be
+    refinement as a new symbol when it would pass the budget.
+  - `encode_jb2_lossless` now checks the page at direct cost, so pages of
+    16–64 MP get the dictionary instead of tiles.
+
+**Numbers** (`examples/_budget_probe.rs`, native, best of 5):
+
+| Stream | Size | Decode before | Decode after |
+|---|---:|---|---|
+| fuzz seed `page_cap_timeout.bin` | 409 B | `ImageTooLarge` | `ImageTooLarge`, 170 ms |
+| blank 8192² direct tiles | 327 B | `ImageTooLarge` | ok, 179 ms |
+| noise 8192² direct tiles | 8.7 MB | `ImageTooLarge` | ok, 657 ms |
+| text 8192² direct tiles | 777,674 B | `ImageTooLarge` | ok, 233 ms |
+| text 8192² `encode_jb2_lossless` | 777,674 → **201,590 B** | `ImageTooLarge` | ok, 38 ms |
+| `big_scanned_page` (62 MP) colour `Quality`, whole file | 101,236 → 103,170 B | mask `ImageTooLarge` | ok |
+
+The seed stays at the same cost: it still stops at 16 MP of refinement.
+The worst small input is now a blank direct page at 179 ms, about the seed's
+time. The noise row is not an amplification: its input is 8.7 MB.
+Lossless encode of the 64 MP text page takes 543 ms (379 ms tiles-only).
+
+**Decision.** Kept.
+
+**Reason.** Every page up to the 64 MP page limit now round-trips through
+our own decoder, with no new fuzz exposure. The split, the finer split and
+the refinement guard only fire on pages that did not decode before. The one
+other change: `encode_jb2_lossless` may now try the dictionary on a page
+whose component boxes total 16–64 MP, and it still keeps the smaller stream.
+Guards: `tiled_above_16mp_roundtrip`,
+`lossless_large_page_falls_back_to_decodable_tiles`,
+`dict_splits_component_over_symbol_limit`,
+`dict_splits_finer_when_boxes_exceed_page_budget`,
+`aligned_refinement_stays_within_page_budget`, and
+`page_cap_bounds_refinement_amplification` (seed still `ImageTooLarge`).
+Each new test fails with its mechanism disabled.
+
+### DJVM_BUNDLE_PEAK — bundle writers hold two copies, not four and a half — **Kept** (2026-09-29)
+
+**Issue.** Every DJVM bundle writer (`merge`, `split`, `remove_pages`,
+`dedup_shared_components`, the bilevel and colour encoders) peaked at about
+4.5× the size of its output. Three causes:
+
+1. `iff::partial_emit_with_offsets` reserved `8 + payload` bytes, but the
+   prologue is 12 bytes. Every emitted buffer grew once, and a `Vec` grows by
+   doubling, so each component briefly held two copies of itself.
+2. The writers kept every component alive until `finish`, next to its copy in
+   the spool.
+3. The in-memory spool also grew by doubling.
+
+**Approach.**
+
+- `partial_emit_with_offsets` reserves `PROLOGUE + payload + 1` (the pad
+  byte), so it never reallocates.
+- The new internal `build_djvm(Vec<BundlePart>)` takes the parts by value and
+  drops each one as soon as the spool holds it.
+- The spool reserves the exact total (`bytes + 1` per part) before the first
+  write.
+- Came with the DIRM component-table refactor: all writers now share
+  `DirmPayload::build_bundled` / `build_indirect`.
+
+**Numbers** (`examples/_bundle_peak.rs`, counting allocator; colorbook + czech
+merged three times, 12,535,924 B output; peak ÷ output):
+
+| Operation | Old main | Emit fix only | Now |
+|---|---:|---:|---:|
+| merge | 4.51× (56,558,652 B) | 3.51× | **2.01× (25,140,135 B)** |
+| split | 4.39× | — | **2.05×** |
+| dedup | 4.51× | — | **2.01×** |
+
+Output is byte-identical: a temporary assert compared old and new writers on
+50 bundles across the full test suite.
+
+**Decision.** Kept.
+
+**Reason.** Peak memory falls by more than half with no change in output.
+The floor is two copies: the spool plus the final buffer. A streamed
+`finish` to a file would go lower, but the public functions return
+`Vec<u8>`. Guard: `tests/djvm_peak_memory.rs` (peak under 2.5× the output;
+measured 2.01×, 4.51× on old main).
+
+### COMPOSITE_BILINEAR_NOINLINE — 2026-09-29
+
+**Issue.** After #872 (one render pipeline) native-size and moderate-downscale
+renders got slower, although the new code does the same work. The CI benchmark
+job hid it under a −44% runner drift. `sample` showed why: the old binary kept
+`composite_rows_bilinear_one` as a separate function; the new one inlined it
+into `composite_into`, and the inlined loop compiled to slower code.
+
+**Approach.** Tried `#[inline(never)]` on the two row functions of
+`composite_into`, in every combination: both (v1), only the bilinear row (v2),
+only the area-average row (v3). Each variant is a separate bench binary; the
+binaries ran in turn, three rounds, best of three (Apple Silicon,
+`benches/render.rs`, change vs f4dd12c, the commit before #872).
+
+**Numbers.**
+
+| Benchmark | #872 | v1 both | **v2 bilinear** | v3 area-avg |
+|---|---:|---:|---:|---:|
+| `render_page/dpi/72` | −40.3% | +0.3% | **−40.9%** | +0.5% |
+| `render_page/dpi/144` | +8.0% | +0.6% | **+2.3%** | +6.0% |
+| `render_page/dpi/300` | +8.4% | +1.0% | **+1.2%** | +5.1% |
+| `render_page/dpi/600` | +7.9% | +0.8% | **+2.3%** | +4.8% |
+| `render_colorbook` | −29.3% | +0.9% | **−29.2%** | +0.1% |
+| `render_native_stages/render_pixmap/watchmaker_color` | +12.7% | +1.2% | **+1.7%** | +10.8% |
+| `render_native_stages/render_into_reuse_buffer/watchmaker_color` | +13.1% | +1.3% | **+0.1%** | +8.8% |
+| `render_native_stages/render_pixmap/cable_bilevel` | +13.9% | +1.2% | **−0.2%** | +10.3% |
+| `render_native_stages/render_into_reuse_buffer/cable_bilevel` | +13.9% | −1.4% | **−1.5%** | +11.0% |
+| `render_coarse` | +1.1% | +1.0% | **−0.0%** | −0.2% |
+
+Old code measured against itself stayed within ±4% (noise band of this run).
+
+**Decision.** Kept v2: `#[inline(never)]` on `composite_rows_bilinear_one`.
+
+**Reason.** v2 removes the #872 regression on native-size renders and keeps
+its gains on small scales (72 dpi, colorbook), which come from the inlined
+area-average row. Output is unchanged (codegen only). Measured on aarch64
+only; the Callgrind job in CI covers x86.
+
+### LANCZOS_REGION_WINDOW (2026-10-01) — a Lanczos-3 region filters only its own window
+
+**Issue.** A region render with Lanczos-3 resampling composited the whole
+page at its native size, rescaled the whole page, and then cut the region.
+The cost followed the page, not the region. A 512×512 viewport at 2× zoom
+on watchmaker took 359 ms against 1.3 ms for bilinear. On big_scanned_page
+the same request failed: the whole 2× page (13560×9148) is over
+`Pixmap::MAX_PIXELS`. The tile cache had the same flaw. A whole Lanczos-3
+page over the cache budget is not cached, so every tile miss rescaled the
+whole page again.
+
+**Approach.** The Lanczos-3 filter is separable, and each output pixel reads
+a fixed span of source pixels. New `scale_lanczos3_window` rescales one
+output window from just the native source window it reads
+(`lanczos3_source_window`). Both passes take their taps from one `Axis`
+helper, so the window sums the same pixels with the same weights in the same
+order: byte-identical to the crop of the whole rescale. `scale_lanczos3` is
+now the window that covers the whole page. `Composite::region` and the tile
+cache composite and rescale only the window they need. The tile cache no
+longer caches the whole Lanczos-3 page on the first miss
+(`cache_whole_page` removed): it filters the tiles of the request.
+
+**Numbers.** M1 Max, release, default features, median of 9. The machine
+was under heavy load (load average 26–39), so only large changes count.
+
+| Scenario | Before | After |
+|---|---:|---:|
+| watchmaker 512×512 region at 2×, Lanczos-3 | 359 ms | 3.0 ms |
+| goody_twoshoes, same | — | 2.9 ms |
+| conquete_paix, same | — | 2.8 ms |
+| big_scanned_page, same | error (over the pixel limit) | 49 ms |
+| watchmaker, six cold cached regions panning at 2× | 2128 ms | 48 ms |
+| watchmaker, whole 150 dpi page as cached 256-px regions | 4151 ms (first 129 ms) | 123 ms (first 12 ms) |
+| watchmaker, whole page at ¾ as cached 256-px regions | 11130 ms | 161 ms |
+
+Whole-page Lanczos-3 (`render_pixmap`): eight alternating rounds of the old
+and new binaries, best of each. boy.djvu at ½: 1.20 → 1.06 ms. colorbook at
+½: 293 → 279 ms. No regression. One Criterion run showed +93% for the new
+code. The alternating runs show that this was noise from the load.
+
+**Decision.** Kept.
+
+**Reason.** Region and tile cost now follow the request, not the page, and
+large zoomed pages render instead of failing. Output is byte-identical
+(new tests `scale_lanczos3_window_matches_whole_crop` and
+`lanczos_window_matches_the_page_crop`).
+
+**Follow-up.** On a page whose background is banded (#811,
+big_scanned_page), each Lanczos-3 miss still decodes the background band at
+native resolution: about 65 ms per 256-px tile. A band cache for the
+native composite would cut that.
+
+### BG_COLUMN_WINDOW (2026-10-01) — a banded background decodes only the columns a tile reads
+
+**Issue.** Follow-up of LANCZOS_REGION_WINDOW. On a page whose background
+is banded (#811, big_scanned_page, 6780×9148), every tile miss decoded
+full-width background bands. A ¼-scale Lanczos-3 tile spent 69 of its
+~88 ms in `Iw44Image::rgb_rows` (6780 columns) and 7 ms in the rescale.
+
+**Approach.** A band cache was rejected: one band is ~28 MB, more than the
+8 MiB tile budget. Instead the IW44 decoder gets a column window:
+`PlaneDecoder::reconstruct_window` (replaces `reconstruct_band`) runs the
+inverse wavelet on block columns `first..last` plus the same 8-block halo
+the row bands use (reach 186 px < 256 px). The new public
+`Iw44Image::rgb_window(rows, cols)` returns a full-width pixmap with zeros
+outside the decoded columns, so plane readers keep absolute indices
+(`rgb_rows` is now `rgb_window(rows, 0..width)`). The compositor
+(`for_each_bg_band`) and the tiled region path ask for the plane columns
+`bg_cols_needed` computes. That function mirrors the compositor's column
+arithmetic, truncated `fx_step` included: at `FRACBITS = 4` the
+truncation moves a far column by up to ~14 plane pixels, and a first
+version that mapped exactly painted black columns (caught by the new
+narrow-region cases in `banded_background_composites_like_the_whole_one`).
+
+**Numbers.** M1 Max, release, big_scanned_page, one cached 256-px tile per
+call over three tile rows (first tile includes the one native decode).
+
+| Scale, resampling | Before total / median | After total / median |
+|---|---:|---:|
+| ¼, Lanczos-3 | 1744 ms / 88.2 ms | 626 ms / 23.1 ms |
+| ½, Lanczos-3 | 1595 ms / 57.1 ms | 524 ms / 9.5 ms |
+| 2×, bilinear | 830 ms / 26.5 ms | 274 ms / 2.5 ms |
+| 2×, Lanczos-3 | 837 ms / 26.0 ms | 260 ms / 2.8 ms |
+
+Bilinear downscale is unchanged (0.2 ms per tile): it does not use bands.
+
+**Decision.** Kept.
+
+**Reason.** Tile cost on a banded page now follows the tile width, not the
+page width: 3.8× to 10× faster per tile. Output is byte-identical (new
+tests `reconstruct_window_matches_the_whole_plane`,
+`rgb_window_matches_the_whole_picture`,
+`banded_tiles_match_a_full_width_strip`; extended
+`banded_background_composites_like_the_whole_one`).
+
+### COMPOSITE_BILINEAR_SPLIT (2026-10-02) — the bilinear row function split by path
+
+**Issue.** Follow-up of #889. After the module split,
+`composite_rows_bilinear_one` was still one function of 537 lines: the 1:1
+fast path, the general 1:1 path and the zoom path in one body. Its speed is
+sensitive to inlining (COMPOSITE_BILINEAR_NOINLINE), so the split had to be
+measured.
+
+**Approach.** The function now only dispatches: `native_row_bg_mask` (1:1,
+background and mask only), `native_row` (other 1:1 rows) or `zoom_row`.
+Small shared helpers: `row_page_y`, `mask_row_at`, `mask_row_blank`,
+`native_row_blank` (F2), `expand_mask_row` (G1), `scaled_bg_row` and
+`blend_bg_row` (the two `BgRow` arms). All helpers are `#[inline(always)]`;
+the pixel code is moved, not changed. Two variants: v1 with `zoom_row`
+inlined, v2 with `zoom_row` `#[inline(never)]`.
+
+**Numbers.** M1 Max, `benches/render.rs`, three bench binaries (before,
+v1, v2) run in turn, three rounds, best of three, change vs before.
+
+| Benchmark | v1 inlined | **v2 `zoom_row` out of line** |
+|---|---:|---:|
+| `render_page/dpi/144` (boy, 1.44× zoom) | +4.0% | **+3.0%** |
+| `render_page/dpi/300` (3× zoom) | +2.1% | **−0.0%** |
+| `render_native_stages/render_pixmap/watchmaker_color` | +1.1% | **−1.0%** |
+| `render_native_stages/render_into_reuse_buffer/watchmaker_color` | −0.0% | **−1.0%** |
+| `render_native_stages/render_pixmap/cable_bilevel` | −0.4% | **−1.6%** |
+| `render_native_stages/render_into_reuse_buffer/cable_bilevel` | −0.4% | **−1.3%** |
+| `render_compositor_only/color_native_cached` | +1.1% | **−1.0%** |
+| `render_compositor_only/bilevel_native_cached` | +2.6% | **−0.7%** |
+| `render_compositor_only/palette_native_cached` | −0.8% | **−2.7%** |
+| `render_scaled_large_colorbook/bilinear` | +0.5% | **−0.4%** |
+
+A first full run of v1 (19 benchmarks) put every downscale benchmark
+within ±1.2%; downscale rows do not go through this function.
+
+**Decision.** Kept v2.
+
+**Reason.** The largest piece is now `zoom_row`, about 170 lines, most of
+them the pixel loop. v2 is equal or faster on nine of ten benchmarks. The
+one loss, `dpi/144` +3.0% (about 11 µs on a 0.38 ms render), was steady
+across rounds but did not show at `dpi/300`, which runs the same path on
+four times as many pixels; it looks like code layout, not extra work.
+Output is unchanged: the 163 render unit tests and the full suite pass.
+
+### IW44_ENCODE_INPLACE_GATHER (2026-10-04) — the IW44 encoder gathers each plane in its own memory
+
+The fresh encoder parity scorecard (2026-10-03) showed one case where djvu-rs
+used more memory than DjVuLibre: the IW44 `Photo` encode of goody two-shoes,
+**182.6 MB** peak RSS against **135.7 MB** for `c44`. dhat on the encode alone
+(pixmap already built) showed why: for pages below the banding threshold
+(ENCODE_BANDED_PLANES), `encode_iw44_color` held three flat `i16` planes
+(Y, Cb, Cr) *and* three `PlaneEncoder` grids of the same size at once — six
+`w*h*2` buffers, 15.8 MB each on that page. The flat plane is dead once the
+gather has copied it into zigzag blocks.
+
+**Approach.** The plane is now allocated as the encoder's own block storage,
+`Vec<[i16; 1024]>` (`PlaneEncoder::new_plane`), and the transform runs on its
+`as_flattened_mut()` view. Block row `r` of the grid and plane rows
+`32r..32r+32` cover the same memory, so `PlaneEncoder::from_plane` gathers in
+place: each 32-row strip is copied to a one-strip buffer (`32 * stride`
+samples, 164 KB at 2560 px) and scattered back into its own blocks. The
+scatter loop is the old `gather_rows` body, moved into `scatter_strip` and
+shared by both paths. No `unsafe` beyond the existing unchecked indexing.
+Used by the colour and gray whole-plane paths (sequential and `parallel`);
+the banded path is unchanged.
+
+**Numbers.** M1 Max, release, default features.
+
+| Page | Measure | Before | After | Change |
+|---|---|---:|---:|---:|
+| goody two-shoes (2454×3192) | dhat peak, encode over the pixmap | 102 998 595 B | 55 689 795 B | **−45.9 %** |
+| goody two-shoes | dhat peak, whole process | 134 331 267 B | 87 022 467 B | −35.2 % |
+| goody two-shoes | scorecard peak RSS (c44: 135 664 KB) | 182 560 KB | 136 912 KB | **−25.0 %** |
+| watchmaker (2550×3301) | dhat peak, encode over the pixmap | 49 176 624 B | 32 137 264 B | −34.6 % |
+| watchmaker | scorecard peak RSS (c44: 145 728 KB) | 141 536 KB | 124 912 KB | −11.7 % |
+| goody two-shoes | `encode_iw44_color` median, 8×5 interleaved | 267.5 ms | 266.0 ms | −0.6 % (noise) |
+| watchmaker | `encode_iw44_color` median, 8×5 interleaved | 354.0 ms | 348.4 ms | −1.6 % (noise) |
+
+Output is byte-identical on both pages (`cmp` of the full DjVu files). The
+existing single-band-equals-whole-plane test covers the bytes; the new
+`from_plane_matches_gather_rows` test checks the grid on a 101×70 plane with
+partial edge blocks.
+
+**Decision.** Kept.
+
+**Reason.** The goody encode now peaks at the same RSS as `c44` (136.9 vs
+135.7 MB), at no time cost. What remains of the gap to `c44` in the scorecard
+worker is the harness itself: it holds the PPM file, the parsed RGB and the
+RGBA pixmap (≈ 78 MB on goody) while it encodes, where `c44` keeps one 3 B/px
+image.
+
+### JB2_DIRECT_WHITE_RUN (2026-10-04)
+
+**Issue.** The JB2 Lossless profile is the dictionary encode plus the
+direct-tile encode (`encode_jb2`), keeping the smaller (JB2_ALIGNED_REC4).
+The direct encode codes every page pixel through one `ZpEncoder::encode_bit`
+call, about 1.5 ns per pixel. White areas cost as much as text: on the
+cable page it was 13.4 of the 20 ms Lossless encode, and on the nearly blank
+Chinese cookbook page 11.7 of 16 ms.
+
+**Approach.** In white areas the 10-pixel context is 0 and the bit is
+`false`. Most such bits take the ZP fast path, which only adds `p` to `a`.
+New `ZpEncoder::encode_run(ctx, bit, n)`: it does the fast steps of a run
+as one multiply-add (`a += k·p`) and calls `encode_mps` only for the bits
+that reach 0x8000; an LPS bit still goes through `encode_lps`.
+`encode_bitmap_direct` finds a run with `white_run` (eight byte-per-pixel
+columns of the three rows per step) and codes it with one `encode_run`.
+Same bytes and same context states by construction.
+
+**Numbers.** M1 Max, `encode_jb2_lossless` on the page-1 PBM (ddjvu),
+median of 15, two rounds, old and new binaries in turn:
+
+| Page | `encode_jb2` before → after | Lossless before → after |
+|---|---:|---:|
+| cable (2550×3301) | 13.4 → 2.6 ms | 20.5 → 8.9–9.1 ms |
+| Chinese cookbook | 11.7 → 1.3 ms | 15.9–16.2 → 5.7–5.8 ms |
+| map atlas (dense) | 27.0 → 26.9 ms | 159–161 → 145–149 ms |
+
+`encoder_parity_scorecard --repeats 5` (worker process, vs cjb2 3.5.29):
+cable 26.0 → **12.9 ms** (cjb2 27.3), cookbook 21.7 → **9.6 ms** (cjb2 23.2),
+map atlas 161.5 → **154.5 ms** (cjb2 352.4). Output bytes unchanged
+(`cmp` on all three pages).
+
+**Decision.** Kept.
+
+**Reason.** 2.2–2.8× faster Lossless encode on text pages, byte-identical.
+Tests: `encode_run_matches_encode_bit` (random runs up to 70,000 bits, both
+values, against one `encode_bit` per bit) and
+`encode_bitmap_direct_matches_per_pixel_loop` (random bitmaps, widths 1 to
+1024, against a plain per-pixel context loop; a broken window update fails
+it). The dictionary encode is now most of the Lossless time on these
+pages.
+
+
+### JB2_CC_PACKED_SCAN (2026-10-04)
+
+**Issue.** After JB2_DIRECT_WHITE_RUN, `extract_ccs` (connected-component
+search) was most of the Lossless encode time: about 63% on the cable page
+and 75% on the blank Chinese cookbook page (`sample` with the stages kept
+out of line). It unpacked the page into one byte per pixel (7.6 MB for the
+cookbook page) and tested every byte, so a white page still cost ~4 ms.
+
+**Approach.** The DFS (depth-first search) marks visited pixels by clearing
+their bits in a copy of the packed rows (1 bit per pixel; row padding bits
+cleared first). The seed scan skips eight zero bytes (64 white pixels) per
+step and takes the leftmost set bit of a byte with `leading_zeros`. The DFS
+only clears bits, so that bit is the next seed a per-pixel raster scan
+finds; the neighbour order is unchanged. Same components in the same order.
+
+**Numbers.** M1 Max, `encode_jb2_lossless` on the page-1 PBM, median of 15,
+two rounds, base (main after #921) and new in turn:
+
+| Page | Lossless before → after |
+|---|---:|
+| cable | 8.7–8.8 → **4.3–4.4 ms** |
+| Chinese cookbook | 5.5–5.6 → **1.5 ms** |
+| map atlas (22% black) | 145–146 → 142–143 ms |
+
+`encoder_parity_scorecard --repeats 5` (vs cjb2 3.5.29): cable 12.9 →
+**7.8 ms** (cjb2 26.9), cookbook 9.6 → **4.9 ms** (cjb2 23.6), map atlas
+154.5 → **151.4 ms** (cjb2 362.6). Output bytes unchanged (`cmp`, three
+pages). The byte grid (w·h bytes) is gone from the peak.
+
+**Decision.** Kept.
+
+**Reason.** 2–3.8× faster Lossless on text pages, byte-identical. Test
+`extract_ccs_matches_per_pixel_scan` compares components, order and pixels
+with a per-pixel scan on random bitmaps with junk padding bits (it fails
+when the padding mask is removed). On the dense map atlas page
+`encode_jb2_dict_with_ccs` is now ~45% and the direct tiles ~25%.
+
+
+### JB2_REFINE_ROW_WORDS (2026-10-04)
+
+**Issue.** On the dense map atlas page (22% black) the aligned refinement
+search was the largest part of `encode_jb2_dict_with_ccs`:
+`aligned_hamming` ~33% and `find_aligned_refine_ref` ~7.5% of the Lossless
+encode (`sample`, stages out of line). Counters showed 1.18 M
+`aligned_hamming` calls on the page, almost all with both bitmaps at most
+64 px wide and a limit of 6–16 pixels. Each call rebuilt every row from
+bytes with bounds checks per byte.
+
+**Approach.** First try: a one-u64-per-row path inside `aligned_hamming`,
+rows still built per call: −1% (140 → 139 ms), not enough. Kept version:
+`RefineIndex` (replaces `dict_ink`) stores each dictionary entry's ink
+count and, for entries 1–64 px wide, its rows as u64 words
+(`push_row_words`: leftmost pixel in the top bit, padding cleared), built
+once when the entry is added. The candidate's words are built once per
+search. `aligned_hamming_words` aligns a row with one shift and counts it
+with one popcount, with the same per-row early exit; wider pairs still use
+`aligned_hamming`. Same distances, so the same choices.
+
+**Numbers.** M1 Max, `encode_jb2_lossless`, page-1 PBM, median of 15, two
+rounds in turn: map atlas 141–142 → **126–127 ms** (−11%); cable 4.3 →
+4.3 ms (few candidates). `encoder_parity_scorecard --repeats 5`: map atlas
+151.4 → **132.9 ms** (cjb2 354.1), cable 7.7 ms, cookbook 4.8 ms. Output
+bytes unchanged (`cmp`).
+
+**Decision.** Kept.
+
+**Reason.** −11% on dense pages, byte-identical. `aligned_hamming_matches_per_pixel_count`
+now also checks `aligned_hamming_words`, adds widths 62–90 (both paths)
+and junk padding bits (it fails without the cand-width mask). Remaining on
+the map page: direct tiles + ZP output ~43%, `extract_ccs` DFS ~18%,
+refinement search ~30% (still 1.18 M compares; a stronger lower bound
+than the ink difference could cut them).
+
+
+### JB2_REFINE_GRID_BOUND (2026-10-04)
+
+**Issue.** After JB2_REFINE_ROW_WORDS the aligned refinement search was
+still ~30% of the map atlas Lossless encode. Counters on the page: 4829
+searches, 1.56 M dictionary entries seen, the ink bound rejected only
+371 k (24%), so 1.19 M compares ran. They stopped after 3.5 of ~7.3 rows
+on average, and only 13 k ended within the limit.
+
+**Approach.** A stronger lower bound, still O(1) per entry. Each bitmap
+gets an `InkGrid`: its black pixels in a 4 × 4 grid of cells set by the
+row and column offsets from the centre (bands < -2, -2..0, 0..2, ≥ 2),
+the same centres `aligned_hamming` lines up. Aligned pixels share a cell,
+so the sum of per-cell count differences is a lower bound on the distance
+(only missing reference ink counts when the reference box is not inside
+the candidate's). It runs after the ink bound. Any valid lower bound skips
+only entries that could not win, so the choices and bytes do not change.
+Offline rejection of the 1.19 M compares: quadrants 43%, 3 × 3 66%,
+4 × 4 72%. Dictionary grids are built once in `RefineIndex::push`; the
+candidate's grid only when an entry passes the ink bound.
+
+**Numbers.** M1 Max, `encode_jb2_lossless`, page-1 PBM, median of 15, two
+rounds in turn: map atlas 126–130 → **116–118 ms** (−8%); cable 4.3 ms
+both. `encoder_parity_scorecard --repeats 5`: map atlas 132.9 →
+**124.6 ms** (cjb2 350.1), cable 7.7 → 8.0 ms and cookbook 4.8 ms (noise,
+few compares). Output bytes unchanged (`cmp`).
+
+Rejected variants: grid counted pixel by pixel, built eagerly for every
+candidate: 131 ms (slower; `ink_grid` 12% of samples, the page has huge
+map-line components); 5 × 5 grid (bands at ±1, ±3): 135–137 ms.
+
+**Decision.** Kept (4 × 4, counted per byte with edge masks, lazy for the
+candidate).
+
+**Reason.** −8% on dense pages, byte-identical. Tests: `ink_grid` matches
+a per-pixel band count, a one-pixel pair that `aligned_hamming` lines up
+always gets bound 0 (catches a top-down/Jbm row flip), and the bound
+never exceeds the exact distance on random pairs within ±3 px.
+
+
+### IW44_SIZE_PARITY (2026-10-05)
+
+**Issue.** The encoder parity scorecard shows IW44 Photo at 1.025×
+(watchmaker) and 1.040× (goody two-shoes) the bytes of `c44`. The
+question: is there an entropy-coding gap left to close?
+
+**Approach.** Encode the same PPM at equal slice counts on both sides.
+The default `c44` schedule is `-slice 74,89,99` (3 chunks, 99 slices;
+checked: the default output is identical to that flag). Ours is 100
+slices in chunks of 10. Scratch tool: our `PageEncoder` Photo profile
+with `Iw44EncodeOptions { total_slices: 99 }`, against `c44 -slice
+74,89,99`; both decoded by `ddjvu`, RGB PSNR against the source.
+
+**Numbers.** 99 slices, bytes / PSNR, c44 vs ours:
+
+| Page | c44 B | c44 dB | ours B | ours dB |
+|------|------:|-------:|-------:|--------:|
+| watchmaker | 665,625 | 45.280 | 663,542 | 45.245 |
+| goody two-shoes | 327,798 | 39.368 | 327,852 | 39.358 |
+| boy | 4,564 | 46.738 | 4,642 | 46.688 |
+| chicken | 12,434 | 46.915 | 12,536 | 46.954 |
+| colorbook p1 | 230,841 | 44.092 | 230,898 | 44.081 |
+| colorbook p61 | 172,275 | 43.713 | 172,366 | 43.687 |
+| carte | 1,471,121 | 33.970 | 1,471,174 | 33.966 |
+| vega | 333,967 | 42.275 | 332,530 | 42.227 |
+| conquete | 544,993 | 51.261 | 544,966 | 51.229 |
+
+Each extra chunk costs ~11 B. The scorecard gap is slice 100: it adds
+2.5–4% bytes and 0.2–0.7 dB. The scorecard now runs `c44` a second time
+with our schedule (`-slice 10,20,…,100`): watchmaker 684,544 B /
+46.00 dB vs ours 682,598 B / 45.96 dB (**0.997×**); goody 340,926 B /
+41.15 dB vs ours 340,872 B / 41.14 dB (**1.000×**).
+
+**Decision.** Diagnostic. Encoder defaults unchanged (100 slices, 10 per
+chunk). The scorecard reports `matched_baseline` (c44 at our schedule)
+and `size_ratio_ours_over_matched` next to the default-`c44` ratio.
+
+**Reason.** At equal slices the sizes and PSNR are at parity, so there is
+no coding gap to chase. The 1.025–1.040× ratio buys higher fidelity than
+default `c44`; dropping to 99 slices would only match `c44`'s quality
+point. Do not reopen "IW44 is 2.5–4% larger than c44" without an
+equal-slice comparison.
+
+
+### IW44_ENCODE_QUIET_BLOCKS (2026-10-05)
+
+**Issue.** IW44 Photo encode of goody two-shoes (2454 × 3192) took 284 ms,
+only 1.3× faster than `c44`. A `sample` profile with the passes kept out
+of line: `block_band_encoding_pass` 25%, `bucket_encoding_pass` 16%,
+`preliminary_flag_computation` 5% — every slice walks every block, and
+most blocks code nothing but "no new coefficient" bits.
+
+**Approach.** Two byte-identical changes in `encode/plane.rs`:
+
+1. `any_unk_reaches`: the "does any UNK coefficient reach its step" scan
+   over a bucket is branch-free over the 16 lanes (steps clamped to `u16`;
+   a step ≥ 0x8000 never belongs to an UNK coefficient), so it
+   vectorises. Used by `any_unk_activates` and `bucket_encoding_pass`.
+2. `skip_quiet_block`: per block, the largest `|v|` in each of bands 1..=9
+   (`band_max`, 18 B per block, built at the first slice). When a block's
+   band is still absent from `recon` (all UNK) and its maximum is below
+   the step, the passes would code only one "no new bucket" bit (16-bucket
+   bands) or one "not new" bit per bucket. The fast path codes exactly
+   those bits. The per-bucket context comes from the parent coefficients
+   `4i..4i+4` in a lower band, which can be active — a first version used
+   context 0 and changed the bytes.
+
+**Numbers.** M1 Max, `PageEncoder` Photo, median of 9:
+
+| Page | before | step 1 | steps 1+2 |
+|------|-------:|-------:|----------:|
+| goody two-shoes | 284 ms | 230 ms | **175 ms** |
+| (other colour page, 4267 × 6853) | 1186 ms | — | **606 ms** |
+
+`encoder_parity_scorecard --repeats 5`: goody 311.9 → **189.7 ms**
+(c44 407.9), watchmaker 252.4 → **219.3 ms** (c44 522.5). Output
+identical (`cmp`) on 8 colour pages. Remaining profile: forward wavelet
+transform 28%, ZP coder 27%, colour conversion 11%.
+
+**Decision.** Kept.
+
+**Reason.** −38% on goody, −49% on the large page, byte-identical. Test
+`quiet_block_skip_matches_the_full_passes` compares the bytes with a
+test-only switch that forces the full passes; it fails on the context-0
+version.
+
+### IW44_FWD_WAVELET_NEON (2026-10-05)
+
+**Issue.** After IW44_ENCODE_QUIET_BLOCKS the forward wavelet transform
+was 28% of the IW44 Photo encode. Per-scale timing on goody two-shoes
+(3 planes): row pass s=1 38.0 ms, s=2 17.6 ms; column pass s=1 14.2 ms,
+s=2 8.1 ms. The s=1 row pass was already NEON, yet the slowest.
+
+**Approach.** Three byte-identical changes in `encode/wavelet.rs`:
+
+1. `forward_row_neon_s1_row`, odd pass: carry `pair1` over from the
+   previous chunk's `pair2` instead of reloading it. The reload read
+   across the 16 samples just stored at `chunk * 16 + 2`; the partial
+   overlap defeats store-to-load forwarding and stalled every chunk.
+   Only the lane-0 odd changed since the load, and that lane is unused.
+2. Row pass at s≥2: gather the row's every-`s`-th sample into a dense
+   buffer (`vld2q` at s=2), run the NEON s=1 row there, scatter back.
+3. Column pass at s=2: the s=1 NEON predict/lift helpers take a const
+   `S`; at `S = 2` they load the even lanes with `vld2q` and store with
+   `vst2q`, keeping the odd lanes.
+
+**Numbers.** M1 Max, goody, per-scale time (3 planes):
+
+| Pass | before | after |
+|------|-------:|------:|
+| row s=1 | 38.0 ms | 6.0 ms |
+| row s=2 | 17.6 ms | 2.6 ms |
+| col s=1 | 14.2 ms | 5.5 ms |
+| col s=2 | 8.1 ms | 2.4 ms |
+
+`PageEncoder` Photo, median of 9: goody 170.9 → **144.0 ms** (−16%),
+carte 492.2 → **430.7 ms** (−12%), vega 82.3 → **78.4 ms**. Output
+identical (`cmp`) on 8 colour pages.
+
+**Decision.** Kept.
+
+**Reason.** −12…16% on large photo pages, byte-identical. Test
+`forward_transform_matches_portable_reference` compares the full
+transform with the portable passes (columns via a transposed row pass)
+on sizes that hit every tail; it fails when the s=2 store drops the odd
+lanes. The decoder's `row_pass_neon_s1_row` may have the same
+store-forwarding stall — not checked here.
+### IW44_DEC_ROW_STORE_FORWARD (2026-10-05)
+
+**Issue.** IW44_FWD_WAVELET_NEON found a store-to-load forwarding stall
+in the encoder's NEON s=1 row pass. The decoder's `row_pass_neon_s1_row`
+(`crates/djvu-iw44/src/wavelet.rs`) has the same odd (prediction) loop:
+each chunk reloads `pair1` at `chunk * 16`, which partly overlaps the
+16 samples the previous chunk just stored at `chunk * 16 + 2`.
+
+**Approach.** Carry `pair1` over from the previous chunk's `pair2`, as
+in the encoder. Only its lane-0 odd changed since the load, and
+`curr_odds` never uses that lane. The existing NEON-vs-scalar test used
+width 32, which runs no NEON chunk; new test
+`simd_row_pass_matches_scalar_on_wide_rows` covers widths 47…201.
+
+**Numbers.** M1 Max, `cargo bench --bench codecs`, criterion, measured
+in both orders (new vs old baseline, then old vs new baseline):
+
+| Bench | old | new | change |
+|-------|----:|----:|-------:|
+| iw44_to_rgb_large_page | 8.72 ms | 6.81 ms | −20…22% |
+| iw44_to_rgb_colorbook/sub1_full_decode | 6.28 ms | 5.06 ms | −19…24% |
+| iw44_gray_decode_large/gray_direct | 2.72 ms | 2.38 ms | −12…19% |
+| iw44_to_rgb_colorbook/sub2_partial_decode | 1.60 ms | 1.28 ms | −20% |
+| iw44_decode_large_all_chunks (no wavelet) | — | 26.6 ms | −3% |
+
+**Decision.** Kept.
+
+**Reason.** −20% on full-page IW44 reconstruction, both bench orders
+agree. The new test fails when `pair1` is reloaded stale.
+
+### IW44_DEC_ROW_GATHER_S2 (2026-10-06)
+
+**Issue.** After IW44_DEC_ROW_STORE_FORWARD, an audit of every NEON
+load/store site (`crates/djvu-iw44/src/{color,plane,wavelet}.rs`,
+`encode/wavelet.rs`) for the same partial store/load overlap found no
+other case: `color.rs` stores to a separate output, `plane.rs` stores
+once per call, and the s≥2 decoder paths store and reload the same
+32-byte span (an exact overlap, which forwards). The audit did note that
+the decoder's row pass at s≥2 uses the 8-rows-at-a-time path with scalar
+per-sample gathers (`load_rows8` / `store_rows8`).
+
+**Approach.** As in the encoder (IW44_FWD_WAVELET_NEON): gather each
+active row's every-`s`-th sample into a dense buffer (`vld2q` at s=2),
+run the NEON s=1 row (`row_pass_neon_s1_row`), scatter back.
+
+**Numbers.** M1 Max, `cargo bench --bench codecs`, criterion, both
+orders (new vs old baseline, then old vs new baseline):
+
+| Bench | new vs old | old vs new |
+|-------|-----------:|-----------:|
+| iw44_to_rgb_large_page | +5.4% | −3.3% (old faster) |
+| iw44_gray_decode_large/gray_direct | +5.3% | −5.8% (old faster) |
+| iw44_to_rgb_colorbook/sub1_full_decode | −3.5% | −3.5% (contradicts) |
+| gray_direct_sub4 | −4.1% | −3.3% (contradicts) |
+
+**Decision.** Rejected.
+
+**Reason.** Large-page decode is 3–5% slower in both orders; the rest is
+noise. The 8-row path already amortises its gathers over 8 rows and keeps
+all state in registers, while gather + NEON row + scatter touches each
+row three times. Unlike the encoder, which had a scalar strided loop at
+s≥2, the decoder has no slow s≥2 path to replace.
+
+### ZP_ENCODE_BATCH_EMIT (2026-10-06)
+
+**Issue.** After IW44_FWD_WAVELET_NEON a `sample` profile of the IW44
+Photo encode of goody two-shoes (2454 × 3192, 143 ms) put the ZP encoder
+first: `ZpEncoder::encode_bit` 18% and `zemit` 15% self time, ahead of
+the slice passes (27%) and the forward wavelet (15%). `zemit` is
+DjVuLibre's scheme: each emitted bit goes through a 24-bit buffer and a
+Witten–Neal–Cleary follow-bit counter (`nrun`), then `outbit` checks a
+25-bit start delay and packs it. An LPS shifts up to 16 times, one
+`zemit` per shift.
+
+**Approach.** Byte-identical rewrite of the emit side of
+`crates/djvu-zp/src/encoder.rs`. The bytes the old scheme writes are the
+plain binary value of the emitted bits `b = 1 - (subend >> 15)`, borrows
+applied, without the 24-bit `0xFFFFFF` start value and without the
+all-ones tail `finish` flushes. So:
+
+1. A shift of `k` bits adds `2^k - 1 - (subend >> (16 - k))` to a u64
+   accumulator in one step; an LPS finds `k` with one `leading_zeros`.
+2. `subend >= 0x10000` makes that sum negative: a borrow decrements the
+   bytes already written (cold path).
+3. Whole bytes leave from the top once 40 bits are held; the first three
+   (the start value) are dropped.
+4. `finish` emits the rounded `subend` bit, then drops the trailing ones
+   of the last 24 bits instead of emitting ones until the buffer fills.
+
+**Numbers.** M1 Max, machine under background load (load average 9–40).
+Criterion `--bench codecs`, both orders (new vs old baseline, then old
+vs new baseline):
+
+| Bench | new vs old | old vs new |
+|-------|-----------:|-----------:|
+| bzz_encode | −24% | +35% |
+| iw44_encode_color | −22% | +29% |
+| jb2_encode | −36% | +13% |
+| jb2_encode_multitile | −15% | +9% |
+| jb2_encode_dict | −10% | +10% |
+| iw44_encode_large_1024x1024 | +0.7% (noise) | +1.9% (noise) |
+
+`PageEncoder` Photo, goody, 4 interleaved rounds of 11: median 140 →
+117 ms (−16%). `encoder_parity_scorecard --no-ocr --repeats 5`:
+watchmaker 201.2 → 157.6 ms, goody 161.2 → 141.8 ms, map atlas 125.6 →
+106.1 ms, cable 8.5 → 7.8 ms. Output identical (`cmp`, IW44 and JB2) on
+goody, watchmaker, cable, colorbook, boy; scorecard sizes unchanged.
+
+**Decision.** Kept.
+
+**Reason.** −12…22% on IW44 and JB2 page encodes and −24% on BZZ, both
+bench orders agree, byte-identical. Test
+`batched_emit_matches_per_bit_reference` runs 4000 random streams
+(context bits with skewed probabilities, both passthrough modes, streams
+of 0–20 000 bits) through the old per-bit encoder, kept in the test
+module, and the new one; it fails when the borrow is skipped or when
+`finish` drops too few tail bits.
+
+### IW44_ENC_YCBCR_ROWS (2026-10-06)
+
+**Issue.** A profile of `PageEncoder` Photo on goody (after
+ZP_ENCODE_BATCH_EMIT) put 15% of the samples in `encode_iw44_color`
+itself. Its whole-plane path converted RGB to YCbCr one pixel at a time
+through `Pixmap::get_rgb`, which checks bounds per pixel and computes
+three strided destination indices; the loop did not vectorise. The banded
+path (`fill_color_band`) already walked rows.
+
+**Approach.** One helper, `ycbcr_row`, converts a row of RGBA pixels into
+the Y, Cb and Cr rows (same `rgb_to_ycbcr` integer math, `* 64`). Both the
+whole-plane path and `fill_color_band` call it on row slices. Tried the
+same row walk for the gray path (`encode_iw44_gray`).
+
+**Numbers.** M1 Max, load average 7–9. Criterion `--bench codecs --
+iw44_encode`, both orders:
+
+| Bench | new vs old | old vs new |
+|-------|-----------:|-----------:|
+| iw44_encode_color | −7…−11% | +6…+9% |
+| iw44_encode_large_1024x1024 | −23…−27% | +28% |
+| iw44_encode_gray_1024x1024 (gray row walk) | +18% | −15% |
+
+`PageEncoder` Photo, interleaved rounds of 15: goody 115–118 → 104–107 ms
+(about −10%); watchmaker unchanged (it takes the banded path, which
+already walked rows). Output identical (`cmp`) on goody, watchmaker,
+cable, colorbook, boy.
+
+**Decision.** Kept for colour; the gray row walk reverted.
+
+**Reason.** Colour is faster in both bench orders and byte-identical. The
+gray row walk was slower in both orders for no clear reason; with the gray
+loop back to the original the gray bench reads +3% against the old
+baseline, which is noise (the code is identical).
+
+### IW44_ENC_QUIET_RUN (2026-10-06)
+
+**Issue.** `skip_quiet_block` was 6.4% of the goody profile, and each
+quiet block of a 16-bucket band (bands 7–9) codes the same "no new bucket"
+bit in the same context, `ctx_decode_bucket[0]`.
+
+**Approach.** Split the skip into a pure check (`is_quiet_block`) and the
+coding; count consecutive quiet 16-bucket blocks and code them with one
+`ZpEncoder::encode_run`, flushed before any block that runs the passes and
+at the end of the slice. Byte-identical; the quiet-block test, widened to
+16-block flat runs, failed when the final flush was removed.
+
+**Numbers.** Same harness, 5 alternating rounds of 20, against the
+colour-row version: watchmaker median 136.4 → 140.2 ms (+2.8%), goody
+106.6 → 105.2 ms (−1.3%).
+
+**Decision.** Rejected.
+
+**Reason.** A quiet-block bit is almost always the MPS fast path, a single
+add to `a`, so `encode_run` saves little; the extra run bookkeeping in the
+block loop costs more on watchmaker than it saves on goody. The diff is
+not kept.
+
+### IW44_ENC_NEWLY_ACTIVE_HOIST (2026-10-07)
+
+**Issue.** `newly_active_encoding_pass` was about 27% of the goody
+profile. It re-indexes `self.blocks[block_idx]` and `self.recon[block_idx]`
+for every coefficient and counts the UNK states in a separate loop.
+
+**Approach.** Hoist the block slice, the `recon` block, the bucket state and
+the 16 coefficients out of the inner loop; count UNK states with
+`iter().filter().count()`; pick the step per coefficient instead of a
+mutable `step`. Byte-identical on five pages.
+
+**Numbers.** `PageEncoder` Photo harness, 3 alternating rounds of 7:
+watchmaker (gray) 132–136 → 181–213 ms (+30%); goody (colour) unchanged.
+A profile shows the extra time inside the rewritten pass itself.
+
+**Decision.** Rejected.
+
+**Reason.** The hoisting gives LLVM nothing it lacked on goody and makes
+the gray path much slower, most likely through a worse inlining or
+register-allocation choice in `encode_slice`. Not chased further; the diff
+is not kept.
+
+### IW44_ENC_BIT_INLINE (2026-10-07)
+
+**Issue.** `ZpEncoder::encode_bit` is about 19% of the goody encode profile
+and is never inlined (fat LTO, one codegen unit). Its common case, an MPS
+bit with `a + p < 0x8000`, is a single add, so the call costs more than the
+work. Forcing `#[inline(always)]` on `encode_bit` itself (with the slow
+steps `#[inline(never)]`) helped IW44 and BZZ but made `jb2_encode` 1–3%
+and `jb2_encode_multitile` up to 5.6% slower.
+
+**Approach.** A second entry point, `encode_bit_inline`: the same fast path,
+`#[inline(always)]`, with the LPS and shifting MPS steps behind
+`#[inline(never)]` wrappers. Only the six IW44 coefficient-pass call sites
+use it; `encode_bit` and every JB2 and BZZ caller are unchanged. A
+randomised test checks it gives the same bytes and contexts as
+`encode_bit`; a one-off off-by-one in its fast path fails that test.
+Variant tried first: only the `#[inline(never)]` attributes on the slow
+steps, no forced inline — watchmaker 134 → 140 ms, rejected.
+
+**Numbers.** Criterion, both orders (new vs base / base vs new):
+
+| Benchmark | new vs base | base vs new |
+|---|---|---|
+| iw44_encode_large_1024x1024 | −6.2% | +6.2% |
+| iw44_encode_gray_1024x1024 | −1.7% | +2.5% |
+| iw44_encode_color | −2.0% | +1.5% (p = 0.14) |
+| jb2_encode / jb2_encode_dict | −4.5% / −3.2% | +4.5% / +5.3% |
+| jb2_encode_multitile, bzz_encode | noise | noise |
+
+JB2 source is untouched; its change is code layout. `PageEncoder` Photo
+harness, 2 alternating rounds of 7: goody 104 → 103 ms, watchmaker 134 →
+133 ms. Output byte-identical on goody, watchmaker, cable, colorbook, boy.
+
+**Decision.** Kept.
+
+**Reason.** A consistent IW44 gain in both bench orders, largest on the big
+page, with no JB2 cost — the trade-off that blocked the plain
+`#[inline(always)]` variant.
+
+### BZZ_ENC_BIT_INLINE (2026-10-07)
+
+**Issue.** Follow-up to IW44_ENC_BIT_INLINE. When `#[inline(always)]` was
+tried on `encode_bit` itself, `bzz_encode` gained 5–7%; the new
+`encode_bit_inline` entry point lets BZZ take that gain without JB2.
+
+**Approach.** The 19 `encode_bit` calls in `crates/djvu-bzz/src/encode.rs`
+call `encode_bit_inline` instead. `encode_bit_inline` is pinned to
+`encode_bit` by a randomised test, so the bytes cannot change.
+
+**Numbers.** The machine was loaded (load average up to 35), so the usual
+`--save-baseline` A/B was noisy (one base-vs-new run showed untouched JB2
++34%). Two prebuilt bench binaries, run alternately, 4 rounds of
+`bzz_encode`: base 99.8 / 98.7 / 99.0 / 102.4 µs, new 98.3 / 95.6 / 94.2 /
+92.7 µs — new faster in every round, mean 100.0 → 95.2 µs (−4.8%).
+
+**Decision.** Kept.
+
+**Reason.** Same mechanism as the IW44 change, a consistent gain in every
+alternating round, and no effect on other codecs.
+
+### IW44_ENC_SCATTER_NEON (2026-10-07)
+
+**Issue.** `scatter_strip` copies each 32x32 block of the wavelet plane
+into zigzag order. It was about 6% of the goody encode profile: one table
+load, one source load and one scattered store per coefficient.
+
+**Approach.** The zigzag index interleaves the coordinate bits low to
+high, `i = r0 c0 r1 c1 r2 c2 | r3 c3 r4 c4`. The top six bits name one of
+64 runs of 16 consecutive coefficients by the low three bits of row and
+column; the bottom four bits place an entry in its run by the high two
+bits, a 4x4 grid of pixels 8 apart. So for a fixed low row and `r3`,
+eight 8-lane row loads (rows `rl + 8 r3 + 16 r4`, column chunks
+`c3 + 2 c4`) hold in lane `cl` the eight entries of run `(rl, cl)` at
+places `r3 c3 r4 c4`. One 8x8 `i16` transpose (`trn1/trn2` at 16, 32 and
+64 bits) turns them into eight 16-byte stores. A block is 16 loads + 16
+transposes + 128 stores instead of 1 024 scalar triples. AArch64 only;
+the scalar loop stays for other targets and as the test reference.
+
+A randomised test compares the NEON and scalar results on 1, 2 and 5
+block columns; storing a half-run at the wrong offset fails it.
+
+**Numbers.** The machine was heavily loaded (load average 20–96; a
+concurrent `make check` from a pre-push hook ran during the first
+Criterion order, which then showed a bogus −50%). The clean
+base-vs-new order: `iw44_encode_large_1024x1024` +10.5%,
+`iw44_encode_gray_1024x1024` +8.7%, `iw44_encode_color` +5.7% for the
+base. Two prebuilt bench binaries run alternately, 3 rounds, means:
+
+| Benchmark | base | new | Change |
+|---|---|---|---|
+| iw44_encode_large_1024x1024 | 5.93 ms | 5.08 ms | −14% |
+| iw44_encode_gray_1024x1024 | 2.51 ms | 2.25 ms | −10% |
+| iw44_encode_color | 0.988 ms | 0.957 ms | −3% |
+
+`PageEncoder` Photo harness, 3 alternating rounds of 7: goody 99.4 →
+93.3 ms (−6%), watchmaker 138 → 135 ms (−2%). Output byte-identical on
+goody, watchmaker, cable, colorbook, boy.
+
+**Decision.** Kept.
+
+**Reason.** A clear gain in every alternating round and in the clean
+Criterion order, exact by construction and by test.

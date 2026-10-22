@@ -33,12 +33,14 @@
 //!
 //! ## Key public abstractions
 //!
-//! - [`LazyDocument`] — seek-based lazy indexing with a concurrent per-page cache
-//! - [`render_progressive_stream`] — streaming progressive render yielding one frame per BG44 chunk
-//! - [`render_tile_async`] / [`render_tile_progressive_stream`] — tile-first
+//! - [`LazyDocument`](crate::djvu_async::LazyDocument) — seek-based lazy indexing with a concurrent per-page cache
+//! - [`LazyIndirectDocument`](crate::djvu_async::LazyIndirectDocument) — lazy indirect `FORM:DJVM`: pages come from an
+//!   [`AsyncComponentResolver`](crate::djvu_async::AsyncComponentResolver) only when requested
+//! - [`render_progressive_stream`](crate::djvu_async::render_progressive_stream) — streaming progressive render yielding one frame per BG44 chunk
+//! - [`render_tile_async`](crate::djvu_async::render_tile_async) / [`render_tile_progressive_stream`](crate::djvu_async::render_tile_progressive_stream) — tile-first
 //!   rendering (#691) off the runtime thread, with quality steps and
 //!   cancellation
-//! - [`load_document_async_streaming`] — head-first async loader exposing per-page byte ranges
+//! - [`load_document_async_streaming`](crate::djvu_async::load_document_async_streaming) — head-first async loader exposing per-page byte ranges
 
 use std::{collections::BTreeMap, ops::Range, sync::Arc};
 
@@ -49,7 +51,10 @@ use tokio::{
 
 use crate::{
     dirm::{DirmComponentKind, DirmPayload},
-    djvu_document::{DjVuDocument, DjVuPage, DocError, SharedDict},
+    djvu_document::{
+        ComponentId, ComponentKind, ComponentResolveError, DjVuDocument, DjVuPage, DocError,
+        SharedDict, assembly::incl_targets,
+    },
     djvu_render::{self, RenderError, RenderOptions},
     djvu_tile::{TileCancelToken, TileError, TileRenderControls},
     error::IffError,
@@ -111,6 +116,10 @@ pub enum AsyncLazyError {
     /// This lazy-loading slice intentionally rejects a document shape.
     #[error("unsupported lazy document shape: {0}")]
     Unsupported(&'static str),
+
+    /// An [`AsyncComponentResolver`] could not return an indirect component.
+    #[error("{0}")]
+    Resolve(#[from] ComponentResolveError),
 }
 
 // ── True lazy async document loader (#233 Phase 3 PR1) ───────────────────────
@@ -138,13 +147,18 @@ struct LazyDirmEntry {
 /// - bundled `FORM:DJVM` pages, including shared `DJVI` dictionaries referenced
 ///   via `INCL`
 ///
+/// An indirect `FORM:DJVM` has its pages in separate files; open it with
+/// [`LazyIndirectDocument`].
+///
 /// WASM `!Send` readers are intentionally left to the next issue slice.
 pub struct LazyDocument<R> {
     reader: Arc<Mutex<R>>,
     pages: Vec<LazyPageIndex>,
     shared: BTreeMap<String, LazyComponentIndex>,
     cache: Vec<OnceCell<Arc<DjVuPage>>>,
-    shared_cache: BTreeMap<String, OnceCell<Arc<SharedDict>>>,
+    /// Shared components by DIRM name; `None` once read when the component
+    /// holds no `Djbz` (for example shared annotations).
+    shared_cache: BTreeMap<String, OnceCell<Option<Arc<SharedDict>>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -173,7 +187,8 @@ where
         }
 
         let form_type = &head[12..16];
-        let (pages, shared) = if form_type == b"DJVU" {
+        // A legacy FORM:BM44/PM44 image file is a one-page document too.
+        let (pages, shared) = if crate::dirm::is_page_form(form_type) {
             (vec![LazyPageIndex { range: 0..file_len }], BTreeMap::new())
         } else if form_type == b"DJVM" {
             index_bundled_djvm(&mut reader).await?
@@ -223,13 +238,11 @@ where
             .get_or_try_init(|| async move {
                 let bytes = self.read_page_bytes(page.range).await?;
                 let form = parse_form(&bytes)?;
-                // A page may INCL several components (shared annotations AND
-                // the symbol dictionary, #624) — take the first include that
-                // resolves to a DJVI actually holding a Djbz, skipping the
-                // rest instead of failing on them.
+                // Same dictionary policy as the sync catalog assembler: the
+                // first INCL target that holds a Djbz is the dictionary (#624).
                 let mut shared_djbz = None;
-                for incl in form.chunks.iter().filter(|c| &c.id == b"INCL") {
-                    if let Ok(dict) = self.shared_djbz(incl.data).await {
+                for name in incl_targets(&form.chunks) {
+                    if let Some(dict) = self.shared_djbz(name).await? {
                         shared_djbz = Some(dict);
                         break;
                     }
@@ -241,28 +254,27 @@ where
             .cloned()
     }
 
-    async fn shared_djbz(&self, incl: &[u8]) -> Result<Arc<SharedDict>, AsyncLazyError> {
-        let name = core::str::from_utf8(incl.trim_ascii_end())
-            .map_err(|_| AsyncLazyError::Unsupported("INCL name is not valid UTF-8"))?;
-        let cell = self
-            .shared_cache
-            .get(name)
-            .ok_or(AsyncLazyError::Unsupported("INCL target is not in DIRM"))?;
+    /// The symbol dictionary of the shared component named `name`, or `None`
+    /// when the name is not in DIRM or the component has no `Djbz`.
+    ///
+    /// A read failure is returned, not cached: a transient I/O error must not
+    /// leave a page cached without its dictionary.
+    async fn shared_djbz(&self, name: &str) -> Result<Option<Arc<SharedDict>>, AsyncLazyError> {
+        let (Some(cell), Some(component)) = (self.shared_cache.get(name), self.shared.get(name))
+        else {
+            return Ok(None);
+        };
         cell.get_or_try_init(|| async move {
-            let component = self
-                .shared
-                .get(name)
-                .ok_or(AsyncLazyError::Unsupported("INCL target is not in DIRM"))?
-                .clone();
-            let bytes = self.read_page_bytes(component.range).await?;
+            let bytes = self.read_page_bytes(component.range.clone()).await?;
             let form = parse_form(&bytes)?;
             if form.form_type != *b"DJVI" {
                 return Err(AsyncLazyError::Unsupported("INCL target is not FORM:DJVI"));
             }
-            let djbz = form.chunks.iter().find(|c| &c.id == b"Djbz").ok_or(
-                AsyncLazyError::Unsupported("DJVI component is missing Djbz"),
-            )?;
-            Ok(Arc::new(SharedDict::new(djbz.data.to_vec())))
+            Ok(form
+                .chunks
+                .iter()
+                .find(|c| &c.id == b"Djbz")
+                .map(|djbz| Arc::new(SharedDict::new(djbz.data.to_vec()))))
         })
         .await
         .cloned()
@@ -309,6 +321,208 @@ where
     LazyDocument::from_async_reader_lazy(reader).await
 }
 
+// ── Lazy indirect DJVM loader (#687) ──────────────────────────────────────────
+
+/// Async resolver contract for the components of an indirect `FORM:DJVM`.
+///
+/// This is the async twin of [`crate::ComponentResolver`]. It receives the
+/// same [`ComponentId`]: the DIRM name and its kind. A
+/// [`LazyIndirectDocument`] calls it at most once per component: for a page
+/// when that page is first requested, and for a shared `DJVI` component when a
+/// requested page first includes it.
+///
+/// A closure `Fn(ComponentId) -> impl Future<Output = Result<Vec<u8>,
+/// ComponentResolveError>>` implements this trait.
+pub trait AsyncComponentResolver {
+    /// Return the complete IFF bytes of one external component.
+    fn resolve(
+        &self,
+        component: &ComponentId,
+    ) -> impl Future<Output = Result<Vec<u8>, ComponentResolveError>>;
+}
+
+impl<F, Fut> AsyncComponentResolver for F
+where
+    F: Fn(ComponentId) -> Fut,
+    Fut: Future<Output = Result<Vec<u8>, ComponentResolveError>>,
+{
+    fn resolve(
+        &self,
+        component: &ComponentId,
+    ) -> impl Future<Output = Result<Vec<u8>, ComponentResolveError>> {
+        self(component.clone())
+    }
+}
+
+/// Lazy async view of an indirect `FORM:DJVM` document.
+///
+/// An indirect document keeps each page in its own file; the index file holds
+/// only the directory. [`LazyIndirectDocument::from_index`] reads the
+/// directory, and [`LazyIndirectDocument::page_async`] fetches a page through
+/// the [`AsyncComponentResolver`] only when it is requested. Shared `DJVI`
+/// symbol dictionaries are fetched once, on first use, and shared by every
+/// page that includes them. Parsed pages are cached as `Arc<DjVuPage>`.
+///
+/// ```no_run
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// use djvu_rs::djvu_async::LazyIndirectDocument;
+/// use djvu_rs::{ComponentId, ComponentResolveError};
+///
+/// let index = tokio::fs::read("book/index.djvu").await?;
+/// let doc = LazyIndirectDocument::from_index(&index, |component: ComponentId| async move {
+///     tokio::fs::read(format!("book/{}", component.name))
+///         .await
+///         .map_err(|_| ComponentResolveError::Missing { component })
+/// })?;
+/// let first = doc.page_async(0).await?; // reads book/index.djvu and one page file
+/// println!("{}×{}", first.width(), first.height());
+/// # Ok(()) }
+/// ```
+pub struct LazyIndirectDocument<Res> {
+    resolver: Res,
+    pages: Vec<ComponentId>,
+    cache: Vec<OnceCell<Arc<DjVuPage>>>,
+    /// Shared components by DIRM name; `None` once resolved when the
+    /// component holds no `Djbz` (for example shared annotations).
+    shared: BTreeMap<String, OnceCell<Option<Arc<SharedDict>>>>,
+}
+
+impl<Res> LazyIndirectDocument<Res>
+where
+    Res: AsyncComponentResolver,
+{
+    /// Index an indirect `FORM:DJVM` from its index file bytes.
+    ///
+    /// No component is resolved here. A bundled `FORM:DJVM` or a single-page
+    /// file returns [`AsyncLazyError::Unsupported`]; open those with
+    /// [`from_async_reader_lazy`].
+    pub fn from_index(index: &[u8], resolver: Res) -> Result<Self, AsyncLazyError> {
+        let form = parse_form(index)?;
+        if form.form_type != *b"DJVM" {
+            return Err(AsyncLazyError::Unsupported(
+                "not a FORM:DJVM index: use from_async_reader_lazy",
+            ));
+        }
+        let dirm = form
+            .chunks
+            .iter()
+            .find(|c| &c.id == b"DIRM")
+            .ok_or(DocError::MissingChunk("DIRM"))?;
+        let payload = DirmPayload::decode(dirm.data).map_err(AsyncLazyError::Unsupported)?;
+        if payload.is_bundled() {
+            return Err(AsyncLazyError::Unsupported(
+                "bundled FORM:DJVM: use from_async_reader_lazy",
+            ));
+        }
+
+        let mut pages = Vec::new();
+        let mut shared = BTreeMap::new();
+        for component in payload.components() {
+            match component.kind {
+                DirmComponentKind::Page => {
+                    pages.push(ComponentId::new(component.id, ComponentKind::Page));
+                }
+                DirmComponentKind::Shared | DirmComponentKind::SharedAnno => {
+                    shared.insert(component.id, OnceCell::new());
+                }
+                DirmComponentKind::Thumbnail => {}
+            }
+        }
+        if pages.is_empty() {
+            return Err(AsyncLazyError::Unsupported(
+                "document has no lazy-loadable pages",
+            ));
+        }
+
+        let cache = (0..pages.len()).map(|_| OnceCell::new()).collect();
+        Ok(Self {
+            resolver,
+            pages,
+            cache,
+            shared,
+        })
+    }
+
+    /// Number of pages.
+    pub fn page_count(&self) -> usize {
+        self.pages.len()
+    }
+
+    /// The DIRM identity of page `index`: the name passed to the resolver.
+    pub fn page_component(&self, index: usize) -> Option<&ComponentId> {
+        self.pages.get(index)
+    }
+
+    /// Resolve, parse, cache, and return page `index`.
+    ///
+    /// A resolver failure returns [`AsyncLazyError::Resolve`] and is not
+    /// cached: the next call asks the resolver again.
+    pub async fn page_async(&self, index: usize) -> Result<Arc<DjVuPage>, AsyncLazyError> {
+        let component = self
+            .pages
+            .get(index)
+            .ok_or(AsyncLazyError::PageOutOfRange {
+                index,
+                count: self.pages.len(),
+            })?;
+
+        self.cache[index]
+            .get_or_try_init(|| async move {
+                let bytes = self.resolver.resolve(component).await?;
+                let form = parse_form(&bytes)?;
+                if !crate::dirm::is_page_form(&form.form_type) {
+                    return Err(DocError::ComponentKindMismatch {
+                        component: component.clone(),
+                        found: form.form_type,
+                        expected: ComponentKind::Page,
+                    }
+                    .into());
+                }
+                // Same dictionary policy as the sync catalog assembler: the
+                // first INCL target that holds a Djbz is the dictionary (#624).
+                let mut shared_djbz = None;
+                for name in incl_targets(&form.chunks) {
+                    if let Some(dict) = self.shared_djbz(name).await? {
+                        shared_djbz = Some(dict);
+                        break;
+                    }
+                }
+                let page = DjVuDocument::parse_single_page_with_shared(&bytes, index, shared_djbz)?;
+                Ok(Arc::new(page))
+            })
+            .await
+            .cloned()
+    }
+
+    /// The symbol dictionary of the shared component an `INCL` names, or
+    /// `None` when the name is not in DIRM or the component has no `Djbz`.
+    async fn shared_djbz(&self, name: &str) -> Result<Option<Arc<SharedDict>>, AsyncLazyError> {
+        let Some(cell) = self.shared.get(name) else {
+            return Ok(None);
+        };
+        cell.get_or_try_init(|| async move {
+            let component = ComponentId::new(name, ComponentKind::Shared);
+            let bytes = self.resolver.resolve(&component).await?;
+            let form = parse_form(&bytes)?;
+            if form.form_type != *b"DJVI" {
+                return Err(DocError::ComponentKindMismatch {
+                    component,
+                    found: form.form_type,
+                    expected: ComponentKind::Shared,
+                }
+                .into());
+            }
+            Ok(form
+                .chunks
+                .iter()
+                .find(|c| &c.id == b"Djbz")
+                .map(|djbz| Arc::new(SharedDict::new(djbz.data.to_vec()))))
+        })
+        .await
+        .cloned()
+    }
+}
+
 async fn index_bundled_djvm<R>(
     reader: &mut R,
 ) -> Result<(Vec<LazyPageIndex>, BTreeMap<String, LazyComponentIndex>), AsyncLazyError>
@@ -348,7 +562,7 @@ where
         };
         match entry.comp_type {
             DirmComponentKind::Page => pages.push(LazyPageIndex { range }),
-            DirmComponentKind::Shared => {
+            DirmComponentKind::Shared | DirmComponentKind::SharedAnno => {
                 shared.insert(entry.id, LazyComponentIndex { range });
             }
             DirmComponentKind::Thumbnail => {}
@@ -361,7 +575,7 @@ fn parse_lazy_dirm(data: &[u8]) -> Result<Vec<LazyDirmEntry>, AsyncLazyError> {
     let payload = DirmPayload::decode(data).map_err(AsyncLazyError::Unsupported)?;
     if !payload.is_bundled() {
         return Err(AsyncLazyError::Unsupported(
-            "indirect DJVM lazy loading is not implemented yet",
+            "indirect DJVM: use LazyIndirectDocument::from_index with a component resolver",
         ));
     }
 
@@ -458,7 +672,10 @@ where
 ///
 /// Yields one frame per BG44 wavelet refinement chunk: the first frame is the
 /// coarsest (fastest to produce), and each subsequent frame adds detail. The
-/// final frame is equivalent to [`render_pixmap`][djvu_render::render_pixmap].
+/// final frame equals [`render_pixmap`][djvu_render::render_pixmap], except at
+/// scales of about a quarter of the native size and below, where
+/// `render_pixmap` stops at the first background chunk (see
+/// [`render_progressive`][djvu_render::render_progressive]).
 ///
 /// If the page has no BG44 chunks (bilevel JB2-only pages), exactly one frame
 /// is yielded via [`render_pixmap`][djvu_render::render_pixmap].
@@ -504,7 +721,10 @@ pub fn render_progressive_stream(
             let page = Arc::clone(&page);
             let opts = opts.clone();
             let result = tokio::task::spawn_blocking(move || {
-                djvu_render::render_progressive_step(&page, &opts, step)
+                djvu_render::RenderRequest::new(opts)
+                    .quality(djvu_render::Quality::Step(step))
+                    .operation("render_progressive")
+                    .pixmap(&page)
                     .map_err(AsyncRenderError::Render)
             })
             .await
@@ -1013,8 +1233,10 @@ mod tests {
         use crate::iff::{self as iff_mod, Chunk, EmitPart};
 
         // Build a bundled DIRM with 1 Shared entry (flag=0x00 = Shared)
-        let dirm_payload =
-            DirmPayload::build_bundled(1, &[0x00], &["shared.djvi".to_string()], &[]);
+        let dirm_payload = DirmPayload::build_bundled(&[crate::dirm::DirmComponent::new(
+            crate::dirm::DirmComponentKind::Shared,
+            "shared.djvi",
+        )]);
         let dirm = Chunk::Leaf {
             id: *b"DIRM",
             data: dirm_payload.encode(),
@@ -1215,14 +1437,238 @@ mod tests {
         );
     }
 
+    // ── LazyIndirectDocument (#687) ──────────────────────────────────────────
+
+    type ComponentFiles = Arc<BTreeMap<String, Vec<u8>>>;
+    type CallLog = Arc<std::sync::Mutex<Vec<String>>>;
+
+    /// An in-memory indirect document: index bytes, component files, and an
+    /// empty log for the resolver calls.
+    fn indirect_fixture(bundled: &[u8]) -> (Vec<u8>, ComponentFiles, CallLog) {
+        let split = crate::djvm::to_indirect(bundled).expect("to_indirect");
+        let files: BTreeMap<String, Vec<u8>> = split.components.into_iter().collect();
+        (split.index, Arc::new(files), CallLog::default())
+    }
+
+    fn logging_resolver(
+        files: ComponentFiles,
+        log: CallLog,
+    ) -> impl Fn(
+        ComponentId,
+    )
+        -> std::future::Ready<Result<Vec<u8>, crate::djvu_document::ComponentResolveError>>
+    + Send
+    + Sync {
+        move |component: ComponentId| {
+            log.lock().unwrap().push(component.name.clone());
+            std::future::ready(
+                files
+                    .get(&component.name)
+                    .cloned()
+                    .ok_or(ComponentResolveError::Missing { component }),
+            )
+        }
+    }
+
+    fn two_page_shared_dict_bundle() -> (Vec<u8>, crate::bitmap::Bitmap) {
+        let mut p = crate::bitmap::Bitmap::new(32, 12);
+        for y in 2..10 {
+            for x in 3..9 {
+                p.set(x, y, true);
+            }
+        }
+        for y in 3..9 {
+            for x in 16..22 {
+                p.set(x, y, true);
+            }
+        }
+        let bytes = crate::jb2_encode::encode_djvm_bundle_jb2(
+            &[p.clone(), p.clone()],
+            2,
+            crate::jb2_encode::BUNDLE_DEFAULT_DPI,
+        );
+        (bytes, p)
+    }
+
+    /// Pages come from the resolver on demand; the shared dictionary is
+    /// resolved once and serves both pages.
+    #[tokio::test]
+    async fn lazy_indirect_resolves_pages_and_shared_dict_on_demand() {
+        let (bundled, bitmap) = two_page_shared_dict_bundle();
+        let (index, files, log) = indirect_fixture(&bundled);
+        let doc = LazyIndirectDocument::from_index(&index, logging_resolver(files, log.clone()))
+            .expect("index");
+        assert_eq!(doc.page_count(), 2);
+        assert!(
+            log.lock().unwrap().is_empty(),
+            "from_index resolves nothing"
+        );
+
+        let first = doc.page_async(0).await.expect("page 0");
+        assert!(first.raw_chunk(b"INCL").is_some());
+        assert_eq!(first.extract_mask().unwrap().unwrap(), bitmap);
+        let after_first = log.lock().unwrap().clone();
+        assert_eq!(
+            after_first.len(),
+            2,
+            "page 0 plus its dictionary: {after_first:?}"
+        );
+        assert_eq!(after_first[0], doc.page_component(0).unwrap().name);
+
+        let second = doc.page_async(1).await.expect("page 1");
+        assert_eq!(second.extract_mask().unwrap().unwrap(), bitmap);
+        let again = doc.page_async(1).await.expect("page 1 cached");
+        assert!(Arc::ptr_eq(&second, &again));
+        let calls = log.lock().unwrap().clone();
+        assert_eq!(
+            calls.len(),
+            3,
+            "dictionary and pages resolve once: {calls:?}"
+        );
+    }
+
+    /// A page with several includes (#624) and a document with thumbnails
+    /// match the sync reader.
+    #[tokio::test]
+    async fn lazy_indirect_matches_sync_on_corpus_files() {
+        for (name, page) in [("czech.djvu", 1), ("DjVu3Spec_bundled.djvu", 0)] {
+            let path = assets_path().join(name);
+            let Ok(bundled) = std::fs::read(&path) else {
+                eprintln!("skip: {} missing", path.display());
+                continue;
+            };
+            let sync_doc = DjVuDocument::parse(&bundled).expect("sync parse");
+            let (index, files, log) = indirect_fixture(&bundled);
+            let doc =
+                LazyIndirectDocument::from_index(&index, logging_resolver(files, log.clone()))
+                    .expect("index");
+            assert_eq!(doc.page_count(), sync_doc.page_count(), "{name}");
+
+            let lazy_page = doc.page_async(page).await.expect("lazy page");
+            let sync_page = sync_doc.page(page).expect("sync page");
+            assert_eq!(lazy_page.width(), sync_page.width(), "{name}");
+            assert_eq!(lazy_page.height(), sync_page.height(), "{name}");
+            assert_eq!(
+                lazy_page.extract_mask().expect("lazy mask"),
+                sync_page.extract_mask().expect("sync mask"),
+                "{name}"
+            );
+            assert!(
+                log.lock().unwrap().len() < doc.page_count(),
+                "{name}: one page must not resolve the whole document"
+            );
+        }
+    }
+
+    /// A resolver failure is typed and not cached; the next call retries.
+    #[tokio::test]
+    async fn lazy_indirect_resolver_failure_is_not_cached() {
+        let (bundled, _) = two_page_shared_dict_bundle();
+        let (index, files, _) = indirect_fixture(&bundled);
+        let fail = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let fail_flag = fail.clone();
+        let resolver = move |component: ComponentId| {
+            let result = if fail_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                Err(ComponentResolveError::Missing { component })
+            } else {
+                Ok(files[&component.name].clone())
+            };
+            std::future::ready(result)
+        };
+        let doc = LazyIndirectDocument::from_index(&index, resolver).expect("index");
+
+        let err = doc.page_async(0).await.expect_err("resolver fails");
+        assert!(
+            matches!(
+                err,
+                AsyncLazyError::Resolve(ComponentResolveError::Missing { .. })
+            ),
+            "unexpected error: {err:?}"
+        );
+        fail.store(false, std::sync::atomic::Ordering::SeqCst);
+        doc.page_async(0).await.expect("retry succeeds");
+    }
+
+    /// A page name that resolves to a non-page form is a kind mismatch.
+    #[tokio::test]
+    async fn lazy_indirect_rejects_wrong_component_kind() {
+        let (bundled, _) = two_page_shared_dict_bundle();
+        let (index, files, _) = indirect_fixture(&bundled);
+        let djvi = files
+            .values()
+            .find(|bytes| &bytes[12..16] == b"DJVI")
+            .expect("shared component")
+            .clone();
+        let doc = LazyIndirectDocument::from_index(&index, move |_: ComponentId| {
+            std::future::ready(Ok::<_, ComponentResolveError>(djvi.clone()))
+        })
+        .expect("index");
+        let err = doc.page_async(0).await.expect_err("DJVI is not a page");
+        assert!(
+            matches!(
+                err,
+                AsyncLazyError::Parse(DocError::ComponentKindMismatch {
+                    expected: ComponentKind::Page,
+                    ..
+                })
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    /// `from_index` accepts only an indirect index; the error names the
+    /// loader that fits.
+    #[test]
+    fn lazy_indirect_rejects_bundled_and_single_page_input() {
+        let never = |c: ComponentId| {
+            std::future::ready(Err::<Vec<u8>, _>(ComponentResolveError::Missing {
+                component: c,
+            }))
+        };
+        let (bundled, _) = two_page_shared_dict_bundle();
+        let single = std::fs::read(assets_path().join("chicken.djvu")).expect("read");
+        for bytes in [bundled, single] {
+            let err = LazyIndirectDocument::from_index(&bytes, never)
+                .err()
+                .expect("not an indirect index");
+            assert!(
+                matches!(err, AsyncLazyError::Unsupported(msg) if msg.contains("from_async_reader_lazy")),
+                "unexpected error: {err:?}"
+            );
+        }
+    }
+
+    /// With a `Send + Sync` resolver, `page_async` runs on a spawned task.
+    #[tokio::test]
+    async fn lazy_indirect_page_future_is_send() {
+        let (bundled, bitmap) = two_page_shared_dict_bundle();
+        let (index, files, log) = indirect_fixture(&bundled);
+        let doc = Arc::new(
+            LazyIndirectDocument::from_index(&index, logging_resolver(files, log)).expect("index"),
+        );
+        let tasks: Vec<_> = (0..2)
+            .map(|i| {
+                let doc = doc.clone();
+                tokio::spawn(async move { doc.page_async(i).await.map(|p| p.extract_mask()) })
+            })
+            .collect();
+        for task in tasks {
+            let mask = task.await.expect("join").expect("page").expect("mask");
+            assert_eq!(mask, Some(bitmap.clone()));
+        }
+    }
+
     #[tokio::test]
     async fn lazy_djvm_with_only_shared_components_returns_unsupported() {
         // Build a DJVM where DIRM has 1 Shared component (no Pages).
         // After index_bundled_djvm returns empty pages, lines 164-165 fire.
         use crate::dirm::DirmPayload;
         use crate::iff::{self as iff_djvm, Chunk as IffChunk, EmitPart as IffEmitPart};
-        let dirm_payload =
-            DirmPayload::build_bundled(1, &[0u8], &["shared".to_string()], &[]).encode();
+        let dirm_payload = DirmPayload::build_bundled(&[crate::dirm::DirmComponent::new(
+            crate::dirm::DirmComponentKind::Shared,
+            "shared",
+        )])
+        .encode();
         let dirm_chunk = IffChunk::Leaf {
             id: *b"DIRM",
             data: dirm_payload,

@@ -72,6 +72,25 @@ pub fn open<R: Read + Seek>(mut reader: R) -> ZipResult<ZipArchive<R>> {
     ZipArchive::new(reader)
 }
 
+/// [`open`] for an archive that starts at byte 0, with nothing prepended. zip 9.0.5's
+/// `ZipArchive::new` scans the whole file for the first central-directory header, so a big
+/// file read through a byte budget fails; this reads the directory where the end-of-central-
+/// directory record says it is, one seek. Fails for prepended data (self-extractors), so
+/// callers fall back to [`open`].
+pub fn open_unprefixed<R: Read + Seek>(mut reader: R) -> ZipResult<ZipArchive<R>> {
+    if zip64_declares_over_ceiling(&mut reader) {
+        return Err(ZipError::UnsupportedArchive(
+            "declared central directory entry count exceeds SageThumbs limit",
+        ));
+    }
+    ZipArchive::with_config(
+        zip::read::Config {
+            archive_offset: zip::read::ArchiveOffset::Known(0),
+        },
+        reader,
+    )
+}
+
 /// Whether ANY end-of-central-directory candidate in the tail window resolves to a
 /// ZIP64 record declaring more than [`MAX_ZIP_DECLARED_ENTRIES`].
 ///

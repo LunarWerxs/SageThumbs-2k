@@ -1,7 +1,8 @@
-//! Roll-call tests keeping README.md in sync with the code.
+//! Roll-call tests keeping README.md and docs/cli.md in sync with the code.
 //!
-//! Two drift classes are covered here; a third (README code examples vs the
-//! public API) is covered by the `ReadmeDoctests` include in `src/lib.rs`.
+//! Two drift classes are covered here; a third (README / docs/guide.md code
+//! examples vs the public API) is covered by the `ReadmeDoctests` and
+//! `GuideDoctests` includes in `src/lib.rs`.
 //! Rationale: five stale claims accumulated silently before these gates
 //! existed (OCR injection, indirect mutation, PNG-only encode, shared-dict
 //! scope, a nonexistent `from_mmap`).
@@ -11,6 +12,7 @@
 use assert_cmd::Command;
 
 const README: &str = include_str!("../README.md");
+const CLI_DOC: &str = include_str!("../docs/cli.md");
 const MANIFEST: &str = include_str!("../Cargo.toml");
 
 /// Long flags that clap adds to every command; not documentation targets.
@@ -79,24 +81,24 @@ fn long_flags(help: &str) -> Vec<String> {
     flags
 }
 
-/// README must show every CLI subcommand as an invocable `djvu <sub>` line and
-/// mention every long flag of every subcommand.
+/// The CLI reference must show every CLI subcommand as an invocable
+/// `djvu <sub>` line and mention every long flag of every subcommand.
 #[test]
-fn readme_mentions_every_cli_subcommand_and_flag() {
+fn cli_reference_mentions_every_subcommand_and_flag() {
     let mut missing = Vec::new();
     for sub in subcommands() {
-        if !README.contains(&format!("djvu {sub}")) {
+        if !CLI_DOC.contains(&format!("djvu {sub}")) {
             missing.push(format!("subcommand `djvu {sub}`"));
         }
         for flag in long_flags(&help_output(&[&sub, "--help"])) {
-            if !README.contains(&flag) {
+            if !CLI_DOC.contains(&flag) {
                 missing.push(format!("flag `{flag}` (djvu {sub})"));
             }
         }
     }
     assert!(
         missing.is_empty(),
-        "README.md does not mention:\n  {}",
+        "docs/cli.md does not mention:\n  {}",
         missing.join("\n  ")
     );
 }

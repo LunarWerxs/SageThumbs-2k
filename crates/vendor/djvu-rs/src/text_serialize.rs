@@ -111,7 +111,11 @@ pub fn to_hocr(doc: &DjVuDocument, opts: &HocrOptions) -> Result<String, TextSer
     for page_idx in crate::export_common::page_indices(doc, opts.page_index) {
         let page = doc.page(page_idx)?;
         let (out_w, out_h) = match opts.dpi {
-            Some(target_dpi) => crate::export_common::size_at_dpi(page, target_dpi as f32),
+            // `text_layer_at_size` rotates zones into display space, so the
+            // page box is the display (rotated) size too.
+            Some(target_dpi) => {
+                crate::render_size::RenderSize::at_dpi(page, target_dpi as f32).display
+            }
             None => (page.width() as u32, page.height() as u32),
         };
 
@@ -178,7 +182,11 @@ pub fn to_alto(doc: &DjVuDocument, opts: &AltoOptions) -> Result<String, TextSer
     for page_idx in crate::export_common::page_indices(doc, opts.page_index) {
         let page = doc.page(page_idx)?;
         let (out_w, out_h) = match opts.dpi {
-            Some(target_dpi) => crate::export_common::size_at_dpi(page, target_dpi as f32),
+            // `text_layer_at_size` rotates zones into display space, so the
+            // page box is the display (rotated) size too.
+            Some(target_dpi) => {
+                crate::render_size::RenderSize::at_dpi(page, target_dpi as f32).display
+            }
             None => (page.width() as u32, page.height() as u32),
         };
 

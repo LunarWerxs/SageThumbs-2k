@@ -51,6 +51,8 @@ examples/wasm/pkg/
 /semantic_results.jsonl
 /writer_results.txt
 /writer_status.txt
+/writer_conformance_commands.sh
+/writer_conformance_results.txt
 /previous_history.json
 
 # Local packaging smoke outputs (#692)

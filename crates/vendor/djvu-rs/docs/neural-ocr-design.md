@@ -45,6 +45,10 @@ operator additions — nothing touching Conv/BatchNorm/GlobalAveragePool — so
 **Slice 2 therefore starts with a spike test**: load both mobile models under
 tract-onnx 0.22 and run one fixture page end-to-end before any API is built.
 
+*Update 2026-10-02:* the crate moved to tract-onnx 0.23 to drop the
+unmaintained `anymap2` (RUSTSEC-2026-0319). `ocr-onnx` alone now needs
+Rust 1.91; the model-gated tests pass unchanged under 0.23.
+
 The one documented model-specific pitfall (found and solved by Kreuzberg):
 DBNet's backbone contains squeeze-and-excitation blocks with
 `GlobalAveragePool`, which pools over the *whole* input canvas — padding

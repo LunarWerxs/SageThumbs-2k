@@ -7,7 +7,7 @@ document. The default writer policy remains unchanged.
 |---|---|---|
 | Bilevel mask | `PageEncoder` emits JB2 `Sjbz` by default | not rewritten by the page encoder |
 | G4/MMR mask | `PageEncoder::with_bilevel_codec(BilevelCodec::Smmr)` emits a regular DjVuLibre-compatible `Smmr`; the CLI exposes the same choice with `--bilevel-codec smmr` for single-image input | not rewritten by the page encoder |
-| Metadata | `PageEncoder::with_metadata` emits BZZ-compressed `METz`; empty metadata is omitted | `DjVuDocumentMut::page_mut(...).set_metadata` replaces or removes `METa`/`METz` while preserving other chunks |
+| Metadata | `PageEncoder::with_metadata` emits a `(metadata …)` block in a BZZ-compressed `ANTz`, where DjVuLibre reads it; empty metadata is omitted | `PageMut::set_metadata` writes the page `ANTz`; `DjVuDocumentMut::set_metadata` writes the shared annotation component of a bundled file (added on first use, as `djvused set-meta` does). Other annotations are kept; old `METa`/`METz` are removed |
 | JPEG layers | not emitted; `BGjp` / `FGjp` remain decode-only | preserved as unknown or untouched chunks by the mutation model |
 
 The Smmr option is explicit because it is an interoperability profile rather

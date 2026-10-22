@@ -29,7 +29,7 @@ mod epub_tests {
         let mut files = HashMap::new();
         for i in 0..zip.len() {
             let mut entry = zip.by_index(i).unwrap();
-            let name = entry.name().to_owned();
+            let name = entry.name().unwrap().into_owned();
             let mut buf = Vec::new();
             entry.read_to_end(&mut buf).unwrap();
             files.insert(name, buf);
@@ -79,7 +79,14 @@ mod epub_tests {
         let epub = djvu_to_epub(&doc, &EpubOptions::default()).unwrap();
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(epub)).unwrap();
         let names: Vec<String> = (0..archive.len())
-            .map(|index| archive.by_index(index).unwrap().name().to_owned())
+            .map(|index| {
+                archive
+                    .by_index(index)
+                    .unwrap()
+                    .name()
+                    .unwrap()
+                    .into_owned()
+            })
             .collect();
 
         let mut expected = vec!["mimetype".to_owned(), "META-INF/container.xml".to_owned()];

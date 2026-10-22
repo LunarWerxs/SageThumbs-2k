@@ -115,15 +115,11 @@ pub(crate) fn text(doc: &DjVuDocument, index: usize) -> Result<Option<String>, F
 /// a few corrupt chunks still yields a best-effort image instead of an error —
 /// the right default for a viewer-facing binding.
 pub(crate) fn render_opts_for_dpi(page: &DjVuPage, target_dpi: f32) -> RenderOptions {
-    let (width, height) = crate::export_common::size_at_dpi(page, target_dpi);
-    // Only the size is set; the pipeline derives the decode scale from `width`
-    // (see `RenderOptions::decode_scale`). `permissive` is the viewer-facing
-    // default; the rest come from `RenderOptions::default()`.
+    // `permissive` is the viewer-facing default; the size (native buffer,
+    // rotated on output) comes from the one sizing module.
     RenderOptions {
-        width,
-        height,
         permissive: true,
-        ..RenderOptions::default()
+        ..crate::render_size::RenderSize::at_dpi(page, target_dpi).options()
     }
 }
 

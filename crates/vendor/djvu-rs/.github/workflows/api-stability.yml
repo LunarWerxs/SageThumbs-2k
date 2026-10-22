@@ -24,8 +24,13 @@ env:
 
 jobs:
   # ── Public API breakage detection (AC2) ──────────────────────────────────────
-  # Compares the PR against the latest version published on crates.io. For a
-  # 0.x crate, cargo-semver-checks treats a MINOR bump as the breaking axis, so
+  # Compares each change against the code it applies to: a PR against its base
+  # commit, a push to main against the previous tip. Comparing against the
+  # latest crates.io release instead (the behaviour until #847) re-reported a
+  # break that an earlier PR had already declared: after #843 merged, every
+  # following PR and push to main failed until the next release. A manual run
+  # (workflow_dispatch) has no parent and still compares against crates.io.
+  # For a 0.x crate, cargo-semver-checks treats a MINOR bump as the breaking axis, so
   # this fails only on an *unintended* break of the stable surface that was not
   # accompanied by the required version bump.
   semver:
@@ -53,6 +58,9 @@ jobs:
     # break and does not trip this.
     steps:
       - uses: actions/checkout@v6
+        with:
+          # --baseline-rev checks out the parent commit from local history.
+          fetch-depth: 0
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -87,6 +95,9 @@ jobs:
           package: djvu-rs
           # Empty = derive from the version number (the action skips the flag).
           release-type: ${{ steps.declared.outputs.release-type }}
+          # The change's parent; empty (workflow_dispatch) = latest crates.io
+          # release, since the action skips an empty flag.
+          baseline-rev: ${{ github.event.pull_request.base.sha || github.event.before }}
 
   # ── Documented feature combinations & targets (AC3) ──────────────────────────
   # The human-readable companion is docs/feature-matrix.md; keep the two in sync.

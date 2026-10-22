@@ -29,7 +29,7 @@
 #   Apache-2.0). Its `inference.yml` config is pinned as a sibling artifact:
 #   it embeds the CTC character dictionary the recognizer decodes against
 #   (`opset = 0` marks it as a non-ONNX artifact).
-# All ONNX graphs are verified to load and run under tract-onnx 0.22 (see the
+# All ONNX graphs are verified to load and run under tract-onnx 0.23 (see the
 # `ocr_onnx::detect` / `ocr_onnx::recognize` tests).
 
 [[model]]

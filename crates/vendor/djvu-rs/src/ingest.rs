@@ -67,7 +67,7 @@ pub enum DepthDownconversion {
     TruncateHighByte,
 }
 
-/// Policy knobs applied while decoding raster inputs into [`Pixmap`].
+/// Policy knobs applied while decoding raster inputs into [`Pixmap`](crate::Pixmap).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct IngestPolicy {
     pub alpha: AlphaCompositing,

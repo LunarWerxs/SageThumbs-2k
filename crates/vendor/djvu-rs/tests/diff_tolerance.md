@@ -84,13 +84,37 @@ compares normalized text, annotation map-area counts, and bookmark trees with
 
 ## Known divergences (excluded from CI gate, tracked separately)
 
-The pinned Ubuntu DjVuLibre 3.5.28 baseline reports `colorbook.djvu` page 0 at
-`0.7488%` mismatch with tolerance 4. The global ceiling is therefore `0.8%`;
-the mean-delta ceiling remains the tighter `0.2` guard. The conformance
-artifact records the exact DjVuLibre package identity so this baseline cannot
-silently drift between tool builds.
+Before #831 the pinned Ubuntu DjVuLibre 3.5.28 baseline reported
+`colorbook.djvu` page 0 at `0.7488%` mismatch with tolerance 4, so the global
+ceiling is `0.8%`; the mean-delta ceiling remains the tighter `0.2` guard. The
+conformance artifact records the exact DjVuLibre package identity so this
+baseline cannot silently drift between tool builds.
 
-Resolved under **#279**:
+Resolved under **#831**: a render at page size now reproduces DjVuLibre's
+`get_bgpixmap` / `stencil` rules exactly instead of approximating them:
+
+* A reduced BG44 (`red = compute_red(page, plane)`, 2..=12) is enlarged with
+  `GPixmapScaler` coordinates (`prepare_coord`, 1/16-pixel steps, first
+  coordinate slightly negative), rows counted **from the bottom**, a
+  vertical pass rounded to 8 bits, then a horizontal pass.
+* FG44 takes the whole cell `(x / red, y_from_bottom / red)` with no
+  interpolation.
+
+The #279 centre alignment was close, but every page whose height is not a
+multiple of `red` was shifted by one or more rows. With the fix, every page of
+all 21 fixtures (360 pages) is bit-exact against local `ddjvu` at tolerance 0,
+and the conformance corpus now covers every page of `colorbook` (62),
+`history` (3), `czech` (85) and `carte` (1). The last two joined under #833,
+after the reader learnt the DIRM shared-annotation type (flag 3, `A` in
+`djvused ls`) and the `(metadata …)` block in it, and the gate learnt that
+`djvused ls` shows all thumbnails as one `T <thumbnails>` row. Measured before the fix at
+tolerance 4: colorbook 53/62 pages over the gate, czech 52/85, history 2/3
+(page 0 at 36.7%), carte 1/1 (1.17%). Regions of a page-size render use the
+same rules; down-scaled and zoomed renders keep the centre-aligned mapping. The digest test
+`native_reduced_bg_fg_matches_ddjvu_digest` in `tests/document_and_render.rs`
+pins the result.
+
+Resolved under **#279** (superseded for page-size renders by #831):
 
 * `colorbook.djvu` page 0 — after centre-aligned BG sampling, integer FG/BG
   colour-cell pitch, and nearest-cell FG44 lookup, the native diff is within the

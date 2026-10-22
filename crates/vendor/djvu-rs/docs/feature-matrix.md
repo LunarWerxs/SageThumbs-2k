@@ -39,7 +39,7 @@ full power-set explosion (which is intractable for ~20 features).
 | `serde` | Serialize/Deserialize for public data types | feature-matrix job, `serde_roundtrip` test |
 | `image` | `image::ImageDecoder` integration | feature-matrix job, `image_decoder` test |
 | `wasm` (wasm32) | wasm-bindgen bindings | `wasm32 build check` |
-| `wasm-lazy` (wasm32) | lazy Range-based browser open | `wasm32 build check` |
+| `wasm-lazy` (wasm32) | lazy browser open: Range-based bundled, per-file indirect | `wasm32 build check` |
 | `wasm` + `+simd128` (wasm32) | simd128 IW44 kernels | `wasm32 build check` |
 | `cli,tiff,async,serde,image,epub` | README doctest union | `README doctests` (required, in `Test (stable)`) |
 | `ocr-tesseract` | supported OCR backend | `OCR (tesseract)` (main-only) |

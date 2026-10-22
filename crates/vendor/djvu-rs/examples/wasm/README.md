@@ -58,6 +58,29 @@ Reproduce the benchmark: `python3 examples/wasm/serve_lazy_bench.py
 --bandwidth-mib 12.5` (throttled Range server), then open
 `http://localhost:8080/bench_lazy_open.html` and press Run.
 
+### Indirect documents
+
+An indirect document keeps each page in its own file, next to an index file.
+`WasmLazyIndirectDocument.open` reads the directory from the index bytes and
+fetches nothing else. Each page request then calls `resolve(name, kind)` once
+for that page file, and once per shared symbol dictionary (`kind === "shared"`)
+that its pages include. Resolve to the file bytes, or to `null` when the file
+does not exist. A failed fetch is not cached: the next request tries again.
+
+```js
+const base = new URL("book/", location.href);
+const index = new Uint8Array(await (await fetch(new URL("index.djvu", base))).arrayBuffer());
+const doc = WasmLazyIndirectDocument.open(index, async (name, kind) => {
+  const r = await fetch(new URL(name, base));
+  return r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
+});
+console.log(doc.page_count(), doc.page_name(0)); // e.g. 12 "00001.djvu"
+const pm = await doc.render_page(0, 150);        // fetches 00001.djvu (+ its dictionary)
+```
+
+`open` rejects a bundled or single-page file; open those with
+`WasmLazyDocument`.
+
 For a hand-rolled reader instead of the binding, `range_lazy.md` shows the
 `AsyncRead + AsyncSeek` integration shape for
 `djvu_rs::djvu_async::from_async_reader_lazy_local`.
@@ -83,8 +106,9 @@ npm pack    # or: npm publish  (requires npm login + PUBLISH_NPM)
 `pkg/simd128/djvu_rs_bg.wasm` is selected at runtime when
 `WebAssembly.validate()` accepts the SIMD probe. TypeScript declarations are
 included (`djvu_rs.d.ts`). Use `OUT=...` to write the generated package
-elsewhere and `FEATURES=wasm-lazy` when publishing the lazy Range-loading
-bindings.
+elsewhere. The default `FEATURES=wasm-lazy` (what the npm package ships)
+includes the lazy Range-loading bindings; `FEATURES=wasm` builds the smaller
+eager-only package.
 
 ## Threaded rendering (`wasm-threads`, opt-in, experimental)
 

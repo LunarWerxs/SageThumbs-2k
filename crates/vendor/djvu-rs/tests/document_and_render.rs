@@ -2,10 +2,14 @@
 //!
 //! Uses both the low-level `DjVuDocument` and the high-level `Document` wrapper.
 
+// This file also tests the deprecated render entry points.
+#![allow(deprecated)]
+
 use djvu_rs::IffError;
 use djvu_rs::djvu_document::{DjVuDocument, DocError};
 use djvu_rs::djvu_render::{
-    RenderOptions, render_coarse, render_gray8, render_pixmap, render_progressive,
+    RenderOptions, RenderRect, render_coarse, render_gray8, render_pixmap, render_progressive,
+    render_region, render_region_tiled,
 };
 use djvu_rs::iff::parse_form;
 
@@ -500,6 +504,42 @@ fn permissive_render_returns_ok_on_truncated_bg44() {
     );
 }
 
+/// Strict and permissive tiled renders share the tile cache. A permissive
+/// render caches tiles for a damaged page; a strict render of the same page
+/// must still fail instead of serving those tiles.
+#[test]
+fn strict_tiled_render_fails_after_permissive_one_on_truncated_bg44() {
+    let corrupted = make_truncated_bg44_djvu();
+    let doc = DjVuDocument::parse(&corrupted).unwrap();
+    let page = doc.page(0).unwrap();
+    let region = RenderRect {
+        x: 0,
+        y: 0,
+        width: 64,
+        height: 64,
+    };
+    let permissive = RenderOptions {
+        width: page.width() as u32,
+        height: page.height() as u32,
+        permissive: true,
+        ..RenderOptions::default()
+    };
+    let tiled = render_region_tiled(page, region, &permissive)
+        .expect("permissive tiled render must recover");
+    assert_eq!(
+        tiled.data,
+        render_region(page, region, &permissive).unwrap().data
+    );
+    let strict = RenderOptions {
+        permissive: false,
+        ..permissive
+    };
+    assert!(
+        render_region_tiled(page, region, &strict).is_err(),
+        "a strict request must not read tiles a permissive one cached"
+    );
+}
+
 /// #696: the permissive render report must name the recovered layer.
 #[test]
 fn permissive_report_records_truncated_bg44_recovery() {
@@ -933,4 +973,58 @@ fn legacy_bm44_matches_ddjvu_within_tolerance() {
         pct <= 0.8,
         "BM44 vs ddjvu mismatch {pct:.4}% ({mismatched}/{total})"
     );
+}
+
+/// Native render of a page whose height is not a multiple of the BG
+/// reduction (#831): colorbook page 9 is 2208×3646 with a 736×1216 BG44
+/// (red 3, `3646 % 3 == 1`) and a 184×304 FG44 (red 12). DjVuLibre maps
+/// both planes bottom-up; a top-origin mapping shifts every row. The
+/// digests are FNV-1a 64 over the RGB bytes of `ddjvu -page=10` (3.5.28)
+/// for the same rectangles, so this pins bit-exact agreement.
+#[test]
+fn native_reduced_bg_fg_matches_ddjvu_digest() {
+    fn fnv1a_rgb(pm: &djvu_rs::Pixmap) -> u64 {
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        for px in pm.data.as_chunks::<4>().0 {
+            for &b in &px[..3] {
+                h = (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        h
+    }
+    let data = std::fs::read("tests/fixtures/colorbook.djvu").unwrap();
+    let doc = DjVuDocument::parse(&data).unwrap();
+    let page = doc.page(9).unwrap();
+    assert_eq!((page.width(), page.height()), (2208, 3646));
+    let opts = RenderOptions {
+        width: 2208,
+        height: 3646,
+        ..RenderOptions::default()
+    };
+    let cases = [
+        ((0, 0, 256, 64), 0x7a7a_160f_3395_c602u64),
+        ((896, 576, 256, 128), 0x2b29_c1af_3115_087d),
+        ((976, 1695, 256, 256), 0xdd35_952b_6ef3_31ae),
+        ((1952, 3582, 256, 64), 0xb8a4_7588_9ac1_63ba),
+    ];
+    for ((x, y, width, height), want) in cases {
+        let rect = RenderRect {
+            x,
+            y,
+            width,
+            height,
+        };
+        let pm = render_region(page, rect, &opts).unwrap();
+        assert_eq!(
+            fnv1a_rgb(&pm),
+            want,
+            "region ({x},{y},{width}x{height}) differs from ddjvu"
+        );
+        let tiled = render_region_tiled(page, rect, &opts).unwrap();
+        assert_eq!(
+            fnv1a_rgb(&tiled),
+            want,
+            "tiled region ({x},{y},{width}x{height}) differs from ddjvu"
+        );
+    }
 }

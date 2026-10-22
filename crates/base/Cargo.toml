@@ -14,7 +14,8 @@ name = "st2k_base"
 [dependencies]
 serde_json = "1"
 windows = { workspace = true }
-windows-registry = "0.6"
+windows-registry = "0.100"
+windows-result = "0.100"
 
 [build-dependencies]
 # Parses assets/locales/*.toml into the generated table (build time only).

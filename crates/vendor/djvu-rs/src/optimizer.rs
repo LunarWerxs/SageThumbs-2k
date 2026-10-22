@@ -1,27 +1,27 @@
 //! Document-level optimization planning, safe lossless cleanup and
 //! quality-aware archival re-encoding.
 //!
-//! [`OptimizationPreset::LosslessCleanup`] removes only IFF `FREE` padding
+//! [`OptimizationPreset::LosslessCleanup`](crate::optimizer::OptimizationPreset::LosslessCleanup) removes only IFF `FREE` padding
 //! chunks. All image, text, annotation, metadata, bookmark, link, and unknown
 //! chunks are preserved byte-for-byte.
 //!
-//! [`OptimizationPreset::Archival`] adds a measured lossy step (#814): each
+//! [`OptimizationPreset::Archival`](crate::optimizer::OptimizationPreset::Archival) adds a measured lossy step (#814): each
 //! page's IW44 background is re-encoded with the fewest slices whose SSIM loss
 //! against the input's own decode stays within
-//! [`OptimizationRequest::max_ssim_loss`], and the re-encode is kept only when
-//! it is smaller. With [`OptimizationRequest::lossy_text`] the JB2 mask is
+//! [`OptimizationRequest::max_ssim_loss`](crate::optimizer::OptimizationRequest::max_ssim_loss), and the re-encode is kept only when
+//! it is smaller. With [`OptimizationRequest::lossy_text`](crate::optimizer::OptimizationRequest::lossy_text) the JB2 mask is
 //! re-encoded with lossy symbol matching under the same floor. Without a
 //! floor the archival preset stays pixel-exact and says so in a warning.
-//! With a floor and [`OptimizationRequest::target_size`] the optimizer
+//! With a floor and [`OptimizationRequest::target_size`](crate::optimizer::OptimizationRequest::target_size) the optimizer
 //! bisects one loss ceiling within the floor, shared by every layer, for the
 //! least loss whose output meets the target, and reports a target it cannot
 //! reach within the floor instead of guessing.
 //!
-//! A long run can be observed through [`Optimizer::with_progress`]: the
-//! optimizer reports one [`ProgressEvent`] per component in each of the
-//! [`OptimizationPhase`]s `plan`, `rewrite` and `verify` (#814). It can be
-//! stopped through [`Optimizer::with_cancel`]: the optimizer polls the hook
-//! before each component and returns [`OptimizeError::Cancelled`] instead of
+//! A long run can be observed through [`Optimizer::with_progress`](crate::optimizer::Optimizer::with_progress): the
+//! optimizer reports one [`ProgressEvent`](crate::optimizer::ProgressEvent) per component in each of the
+//! [`OptimizationPhase`](crate::optimizer::OptimizationPhase)s `plan`, `rewrite` and `verify` (#814). It can be
+//! stopped through [`Optimizer::with_cancel`](crate::optimizer::Optimizer::with_cancel): the optimizer polls the hook
+//! before each component and returns [`OptimizeError::Cancelled`](crate::optimizer::OptimizeError::Cancelled) instead of
 //! partial output.
 
 use std::collections::BTreeMap;
@@ -1337,11 +1337,11 @@ fn adjust_path(path: &[usize], removed: &[&[usize]]) -> Vec<usize> {
 
 fn page_count(document: &DjVuDocumentMut) -> usize {
     match document.root_form_type() {
-        Some(form_type) if *form_type == *b"DJVU" => 1,
+        Some(form_type) if crate::dirm::is_page_form(form_type) => 1,
         Some(form_type) if *form_type == *b"DJVM" => (0..document.root_child_count())
             .filter_map(|index| document.chunk_at_path(&[index]).ok())
             .filter(|chunk| {
-                matches!(chunk, Chunk::Form { secondary_id, .. } if secondary_id == b"DJVU")
+                matches!(chunk, Chunk::Form { secondary_id, .. } if crate::dirm::is_page_form(secondary_id))
             })
             .count(),
         _ => 0,

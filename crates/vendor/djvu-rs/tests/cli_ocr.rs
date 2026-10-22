@@ -68,10 +68,20 @@ fn ocr_candle_backend_reports_experimental_status() {
         );
 }
 
+/// The ONNX backend loads only manifest-pinned (SHA-256 verified) models, so
+/// an ad-hoc `--model` path is rejected; without the feature it says so.
 #[test]
-fn ocr_onnx_backend_reports_experimental_cli_contract() {
+fn ocr_onnx_backend_rejects_ad_hoc_model() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.djvu");
+
+    let expected = if cfg!(feature = "ocr-onnx") {
+        predicate::str::contains("--backend onnx does not take --model")
+            .and(predicate::str::contains("ocr-model-manifest.toml"))
+            .boxed()
+    } else {
+        predicate::str::contains("rebuild with --features ocr-onnx").boxed()
+    };
 
     Command::cargo_bin("djvu")
         .unwrap()
@@ -87,8 +97,5 @@ fn ocr_onnx_backend_reports_experimental_cli_contract() {
         ])
         .assert()
         .failure()
-        .stderr(
-            predicate::str::contains("ONNX OCR backend is experimental library-only")
-                .and(predicate::str::contains("no stable CLI model contract")),
-        );
+        .stderr(expected);
 }

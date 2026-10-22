@@ -5,9 +5,9 @@
 //! with no-panic guarantees via `catch_unwind`.
 //!
 //! The actual open→size→render→text flow and the `(code, message)` error
-//! taxonomy live in [`crate::foreign`]; this module is the C-specific cap over
-//! it — `CString` lifecycle, raw-pointer handles, and the [`guard`] panic
-//! boundary. Each fallible entry point is one [`guard`] call wrapping one core
+//! taxonomy live in `crate::foreign`; this module is the C-specific cap over
+//! it — `CString` lifecycle, raw-pointer handles, and the `guard` panic
+//! boundary. Each fallible entry point is one `guard` call wrapping one core
 //! call.
 
 use std::ffi::CString;

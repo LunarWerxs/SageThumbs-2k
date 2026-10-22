@@ -6,7 +6,7 @@
 //! [`tokio::io::AsyncWrite`] sink. This keeps CPU-bound rendering off the async
 //! runtime and bounds adapter-owned output buffering to eight 64 KiB chunks.
 //!
-//! [`DjVuDocument`](crate::DjVuDocument) is not `Clone`, so the PDF adapter
+//! [`DjVuDocument`] is not `Clone`, so the PDF adapter
 //! accepts an [`std::sync::Arc`] document. Its pages already use shared backing
 //! data, and the `Arc` lets the blocking task borrow the same parsed document
 //! without copying it.
@@ -238,12 +238,13 @@ mod tests {
     use std::{
         io,
         pin::Pin,
-        sync::Arc,
         task::{Context, Poll},
-        time::Duration,
     };
+    #[cfg(feature = "pdf")]
+    use std::{sync::Arc, time::Duration};
 
     use super::*;
+    use crate::djvu_document::DjVuDocument;
     #[cfg(feature = "pdf")]
     use crate::pdf::PdfOptions;
 
@@ -353,5 +354,28 @@ mod tests {
 
         let doc = DjVuDocument::parse(&sink.0).expect("parse async bundle");
         assert_eq!(doc.page_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn async_djvm_failing_sink_returns_sink_error() {
+        let component = std::fs::read(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/chicken.djvu"),
+        )
+        .expect("read fixture");
+        let mut sink = FailingAsyncWriter::after(64);
+
+        let result = stream_djvm_to_async_writer(
+            vec![("page.djvu".to_owned(), 1, component)],
+            Vec::<([u8; 4], Vec<u8>)>::new(),
+            DjvmSpool::Memory,
+            &mut sink,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(AsyncDjvmError::Sink(error)) if error.kind() == io::ErrorKind::Other
+        ));
     }
 }

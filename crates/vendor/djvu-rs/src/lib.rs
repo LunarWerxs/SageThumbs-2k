@@ -56,9 +56,9 @@
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
-// Compile every ```rust block in README.md as a doctest, so the README cannot
-// drift from the public API (the `from_mmap` class of staleness). Gated on the
-// feature union the README examples need; exercised by
+// Compile every ```rust block in README.md and docs/guide.md as a doctest, so
+// the docs cannot drift from the public API (the `from_mmap` class of
+// staleness). Gated on the feature union the examples need; exercised by
 // `cargo test --doc --features cli,tiff,async,serde,image,epub`
 // in scripts/check.sh and CI (nextest does not run doctests).
 #[cfg(all(
@@ -72,6 +72,18 @@ extern crate alloc;
 ))]
 #[doc = include_str!("../README.md")]
 pub struct ReadmeDoctests;
+
+#[cfg(all(
+    doctest,
+    feature = "pdf",
+    feature = "tiff",
+    feature = "async",
+    feature = "serde",
+    feature = "image",
+    feature = "epub"
+))]
+#[doc = include_str!("../docs/guide.md")]
+pub struct GuideDoctests;
 
 // ---- Phase-1 modules -------------------------------------------------------
 //
@@ -149,8 +161,11 @@ pub mod iw44_encode;
 
 /// JB2 bilevel image encoder — produces Sjbz chunk payloads.
 ///
-/// Provides [`jb2_encode::encode_jb2`] (single record-type-3 direct encoding) and
-/// [`jb2_encode::encode_jb2_dict`] (connected-component symbol-dictionary encoding).
+/// Provides [`jb2_encode::encode_jb2_lossless`] (symbol dictionary with
+/// refinement of similar glyphs — the smallest lossless output),
+/// [`jb2_encode::encode_jb2_dict`] (connected-component symbol-dictionary
+/// encoding) and [`jb2_encode::encode_jb2`] (single record-type-3 direct
+/// encoding).
 #[cfg(feature = "std")]
 pub mod jb2_encode;
 
@@ -247,11 +262,21 @@ pub mod semantic_diff;
 
 /// Rendering pipeline for [`DjVuPage`] — phase 5.
 ///
-/// Provides `djvu_render::RenderOptions`, `djvu_render::RenderRect`,
+/// Provides `djvu_render::RenderRequest` — one request type for every
+/// render: whole page or region, full / progressive / coarse quality,
+/// resource limits, cancellation (`djvu_render::CancelToken`), and the
+/// composited-tile cache, written to a pixmap, a buffer, or a row sink.
+/// The `render_*` functions below are shorthands for common requests.
+///
+/// Also provides `djvu_render::RenderOptions`, `djvu_render::RenderRect`,
 /// `djvu_render::render_into`, `djvu_render::render_pixmap`,
 /// `djvu_render::render_region`, `djvu_render::render_coarse`, and
 /// `djvu_render::render_progressive`.
 pub mod djvu_render;
+
+/// Page render size in native and display orientation — the one translation
+/// between a size the reader sees and the compositor buffer.
+pub(crate) mod render_size;
 
 /// Process-wide ceiling for the page render caches (READ_CACHE_BOUNDED).
 ///
@@ -385,6 +410,7 @@ pub mod tiff_export;
 /// one-line pattern).
 ///
 /// Key abstractions: [`djvu_async::LazyDocument`],
+/// [`djvu_async::LazyIndirectDocument`],
 /// [`djvu_async::render_progressive_stream`],
 /// [`djvu_async::render_tile_async`],
 /// [`djvu_async::render_tile_progressive_stream`],
@@ -777,33 +803,39 @@ impl<'a> Page<'a> {
         djvu_render::display_dimensions(self.page)
     }
 
-    /// Build options that render the (rotation-aware) display size scaled by
-    /// `scale`. The single home for the `display × scale` size idiom the
-    /// scale-based render methods share.
+    /// Build options that render the native page scaled by `scale`; the
+    /// pixmap comes out at the rotated (display) size.
     fn opts_for_scale(&self, scale: f32) -> djvu_render::RenderOptions {
-        let (dw, dh) = self.display_dims();
-        let w = ((dw as f32 * scale).round() as u32).max(1);
-        let h = ((dh as f32 * scale).round() as u32).max(1);
-        // The pipeline re-derives the decode scale from `w` and the page's
-        // display width, so we set only the size; `scale` is no longer an input.
-        djvu_render::RenderOptions {
-            width: w,
-            height: h,
-            ..Default::default()
-        }
+        render_size::RenderSize::at_scale(self.page, scale).options()
     }
 
-    /// Build options for an explicit target `width × height`, deriving the
-    /// rotation-aware `scale` from [`RenderOptions::fit_to_width`] and then
-    /// honoring the caller's exact `height` (which need not preserve aspect).
-    /// The single home for the size-based scale idiom.
-    fn opts_for_size(&self, width: u32, height: u32) -> djvu_render::RenderOptions {
-        let mut opts = djvu_render::RenderOptions::fit_to_width(self.page, width);
-        opts.height = height;
-        opts
+    /// Options whose rendered pixmap is exactly `width × height` (the
+    /// display size, after rotation); the aspect ratio is the caller's choice.
+    /// The starting point of a [`render_request`](Self::render_request).
+    pub fn options_for_size(&self, width: u32, height: u32) -> djvu_render::RenderOptions {
+        render_size::RenderSize::exact(self.page, width, height).options()
     }
 
-    /// Render with caller-supplied [`RenderOptions`] — the single entry point
+    /// Run a [`RenderRequest`](djvu_render::RenderRequest) on this page: the
+    /// one render call that covers a region, a progressive step, a coarse
+    /// preview, and the tile cache.
+    ///
+    /// ```no_run
+    /// use djvu_rs::djvu_render::{RenderRect, RenderRequest};
+    /// # let doc = djvu_rs::Document::from_bytes(vec![]).unwrap();
+    /// let page = doc.page(0).unwrap();
+    /// let opts = page.options_for_size(1024, 1400);
+    /// let viewport = RenderRect { x: 0, y: 200, width: 1024, height: 600 };
+    /// let part = page
+    ///     .render_request(&RenderRequest::new(opts).region(viewport).cached(true))
+    ///     .unwrap();
+    /// # let _ = part;
+    /// ```
+    pub fn render_request(&self, request: &djvu_render::RenderRequest) -> Result<Pixmap, Error> {
+        request.pixmap(self.page).map_err(Self::render_err)
+    }
+
+    /// Render with caller-supplied [`RenderOptions`](djvu_render::RenderOptions) — the single entry point
     /// the convenience methods funnel through.
     ///
     /// Build `opts` with the rotation-aware
@@ -812,17 +844,20 @@ impl<'a> Page<'a> {
     /// `bold` / `aa` / `resampling` as needed. This supersedes the bespoke
     /// `render_bold` / `render_aa` / `render_scaled*` methods.
     pub fn render_with(&self, opts: &djvu_render::RenderOptions) -> Result<Pixmap, Error> {
-        djvu_render::render_pixmap_with_limits(self.page, opts, self.page.resource_limits())
-            .map_err(Self::render_err)
+        self.render_with_limits(opts, self.page.resource_limits())
     }
 
-    /// Render with caller-supplied [`RenderOptions`] and an optional limit override.
+    /// Render with caller-supplied [`RenderOptions`](djvu_render::RenderOptions) and an optional limit override.
     pub fn render_with_limits(
         &self,
         opts: &djvu_render::RenderOptions,
         limits: Option<crate::resource_limits::ResourceLimits>,
     ) -> Result<Pixmap, Error> {
-        djvu_render::render_pixmap_with_limits(self.page, opts, limits).map_err(Self::render_err)
+        djvu_render::RenderRequest::new(opts.clone())
+            .limits(limits)
+            .operation("render_pixmap")
+            .pixmap(self.page)
+            .map_err(Self::render_err)
     }
 
     /// Page resolution in dots per inch.
@@ -830,13 +865,14 @@ impl<'a> Page<'a> {
         self.page.dpi()
     }
 
-    /// Pixel `(width, height)` this page renders to at `target_dpi`.
+    /// Pixel `(width, height)` this page renders to at `target_dpi`: the size
+    /// after the INFO rotation, so a quarter-turned page has its sides swapped.
     ///
-    /// The rounding/clamping policy lives in one place (the crate-internal
-    /// `export_common` sizing helper); a `0`-DPI page is treated as 1 DPI so the
-    /// scale stays finite.
+    /// Pass the result to [`render_to_size`](Self::render_to_size) to render
+    /// at that DPI. A `0`-DPI page is treated as 1 DPI so the scale stays
+    /// finite.
     pub fn size_at_dpi(&self, target_dpi: f32) -> (u32, u32) {
-        export_common::size_at_dpi(self.page, target_dpi)
+        render_size::RenderSize::at_dpi(self.page, target_dpi).display
     }
 
     /// The 0-based index of this page within the document.
@@ -869,7 +905,7 @@ impl<'a> Page<'a> {
 
     /// Render the page to an RGBA pixmap at a target size.
     pub fn render_to_size(&self, width: u32, height: u32) -> Result<Pixmap, Error> {
-        self.render_with(&self.opts_for_size(width, height))
+        self.render_with(&self.options_for_size(width, height))
     }
 
     /// Render a rectangular region of the page.
@@ -877,9 +913,14 @@ impl<'a> Page<'a> {
     /// `full_w × full_h` set the full-render output size the region is cut
     /// from (the zoom level); `(x, y, w, h)` select the viewport within that
     /// space. Routed through the composited-tile cache
-    /// ([`djvu_render::render_region_tiled`]) so viewer-style pans and
+    /// ([`RenderRequest::cached`](djvu_render::RenderRequest::cached)) so viewer-style pans and
     /// revisits reuse tiles (C4_TILE_CACHE / TILE_LRU) — O(viewport) work
     /// instead of O(page).
+    ///
+    /// Both `full_w × full_h` and `(x, y, w, h)` are in display space, after
+    /// the INFO rotation: the region is the matching crop of
+    /// [`render_to_size`](Self::render_to_size)`(full_w, full_h)`. Pixels
+    /// outside the page are white.
     pub fn render_region(
         &self,
         full_w: u32,
@@ -889,38 +930,50 @@ impl<'a> Page<'a> {
         w: u32,
         h: u32,
     ) -> Result<Pixmap, Error> {
-        let opts = self.opts_for_size(full_w, full_h);
-        djvu_render::render_region_tiled(
-            self.page,
-            djvu_render::RenderRect {
+        djvu_render::RenderRequest::new(self.options_for_size(full_w, full_h))
+            .region(djvu_render::RenderRect {
                 x,
                 y,
                 width: w,
                 height: h,
-            },
-            &opts,
-        )
-        .map_err(Self::render_err)
+            })
+            .cached(true)
+            .operation("render_region_tiled")
+            .pixmap(self.page)
+            .map_err(Self::render_err)
     }
 
     /// Fast coarse render — decodes only the first BG44 chunk (a blurry but
     /// near-instant preview). Returns `Ok(None)` for bilevel-only pages.
     pub fn render_coarse(&self, width: u32, height: u32) -> Result<Option<Pixmap>, Error> {
-        let opts = self.opts_for_size(width, height);
-        djvu_render::render_coarse(self.page, &opts).map_err(Self::render_err)
+        let opts = self.options_for_size(width, height);
+        match djvu_render::RenderRequest::new(opts)
+            .quality(djvu_render::Quality::Coarse)
+            .operation("render_coarse")
+            .pixmap(self.page)
+        {
+            Err(djvu_render::RenderError::NoBackground) => Ok(None),
+            result => result.map(Some).map_err(Self::render_err),
+        }
     }
 
     /// Progressive render: decode BG44 chunks `0..=chunk_n` plus all
     /// foreground layers. `chunk_n = bg44_chunk_count() - 1` equals the full
-    /// render; each lower value is a coarser refinement stage.
+    /// render except at about a quarter of the native size and below (see
+    /// [`djvu_render::Quality::Step`]); each lower value is a coarser
+    /// refinement stage.
     pub fn render_progressive(
         &self,
         width: u32,
         height: u32,
         chunk_n: usize,
     ) -> Result<Pixmap, Error> {
-        let opts = self.opts_for_size(width, height);
-        djvu_render::render_progressive(self.page, &opts, chunk_n).map_err(Self::render_err)
+        let opts = self.options_for_size(width, height);
+        djvu_render::RenderRequest::new(opts)
+            .quality(djvu_render::Quality::Step(chunk_n))
+            .operation("render_progressive")
+            .pixmap(self.page)
+            .map_err(Self::render_err)
     }
 
     /// Number of BG44 refinement chunks on this page (0 for bilevel pages).
@@ -1072,6 +1125,72 @@ mod tests {
         assert!(page.dpi() > 0);
         assert_eq!(page.index(), 0);
         let _ = page.rotation();
+    }
+
+    /// On a quarter-turned page every size is the display size: `render`,
+    /// `size_at_dpi`, and `render_to_size` agree, and the pixels are the
+    /// upright page turned clockwise.
+    #[test]
+    fn rotated_page_renders_at_display_size() {
+        let fixtures = std::path::Path::new("tests/fixtures");
+        let doc = Document::open(fixtures.join("boy_jb2_rotate90.djvu")).unwrap();
+        let page = doc.page(0).unwrap();
+        let display = (page.display_width(), page.display_height());
+        assert_eq!(display, (page.height(), page.width()));
+
+        let pm = page.render().unwrap();
+        assert_eq!((pm.width, pm.height), display);
+        let upright = Document::open(fixtures.join("boy_jb2.djvu")).unwrap();
+        let want = upright.page(0).unwrap().render().unwrap().rotate_cw90();
+        assert!(
+            pm.data == want.data,
+            "render must be the upright page turned cw"
+        );
+
+        let (w, h) = page.size_at_dpi(page.dpi() as f32 / 2.0);
+        assert_eq!((w, h), (display.0.div_ceil(2), display.1.div_ceil(2)));
+        let pm = page.render_to_size(w, h).unwrap();
+        assert_eq!((pm.width, pm.height), (w, h));
+    }
+
+    /// On a rotated page the region is a crop of the display render, in the
+    /// same coordinates as the returned pixels; outside the page it is white.
+    #[test]
+    fn rotated_page_region_is_crop_of_display_render() {
+        let doc = Document::open("tests/fixtures/boy_jb2_rotate90.djvu").unwrap();
+        let page = doc.page(0).unwrap();
+        let (fw, fh) = (page.display_width() / 2, page.display_height() / 2);
+        let full = page.render_to_size(fw, fh).unwrap();
+        let pixel = |pm: &Pixmap, x: u32, y: u32| {
+            let i = (y as usize * pm.width as usize + x as usize) * 4;
+            pm.data[i..i + 4].to_vec()
+        };
+        let rects = [
+            (0, 0, fw, fh),
+            (fw / 5, fh / 3, fw / 3, fh / 4),
+            (fw - 20, fh - 30, 50, 70),
+            (fw + 5, 0, 10, 10),
+        ];
+        for (x, y, w, h) in rects {
+            let region = page.render_region(fw, fh, x, y, w, h).unwrap();
+            assert_eq!((region.width, region.height), (w, h));
+            for ry in 0..h {
+                for rx in 0..w {
+                    let (px, py) = (x + rx, y + ry);
+                    let want = if px < fw && py < fh {
+                        pixel(&full, px, py)
+                    } else {
+                        vec![255, 255, 255, 255]
+                    };
+                    assert_eq!(
+                        pixel(&region, rx, ry),
+                        want,
+                        "region {:?} pixel ({rx}, {ry})",
+                        (x, y, w, h)
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -4,13 +4,13 @@
 //!
 //! - The concrete PP-OCR pipeline being built under #693 (see
 //!   `docs/neural-ocr-design.md`):
-//!   [`manifest`] — pinned model artifacts with mandatory SHA-256
-//!   verification; [`preprocess`] — deterministic detector preprocessing;
-//!   [`detect`] — DBNet text detection producing page-coordinate boxes;
-//!   [`recognize`] — Cyrillic CTC line recognition against the pinned
-//!   dictionary; [`pipeline`] — the [`pipeline::NeuralOcrBackend`] composition
+//!   [`manifest`](crate::ocr_onnx::manifest) — pinned model artifacts with mandatory SHA-256
+//!   verification; [`preprocess`](crate::ocr_onnx::preprocess) — deterministic detector preprocessing;
+//!   [`detect`](crate::ocr_onnx::detect) — DBNet text detection producing page-coordinate boxes;
+//!   [`recognize`](crate::ocr_onnx::recognize) — Cyrillic CTC line recognition against the pinned
+//!   dictionary; [`pipeline`](crate::ocr_onnx::pipeline) — the [`pipeline::NeuralOcrBackend`](crate::ocr_onnx::pipeline::NeuralOcrBackend) composition
 //!   wired to the CLI as `--backend onnx`.
-//! - [`OnnxBackend`] — an older generic scaffold for simple CTC-style
+//! - [`OnnxBackend`](crate::ocr_onnx::OnnxBackend) — an older generic scaffold for simple CTC-style
 //!   recognizers where the caller provides the model and vocabulary; not a
 //!   CLI backend.
 
@@ -29,20 +29,13 @@ use crate::ocr::{OcrBackend, OcrError, OcrOptions};
 use crate::pixmap::Pixmap;
 use crate::text::{Rect, TextLayer, TextZone, TextZoneKind};
 
-type OnnxModel = tract_onnx::prelude::SimplePlan<
-    tract_onnx::prelude::TypedFact,
-    Box<dyn tract_onnx::prelude::TypedOp>,
-    tract_onnx::prelude::Graph<
-        tract_onnx::prelude::TypedFact,
-        Box<dyn tract_onnx::prelude::TypedOp>,
-    >,
->;
+type OnnxModel = tract_onnx::prelude::Arc<tract_onnx::prelude::TypedRunnableModel>;
 
 /// Experimental ONNX-based OCR backend using tract.
 ///
 /// Expects a pre-trained CTC-style ONNX model that accepts a single grayscale
 /// image tensor `[1, 1, H, W]` normalized to `[0, 1]` and emits character
-/// probabilities compatible with [`Self::ctc_decode`]. Other architectures
+/// probabilities compatible with `ctc_decode`. Other architectures
 /// require their own preprocessing and decoder and are not supported by this
 /// helper.
 pub struct OnnxBackend {
@@ -139,7 +132,7 @@ impl OcrBackend for OnnxBackend {
             .map_err(|e| OcrError::RecognitionFailed(format!("model inference failed: {e}")))?;
 
         let output = result[0]
-            .to_array_view::<f32>()
+            .to_plain_array_view::<f32>()
             .map_err(|e| OcrError::RecognitionFailed(format!("output tensor error: {e}")))?;
 
         let shape = output.shape();

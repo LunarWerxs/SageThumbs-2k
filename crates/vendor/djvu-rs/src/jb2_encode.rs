@@ -12,7 +12,8 @@ pub use djvu_jb2::encode::*;
 
 use crate::Bitmap;
 use crate::chunk_encode::encode_info;
-use crate::iff;
+use crate::dirm::DirmComponentKind;
+use crate::djvm::BundlePart;
 
 /// Encoder-wide default page resolution, matching
 /// [`crate::djvu_encode::PageEncoder`]'s 300 dpi. Callers that have no dpi to
@@ -25,7 +26,8 @@ pub const BUNDLE_DEFAULT_DPI: u16 = 300;
 /// pages are promoted into a single shared [`Jb2Dict`] (Djbz) emitted as a
 /// `FORM:DJVI` component. Each page's `FORM:DJVU` then carries a small
 /// `INCL` chunk pointing at that DJVI plus a Sjbz that references the shared
-/// dictionary by index.
+/// dictionary by index. Each Sjbz comes from [`encode_jb2_lossless_with_shared`]:
+/// a glyph close to a shared or earlier symbol is coded as its refinement.
 ///
 /// Returns the full DjVu container bytes (with `AT&T` magic, ready to write
 /// to a file). With `pages.len() < 2` or `shared_dict_page_threshold > pages.len()`,
@@ -104,7 +106,7 @@ fn encode_djvm_bundle_jb2_impl(
     // INFO chunk (none required by spec) + the Djbz.
     //
     // DJVU page components: INFO + INCL("dict0001.djvi") + Sjbz [+ TH44].
-    let mut comp_form_bodies: Vec<(Vec<u8>, /*is_page*/ bool, String)> = Vec::new();
+    let mut parts: Vec<BundlePart> = Vec::new();
 
     let dict_id = "dict0001.djvi".to_string();
     let has_shared = !shared.is_empty();
@@ -117,7 +119,11 @@ fn encode_djvm_bundle_jb2_impl(
         if !djbz_bytes.len().is_multiple_of(2) {
             djvi_body.push(0);
         }
-        comp_form_bodies.push((djvi_body, false, dict_id.clone()));
+        parts.push(BundlePart::new(
+            DirmComponentKind::Shared,
+            dict_id.clone(),
+            &djvi_body,
+        ));
     }
 
     let shared_ref: &[Bitmap] = shared;
@@ -125,8 +131,8 @@ fn encode_djvm_bundle_jb2_impl(
     // thumbnail codec). Build one component per page; with the `parallel` feature
     // the pages are encoded concurrently on rayon, since JB2 encoding dominates the
     // multi-page cost. Order is preserved by the indexed collect.
-    let build_page = |page_idx: usize, page: &Bitmap| -> (Vec<u8>, bool, String) {
-        let sjbz = encode_jb2_dict_with_shared(page, shared_ref);
+    let build_page = |page_idx: usize, page: &Bitmap| -> BundlePart {
+        let sjbz = encode_jb2_lossless_with_shared(page, shared_ref);
         // Canonical INFO (see crate::chunk_encode::encode_info). Fixes the prior
         // hand-rolled bytes that hard-coded dpi 100 and gamma byte 1 (≈ 0.1),
         // diverging from the single-page/layered encoder's real dpi + gamma 2.2.
@@ -167,11 +173,11 @@ fn encode_djvm_bundle_jb2_impl(
         }
 
         let pid = format!("p{:04}.djvu", page_idx + 1);
-        (djvu_body, true, pid)
+        BundlePart::new(DirmComponentKind::Page, pid, &djvu_body)
     };
 
     #[cfg(feature = "parallel")]
-    let page_comps: Vec<(Vec<u8>, bool, String)> = {
+    let page_comps: Vec<BundlePart> = {
         use rayon::prelude::*;
         pages
             .par_iter()
@@ -180,14 +186,14 @@ fn encode_djvm_bundle_jb2_impl(
             .collect()
     };
     #[cfg(not(feature = "parallel"))]
-    let page_comps: Vec<(Vec<u8>, bool, String)> = pages
+    let page_comps: Vec<BundlePart> = pages
         .iter()
         .enumerate()
         .map(|(i, p)| build_page(i, p))
         .collect();
-    comp_form_bodies.extend(page_comps);
+    parts.extend(page_comps);
 
-    assemble_djvm_bundle(comp_form_bodies)
+    crate::djvm::build_djvm(parts).expect("DJVM bundle exceeds the DIRM or 4 GiB IFF FORM limit")
 }
 
 /// Append one IFF chunk (`id` + 32-bit big-endian length + data + pad-to-even)
@@ -212,84 +218,12 @@ pub(crate) fn build_form_body(form_type: &[u8; 4], chunks: &[([u8; 4], Vec<u8>)]
     body
 }
 
-/// Assemble a bundled DJVM from component FORM bodies (`(body, is_page, id)`):
-/// a leading DIRM directory chunk + one component FORM each. Shared by the
-/// masks-only ([`encode_djvm_bundle_jb2_with_shared`]) and layered bundlers.
-pub(crate) fn assemble_djvm_bundle(comp_form_bodies: Vec<(Vec<u8>, bool, String)>) -> Vec<u8> {
-    // ── DIRM metadata table (BZZ-compressed sizes/flags/ids/names/titles) ──
-    //
-    // Matches the bundled-format layout read by `djvu_document.rs::parse`:
-    // flags=0x81 (bundled + v1.0), u16-be count, u32-be per-component offsets,
-    // then this BZZ-compressed metadata blob.
-    let n = comp_form_bodies.len();
-    let mut meta = Vec::new();
-    for (body, _, _) in &comp_form_bodies {
-        let total = body.len() + 8; // FORM + size + body
-        meta.extend_from_slice(&(total as u32).to_be_bytes()[1..4]); // 24-bit size
-    }
-    for (_, is_page, _) in &comp_form_bodies {
-        let flag = if *is_page { 1u8 } else { 0u8 };
-        meta.push(flag);
-    }
-    for (_, _, id) in &comp_form_bodies {
-        meta.extend_from_slice(id.as_bytes());
-        meta.push(0);
-    }
-    for (_, _, id) in &comp_form_bodies {
-        meta.extend_from_slice(id.as_bytes());
-        meta.push(0);
-    }
-    meta.extend(core::iter::repeat_n(0u8, n)); // empty titles
-    let bzz_meta = crate::bzz_encode::bzz_encode(&meta);
-
-    // ── Assemble through the IFF emission seam ──
-    //
-    // The bundle is a leading DIRM chunk followed by one component FORM per
-    // page/dict. The DIRM carries a file-offset table pointing at each
-    // component FORM, so this is the seam's documented two-pass shape: emit
-    // once with a zeroed table to learn the offsets, refill the table, then
-    // re-emit. `partial_emit_with_offsets` owns all framing/padding; only the
-    // DIRM payload layout (bundled flag, count, offset table) lives here.
-    let build_dirm = |offsets: &[u32]| -> Vec<u8> {
-        let mut d = Vec::with_capacity(3 + 4 * n + bzz_meta.len());
-        d.push(0x81); // bundled (high bit) + version 1
-        d.extend_from_slice(&(n as u16).to_be_bytes());
-        for &off in offsets {
-            d.extend_from_slice(&off.to_be_bytes());
-        }
-        d.extend_from_slice(&bzz_meta);
-        d
-    };
-    let emit = |dirm_data: Vec<u8>| -> (Vec<u8>, Vec<usize>) {
-        let dirm = iff::Chunk::Leaf {
-            id: *b"DIRM",
-            data: dirm_data,
-        };
-        let mut parts: Vec<iff::EmitPart> = Vec::with_capacity(1 + n);
-        parts.push(iff::EmitPart::Chunk(&dirm));
-        parts.extend(
-            comp_form_bodies
-                .iter()
-                .map(|(b, _, _)| iff::EmitPart::Form(b.as_slice())),
-        );
-        iff::partial_emit_with_offsets(*b"DJVM", &parts)
-            .expect("DJVM bundle exceeds the 4 GiB IFF FORM limit")
-    };
-
-    // Pass 1: placeholder offsets → learn each component FORM's file offset
-    // (`part_offsets[0]` is the DIRM itself; the rest are the components).
-    let (_, part_offsets) = emit(build_dirm(&vec![0u32; n]));
-    let comp_offsets: Vec<u32> = part_offsets[1..].iter().map(|&o| o as u32).collect();
-
-    // Pass 2: real offsets written into the DIRM table.
-    emit(build_dirm(&comp_offsets)).0
-}
-
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::iff;
 
     fn render_glyph(bm: &mut Bitmap, x: u32, y: u32, glyph: &[&[u8]]) {
         for (gy, row) in glyph.iter().enumerate() {
@@ -401,6 +335,98 @@ mod tests {
             shared_jb2_total,
             independent_total
         );
+    }
+
+    /// A 16×16 thick ring; `defect` clears one ink pixel (none when `None`),
+    /// so each copy differs from the clean ring without an exact match.
+    fn ring(defect: Option<usize>) -> Bitmap {
+        let mut bm = Bitmap::new(16, 16);
+        let mut ink = Vec::new();
+        for y in 0..16i32 {
+            for x in 0..16i32 {
+                let d2 = (2 * x - 15).pow(2) + (2 * y - 15).pow(2);
+                // 226 = 15² + 1² puts ink on every border row and column.
+                if (8 * 8..=226).contains(&d2) {
+                    ink.push((x as u32, y as u32));
+                }
+            }
+        }
+        for &(x, y) in &ink {
+            bm.set(x, y, true);
+        }
+        if let Some(i) = defect {
+            let (x, y) = ink[i * 7 % ink.len()];
+            bm.set(x, y, false);
+        }
+        bm
+    }
+
+    fn noisy_ring_page(first_defect: usize) -> Bitmap {
+        let mut page = Bitmap::new(200, 60);
+        for i in 0..20u32 {
+            let glyph = ring(Some(first_defect + i as usize));
+            let (ox, oy) = (4 + (i % 10) * 19, 6 + (i / 10) * 26);
+            for y in 0..16 {
+                for x in 0..16 {
+                    if glyph.get(x, y) {
+                        page.set(ox + x, oy + y, true);
+                    }
+                }
+            }
+        }
+        page
+    }
+
+    #[test]
+    fn bundle_pages_refine_against_shared_symbols() {
+        // Every page glyph is a near-copy of the one shared ring: the plain
+        // dictionary codes each as a new symbol, the bundle path refines it
+        // against the shared entry. Pages must still decode pixel-exact.
+        let shared = vec![ring(None)];
+        let pages = [noisy_ring_page(0), noisy_ring_page(40)];
+
+        let djbz = encode_jb2_djbz(&shared);
+        let dict = crate::jb2::decode_dict(&djbz, None).expect("decode Djbz");
+        for page in &pages {
+            let refined = encode_jb2_lossless_with_shared(page, &shared);
+            let plain = encode_jb2_dict_with_shared(page, &shared);
+            assert!(
+                refined.len() < plain.len(),
+                "refined {} B vs plain dict {} B",
+                refined.len(),
+                plain.len()
+            );
+            let decoded = crate::jb2::decode(&refined, Some(&dict)).expect("decode Sjbz");
+            assert_decoded_eq(page, &decoded);
+        }
+
+        // A shared symbol with a blank border decodes cropped, so it must not
+        // serve as a refinement reference; the page still round-trips.
+        let mut padded = Bitmap::new(18, 18);
+        for y in 0..16 {
+            for x in 0..16 {
+                padded.set(x + 1, y + 1, shared[0].get(x, y));
+            }
+        }
+        let padded = vec![padded];
+        let padded_dict =
+            crate::jb2::decode_dict(&encode_jb2_djbz(&padded), None).expect("decode Djbz");
+        let sjbz = encode_jb2_lossless_with_shared(&pages[0], &padded);
+        let decoded = crate::jb2::decode(&sjbz, Some(&padded_dict)).expect("decode Sjbz");
+        assert_decoded_eq(&pages[0], &decoded);
+
+        let bundle = encode_djvm_bundle_jb2_with_shared(&pages, &shared, BUNDLE_DEFAULT_DPI);
+        let doc = crate::djvu_document::DjVuDocument::parse(&bundle).expect("parse DJVM");
+        assert_eq!(doc.page_count(), 2);
+        for (i, page) in pages.iter().enumerate() {
+            let mask = doc
+                .page(i)
+                .expect("page")
+                .extract_mask()
+                .expect("extract_mask")
+                .expect("mask present");
+            assert_decoded_eq(page, &mask);
+        }
     }
 
     #[test]

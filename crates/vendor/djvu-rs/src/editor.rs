@@ -56,13 +56,13 @@ pub enum EditOperation {
     },
     /// Remove a page's annotation layer.
     RemovePageAnnotations { page: usize },
-    /// Replace page-level METa/METz metadata.
+    /// Replace page-level metadata (the page `ANTz` `(metadata …)` block).
     SetPageMetadata { page: usize, metadata: DjVuMetadata },
-    /// Remove page-level METa/METz metadata.
+    /// Remove page-level metadata.
     RemovePageMetadata { page: usize },
-    /// Replace document-level METa/METz metadata.
+    /// Replace document-level metadata where DjVuLibre reads it.
     SetDocumentMetadata { metadata: DjVuMetadata },
-    /// Remove document-level METa/METz metadata.
+    /// Remove document-level metadata.
     RemoveDocumentMetadata,
     /// Replace the document's NAVM bookmarks.
     SetBookmarks { bookmarks: Vec<DjVuBookmark> },
@@ -289,9 +289,23 @@ impl DocumentEditor {
 
         let input_bytes = fs::read(input)?;
         let output_bytes = Self::apply(&input_bytes, request)?;
+        Self::commit_bytes(output, &output_bytes)
+    }
+
+    /// Validate edited document bytes and atomically replace `output` with
+    /// them.
+    ///
+    /// This is the commit step of [`Self::apply_to_path`], for callers that
+    /// edit through [`DjVuDocumentMut`] directly. Error-severity findings from
+    /// [`crate::validate::validate_planned_output`] abort the commit before a
+    /// temporary file is created. The temporary file is a sibling of
+    /// `output`, flushed and synced before the rename, so a failure leaves an
+    /// existing `output` untouched. `output` may be the file the bytes were
+    /// read from.
+    pub fn commit_bytes(output: &Path, output_bytes: &[u8]) -> Result<(), EditError> {
         // #696: validate the planned output before touching the destination.
         // Error-severity findings abort the commit; warnings do not block.
-        if let Err(findings) = crate::validate::validate_planned_output(&output_bytes) {
+        if let Err(findings) = crate::validate::validate_planned_output(output_bytes) {
             let summary = findings
                 .iter()
                 .map(|finding| finding.code)
@@ -304,7 +318,7 @@ impl DocumentEditor {
         let temp = create_sibling_temp(output)?;
         let write_result = (|| -> Result<(), EditError> {
             let mut file = OpenOptions::new().write(true).open(&temp)?;
-            file.write_all(&output_bytes)?;
+            file.write_all(output_bytes)?;
             file.sync_all()?;
             fs::rename(&temp, output)?;
             Ok(())
@@ -381,21 +395,13 @@ fn apply_one(
             Ok(())
         }
         EditOperation::SetPageMetadata { page, metadata } => {
-            page_mut_for_operation(doc, operation, *page, edit.kind())?.set_metadata(metadata);
-            Ok(())
+            page_mut_for_operation(doc, operation, *page, edit.kind())?.set_metadata(metadata)
         }
         EditOperation::RemovePageMetadata { page } => {
-            page_mut_for_operation(doc, operation, *page, edit.kind())?.remove_metadata();
-            Ok(())
+            page_mut_for_operation(doc, operation, *page, edit.kind())?.remove_metadata()
         }
-        EditOperation::SetDocumentMetadata { metadata } => {
-            doc.set_metadata(metadata);
-            Ok(())
-        }
-        EditOperation::RemoveDocumentMetadata => {
-            doc.remove_metadata();
-            Ok(())
-        }
+        EditOperation::SetDocumentMetadata { metadata } => doc.set_metadata(metadata),
+        EditOperation::RemoveDocumentMetadata => doc.remove_metadata(),
         EditOperation::SetBookmarks { bookmarks } => doc.set_bookmarks(bookmarks),
         EditOperation::RemoveBookmarks => doc.set_bookmarks(&[]),
     };
@@ -444,10 +450,8 @@ fn create_sibling_temp(output: &Path) -> Result<PathBuf, EditError> {
             .create_new(true)
             .open(&candidate)
         {
-            Ok(file) => {
-                drop(file);
-                return Ok(candidate);
-            }
+            // The handle is not bound, so it closes before the path is returned.
+            Ok(_) => return Ok(candidate),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error.into()),
         }

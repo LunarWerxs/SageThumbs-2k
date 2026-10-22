@@ -1,15 +1,15 @@
 //! `image::ImageDecoder` integration for DjVu pages.
 //!
-//! This module provides [`DjVuDecoder`], which implements the
+//! This module provides [`DjVuDecoder`](crate::image_compat::DjVuDecoder), which implements the
 //! [`image::ImageDecoder`] and [`image::ImageDecoderRect`] traits from the
 //! `image` crate, making djvu-rs a first-class image format usable anywhere
 //! image-rs pipelines are used.
 //!
 //! ## Key public types
 //!
-//! - [`DjVuDecoder`] — implements `image::ImageDecoder` and `image::ImageDecoderRect`
+//! - [`DjVuDecoder`](crate::image_compat::DjVuDecoder) — implements `image::ImageDecoder` and `image::ImageDecoderRect`
 //!   for a single DjVu page (compatible with `image` 0.25+)
-//! - [`ImageCompatError`] — typed errors from this module
+//! - [`ImageCompatError`](crate::image_compat::ImageCompatError) — typed errors from this module
 //!
 //! ## Usage
 //!
@@ -59,8 +59,9 @@ impl From<ImageCompatError> for ImageError {
 
 /// An `image::ImageDecoder` and `image::ImageDecoderRect` for a single DjVu page.
 ///
-/// By default renders at the native page resolution. Use [`DjVuDecoder::with_size`]
-/// to override the output dimensions.
+/// By default renders at the native page resolution, turned by the page's INFO
+/// rotation as a viewer shows it. Use [`DjVuDecoder::with_size`] to override
+/// the output dimensions.
 pub struct DjVuDecoder<'a> {
     page: &'a DjVuPage,
     width: u32,
@@ -70,11 +71,13 @@ pub struct DjVuDecoder<'a> {
 impl<'a> DjVuDecoder<'a> {
     /// Construct a decoder from a [`DjVuPage`] reference.
     ///
-    /// The output dimensions default to the native page size from the INFO chunk.
+    /// The output dimensions default to the page size from the INFO chunk, in
+    /// display orientation: width and height swap on a page rotated by 90°.
     pub fn new(page: &'a DjVuPage) -> Result<Self, ImageCompatError> {
+        let (width, height) = crate::djvu_render::display_dimensions(page);
         Ok(Self {
-            width: page.width() as u32,
-            height: page.height() as u32,
+            width,
+            height,
             page,
         })
     }
@@ -82,7 +85,8 @@ impl<'a> DjVuDecoder<'a> {
     /// Override the output dimensions.
     ///
     /// The rendered image will be scaled to `width × height` using bilinear
-    /// interpolation via [`RenderOptions`].
+    /// interpolation via [`RenderOptions`]. The size is in display orientation,
+    /// like the image: after the page's INFO rotation.
     #[must_use]
     pub fn with_size(mut self, width: u32, height: u32) -> Self {
         self.width = width;
@@ -92,11 +96,19 @@ impl<'a> DjVuDecoder<'a> {
 
     /// Render the full page into an RGBA byte buffer.
     fn render_to_vec(&self) -> Result<Vec<u8>, ImageCompatError> {
-        let opts = RenderOptions {
-            width: self.width,
-            height: self.height,
-            ..RenderOptions::default()
-        };
+        if self.width == 0 || self.height == 0 {
+            return Err(RenderError::InvalidDimensions {
+                width: self.width,
+                height: self.height,
+            }
+            .into());
+        }
+        let opts: RenderOptions =
+            crate::render_size::RenderSize::exact(self.page, self.width, self.height).options();
+        if !opts.can_stream(self.page) {
+            // A rotated page turns as a whole pixmap; `render_into` refuses it.
+            return Ok(crate::djvu_render::render_pixmap(self.page, &opts)?.data);
+        }
         let size = (self.width as usize)
             .saturating_mul(self.height as usize)
             .saturating_mul(4);
@@ -362,5 +374,44 @@ mod tests {
         // y = u32::MAX, height = 1 → overflow
         let result = decoder.read_rect(0, u32::MAX, 1, 1, &mut buf, 4);
         assert!(result.is_err(), "y+height overflow must return error");
+    }
+    /// A rotated page decodes as a viewer shows it: display-sized and turned,
+    /// with `with_size` in the same orientation.
+    #[test]
+    fn rotated_page_decodes_in_display_orientation() {
+        let doc = load_page("boy_jb2_rotate90.djvu");
+        let page = doc.page(0).unwrap();
+        assert_eq!(page.rotation(), crate::info::Rotation::Cw90);
+        let (pw, ph) = (page.width() as u32, page.height() as u32);
+
+        let decoder = DjVuDecoder::new(page).unwrap();
+        assert_eq!(decoder.dimensions(), (ph, pw));
+        let mut buf = vec![0u8; decoder.total_bytes() as usize];
+        decoder.read_image(&mut buf).unwrap();
+        let want = crate::djvu_render::render_pixmap(
+            page,
+            &RenderOptions {
+                width: pw,
+                height: ph,
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!((want.width, want.height), (ph, pw));
+        assert!(buf == want.data);
+
+        let decoder = DjVuDecoder::new(page).unwrap().with_size(ph / 2, pw / 2);
+        let mut buf = vec![0u8; decoder.total_bytes() as usize];
+        decoder.read_image(&mut buf).unwrap();
+        let want = crate::djvu_render::render_pixmap(
+            page,
+            &RenderOptions {
+                width: pw / 2,
+                height: ph / 2,
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(buf == want.data);
     }
 }

@@ -62,8 +62,9 @@
       const bytes = new Uint8Array(await resp.arrayBuffer());
       const doc = WasmDocument.from_bytes(bytes);
       const page = doc.page(0);
-      const pmFull = new (await import('./pkg/djvu_rs.js')).WasmPixmap();
-      page.render_into_pixmap(dpi, pmFull);
+      const pkg = await import('./pkg/djvu_rs.js');
+      const pmFull = new pkg.WasmPixmap();
+      page.render_request(new pkg.WasmRenderRequest(dpi), pmFull);
       const fullMs = performance.now() - t0;
       log(`full download + open + render p0: ${fullMs.toFixed(0)} ms (${len} bytes fetched)`);
 

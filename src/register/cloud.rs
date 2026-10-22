@@ -207,9 +207,12 @@ pub fn chain_all() -> CloudPass {
 /// Record first, then take the slot: a crash between the two leaves a record and the old value,
 /// which the next pass completes, never our value with no record of what it replaced.
 fn write_chain(id: &str, record: &str) -> Result<()> {
-    let key = LOCAL_MACHINE.create(format!("{SYNC_ROOT_MANAGER}\\{id}"))?;
-    key.set_string(CHAIN_VALUE, record)?;
+    let key = LOCAL_MACHINE
+        .create(format!("{SYNC_ROOT_MANAGER}\\{id}"))
+        .core()?;
+    key.set_string(CHAIN_VALUE, record).core()?;
     key.set_string(THUMB_VALUE, CLSID_CLOUD_THUMB_PROVIDER_STR)
+        .core()
 }
 
 /// Hand every slot we hold back to what it held before, and drop our records.
@@ -236,9 +239,11 @@ pub fn unchain_all() -> CloudPass {
 }
 
 fn write_unchain(id: &str, step: &UnchainStep) -> Result<()> {
-    let key = LOCAL_MACHINE.create(format!("{SYNC_ROOT_MANAGER}\\{id}"))?;
+    let key = LOCAL_MACHINE
+        .create(format!("{SYNC_ROOT_MANAGER}\\{id}"))
+        .core()?;
     match step {
-        UnchainStep::Restore(clsid) => key.set_string(THUMB_VALUE, clsid)?,
+        UnchainStep::Restore(clsid) => key.set_string(THUMB_VALUE, clsid).core()?,
         UnchainStep::Clear => {
             let _ = key.remove_value(THUMB_VALUE);
         }
@@ -290,11 +295,15 @@ pub fn relink() -> CloudPass {
 pub(super) fn register_class(classes: &Key, dll_path: &str) -> Result<()> {
     write_inproc_server(classes, CLSID_CLOUD_THUMB_PROVIDER_STR, NAME, dll_path)?;
     classes
-        .create(format!("CLSID\\{CLSID_CLOUD_THUMB_PROVIDER_STR}"))?
-        .set_string("AppID", CLOUD_THUMB_APPID_STR)?;
-    let appid = classes.create(format!("AppID\\{CLOUD_THUMB_APPID_STR}"))?;
-    appid.set_string("", NAME)?;
-    appid.set_string("DllSurrogate", "")
+        .create(format!("CLSID\\{CLSID_CLOUD_THUMB_PROVIDER_STR}"))
+        .core()?
+        .set_string("AppID", CLOUD_THUMB_APPID_STR)
+        .core()?;
+    let appid = classes
+        .create(format!("AppID\\{CLOUD_THUMB_APPID_STR}"))
+        .core()?;
+    appid.set_string("", NAME).core()?;
+    appid.set_string("DllSurrogate", "").core()
 }
 
 /// [`register_class`], the Approved-list entry when there is a machine-wide list to write, and
@@ -302,7 +311,8 @@ pub(super) fn register_class(classes: &Key, dll_path: &str) -> Result<()> {
 /// under `who`: a failure here costs cloud folders only, never the rest of the registration.
 pub(super) fn register_and_link(classes: &Key, dll_path: &str, approved: Option<&Key>, who: &str) {
     let registered = register_class(classes, dll_path).and_then(|()| match approved {
-        Some(list) => list.set_string(CLSID_CLOUD_THUMB_PROVIDER_STR, NAME),
+        Some(list) => list.set_string(CLSID_CLOUD_THUMB_PROVIDER_STR, NAME).core(),
+
         None => Ok(()),
     });
     if let Err(e) = registered {

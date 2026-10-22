@@ -33,6 +33,56 @@ fn lanczos3_kernel(x: f32) -> f32 {
     sinc_x * sinc_x3
 }
 
+/// One axis of a Lanczos-3 rescale from `src_len` to `dst_len` pixels: where
+/// output pixel `o` sits on the source, and which source pixels it reads.
+///
+/// The one place both passes and [`lanczos3_source_window`] take their taps
+/// from, so a windowed rescale reads exactly the pixels a whole one does.
+#[derive(Clone, Copy)]
+struct Axis {
+    scale: f32,
+    /// Kernel half-width in source pixels.
+    support: i32,
+    src_len: u32,
+}
+
+impl Axis {
+    fn new(src_len: u32, dst_len: u32) -> Self {
+        let scale = src_len as f32 / dst_len as f32;
+        Self {
+            scale,
+            support: (3.0_f32 * scale.max(1.0)).ceil() as i32,
+            src_len,
+        }
+    }
+
+    /// The source position of output pixel `o`.
+    fn centre(&self, o: u32) -> f32 {
+        (o as f32 + 0.5) * self.scale - 0.5
+    }
+
+    /// The source pixels `lo..=hi` that output pixel at `centre` reads.
+    fn taps(&self, centre: f32) -> (i32, i32) {
+        let c = centre.floor() as i32;
+        (
+            (c - self.support + 1).max(0),
+            (c + self.support).min(self.src_len as i32 - 1),
+        )
+    }
+
+    /// The weight of source pixel `s` for output pixel at `centre`.
+    fn weight(&self, s: i32, centre: f32) -> f32 {
+        lanczos3_kernel((s as f32 - centre) / self.scale.max(1.0))
+    }
+
+    /// The source pixels `lo..hi` that output pixels `o..o + len` read.
+    fn span(&self, o: u32, len: u32) -> (u32, u32) {
+        let (lo, _) = self.taps(self.centre(o));
+        let (_, hi) = self.taps(self.centre(o + len - 1));
+        (lo as u32, (hi + 1).max(lo) as u32)
+    }
+}
+
 /// Scale `src` to `dst_w × dst_h` using separable Lanczos-3 resampling.
 ///
 /// Two-pass implementation:
@@ -46,24 +96,71 @@ fn lanczos3_kernel(x: f32) -> f32 {
 /// [`PixmapError`] when the intermediate `dst_w × src_h` buffer or the
 /// `dst_w × dst_h` output exceeds [`Pixmap::MAX_PIXELS`]. The caller decides
 /// whether that is a render limit or a bug in its own size arithmetic.
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 pub(crate) fn scale_lanczos3(src: &Pixmap, dst_w: u32, dst_h: u32) -> Result<Pixmap, PixmapError> {
-    let src_w = src.width;
-    let src_h = src.height;
-
     // Short-circuit: nothing to scale.
-    if src_w == dst_w && src_h == dst_h {
+    if src.width == dst_w && src.height == dst_h {
         return Ok(src.clone());
     }
     if dst_w == 0 || dst_h == 0 {
         return Pixmap::try_white(dst_w.max(1), dst_h.max(1));
     }
+    scale_lanczos3_window(
+        src,
+        (0, 0),
+        (src.width, src.height),
+        (dst_w, dst_h),
+        (0, 0, dst_w, dst_h),
+    )
+}
+
+/// The part of a `src_full` image that a Lanczos-3 rescale to `dst_full`
+/// reads for the output window `(x, y, width, height)`: `(x, y, width,
+/// height)` on the source. The window must be non-empty and inside
+/// `dst_full`.
+pub(crate) fn lanczos3_source_window(
+    src_full: (u32, u32),
+    dst_full: (u32, u32),
+    window: (u32, u32, u32, u32),
+) -> (u32, u32, u32, u32) {
+    let (x0, x1) = Axis::new(src_full.0, dst_full.0).span(window.0, window.2);
+    let (y0, y1) = Axis::new(src_full.1, dst_full.1).span(window.1, window.3);
+    (x0, y0, x1 - x0, y1 - y0)
+}
+
+/// The output window `(x, y, width, height)` of a Lanczos-3 rescale of a
+/// `src_full` image to `dst_full`, from `src`: the part of the source at
+/// `origin` that covers [`lanczos3_source_window`] of that window.
+///
+/// Byte-identical to the same window cut from [`scale_lanczos3`] of the whole
+/// source: each output pixel sums the same source pixels with the same
+/// weights in the same order. The cost scales with the window, not the page.
+///
+/// # Errors
+///
+/// [`PixmapError`] when the intermediate buffer or the output exceeds
+/// [`Pixmap::MAX_PIXELS`].
+pub(crate) fn scale_lanczos3_window(
+    src: &Pixmap,
+    origin: (u32, u32),
+    src_full: (u32, u32),
+    dst_full: (u32, u32),
+    window: (u32, u32, u32, u32),
+) -> Result<Pixmap, PixmapError> {
+    let (win_x, win_y, win_w, win_h) = window;
+    let h_axis = Axis::new(src_full.0, dst_full.0);
+    let v_axis = Axis::new(src_full.1, dst_full.1);
+    // The source rows the window reads; the horizontal pass filters only these.
+    let (row0, row1) = v_axis.span(win_y, win_h);
+    debug_assert!(
+        origin.1 <= row0 && row1 - origin.1 <= src.height,
+        "the source must cover the rows the window reads"
+    );
 
     // ── Horizontal pass ───────────────────────────────────────────────────────
-    // Map each output column `ox` (0..dst_w) to a source position, then sum
-    // the Lanczos-3 kernel over the contributing source columns.
-    let h_scale = src_w as f32 / dst_w as f32;
-    let h_support = (3.0_f32 * h_scale.max(1.0)).ceil() as i32; // kernel half-width in src pixels
-
+    // Map each output column `ox` to a source position, then sum the Lanczos-3
+    // kernel over the contributing source columns.
+    //
     // The horizontal weight `lanczos3_kernel((sx - cx)/h_scale)` and the
     // normaliser depend only on the output column `ox` (via `cx`), never on the
     // row `oy`. Precompute, once, the contributor start `x0` + kernel weights +
@@ -73,35 +170,38 @@ pub(crate) fn scale_lanczos3(src: &Pixmap, dst_w: u32, dst_h: u32) -> Result<Pix
     // combines it with row-pointer indexing so the source/destination rows are
     // read without per-pixel `get_rgb`/`set_rgb` bounds checks. Bit-identical:
     // identical weights summed in identical order with the identical norm.
-    let dw = dst_w as usize;
-    let sw = src_w as usize;
+    let dw = win_w as usize;
+    let sw = src.width as usize;
     struct HCol {
         x0: usize,
         weights: Vec<f32>,
         norm: f32,
     }
-    let hcols: Vec<HCol> = (0..dst_w)
+    let hcols: Vec<HCol> = (win_x..win_x + win_w)
         .map(|ox| {
-            let cx = (ox as f32 + 0.5) * h_scale - 0.5;
-            let x0 = (cx.floor() as i32 - h_support + 1).max(0);
-            let x1 = (cx.floor() as i32 + h_support).min(src_w as i32 - 1);
+            let cx = h_axis.centre(ox);
+            let (x0, x1) = h_axis.taps(cx);
+            debug_assert!(
+                origin.0 as i32 <= x0 && x1 < (origin.0 + src.width) as i32,
+                "the source must cover the columns the window reads"
+            );
             let mut weights = Vec::with_capacity((x1 - x0 + 1).max(0) as usize);
             let mut w_sum = 0.0_f32;
             for sx in x0..=x1 {
-                let w = lanczos3_kernel((sx as f32 - cx) / h_scale.max(1.0));
+                let w = h_axis.weight(sx, cx);
                 weights.push(w);
                 w_sum += w;
             }
             let norm = if w_sum.abs() > 1e-6 { 1.0 / w_sum } else { 1.0 };
             HCol {
-                x0: x0 as usize,
+                x0: (x0 - origin.0 as i32) as usize,
                 weights,
                 norm,
             }
         })
         .collect();
 
-    let mut mid = Pixmap::try_new(dst_w, src_h, 255, 255, 255, 255)?;
+    let mut mid = Pixmap::try_new(win_w, row1 - row0, 255, 255, 255, 255)?;
 
     // Per-output-row horizontal filter. Rows are independent (each reads its own
     // `src` row + the shared `hcols`, writes its own `mid` row), so the loop
@@ -114,8 +214,9 @@ pub(crate) fn scale_lanczos3(src: &Pixmap, dst_w: u32, dst_h: u32) -> Result<Pix
     // stride-4 deinterleave. The alpha lane accumulates the source's constant 255
     // and is ignored on output. Bit-identical: each RGB channel sums the same taps
     // in the same order with the same norm.
-    let h_row = |oy: usize, mid_row: &mut [u8]| {
-        let src_row = &src.data[oy * sw * 4..(oy + 1) * sw * 4];
+    let h_row = |my: usize, mid_row: &mut [u8]| {
+        let sy = (row0 - origin.1) as usize + my;
+        let src_row = &src.data[sy * sw * 4..(sy + 1) * sw * 4];
         for (ox, col) in hcols.iter().enumerate() {
             let mut acc = [0.0_f32; 4];
             for (i, &w) in col.weights.iter().enumerate() {
@@ -139,25 +240,21 @@ pub(crate) fn scale_lanczos3(src: &Pixmap, dst_w: u32, dst_h: u32) -> Result<Pix
         mid.data
             .par_chunks_mut(dw * 4)
             .enumerate()
-            .for_each(|(oy, mid_row)| h_row(oy, mid_row));
+            .for_each(|(my, mid_row)| h_row(my, mid_row));
     }
     #[cfg(not(feature = "parallel"))]
-    for oy in 0..src_h as usize {
-        let mid_row = &mut mid.data[oy * dw * 4..(oy + 1) * dw * 4];
-        h_row(oy, mid_row);
+    for (my, mid_row) in mid.data.chunks_mut(dw * 4).enumerate() {
+        h_row(my, mid_row);
     }
 
     // ── Vertical pass ─────────────────────────────────────────────────────────
-    let v_scale = src_h as f32 / dst_h as f32;
-    let v_support = (3.0_f32 * v_scale.max(1.0)).ceil() as i32;
-
     // #448: the vertical weight depends only on (oy, sy), not ox, so hoist the
     // `lanczos3_kernel` evaluations out of the per-column loop (LLVM cannot LICM
     // the opaque `f32::sin` calls). Accumulate row-major into per-column buffers so
     // `mid` is read sequentially instead of striding by `dst_w*4` per sy. The
     // per-column sum is over the same `sy` values in the same order, so the result
     // is bit-identical to the column-major version.
-    let mut out = Pixmap::try_new(dst_w, dst_h, 255, 255, 255, 255)?;
+    let mut out = Pixmap::try_new(win_w, win_h, 255, 255, 255, 255)?;
 
     // Per-output-row vertical filter, writing directly into `out_row`. Output
     // rows are independent; the only per-row mutable state is the three column
@@ -173,17 +270,17 @@ pub(crate) fn scale_lanczos3(src: &Pixmap, dst_w: u32, dst_h: u32) -> Result<Pix
     // Bit-identical: each output channel still sums the same `sy` contributors in
     // the same order with the same norm.
     let v_row = |oy: usize, out_row: &mut [u8], acc: &mut [f32]| {
-        let cy = (oy as f32 + 0.5) * v_scale - 0.5;
-        let y0 = (cy.floor() as i32 - v_support + 1).max(0);
-        let y1 = (cy.floor() as i32 + v_support).min(src_h as i32 - 1);
+        let cy = v_axis.centre(win_y + oy as u32);
+        let (y0, y1) = v_axis.taps(cy);
 
         acc.iter_mut().for_each(|v| *v = 0.0);
         let mut w_sum = 0.0_f32;
 
         for sy in y0..=y1 {
-            let w = lanczos3_kernel((sy as f32 - cy) / v_scale.max(1.0));
+            let w = v_axis.weight(sy, cy);
             w_sum += w;
-            let row = &mid.data[sy as usize * dw * 4..(sy as usize + 1) * dw * 4];
+            let my = (sy as u32 - row0) as usize;
+            let row = &mid.data[my * dw * 4..(my + 1) * dw * 4];
             for (a, &s) in acc.iter_mut().zip(row.iter()) {
                 *a += s as f32 * w;
             }
@@ -212,8 +309,7 @@ pub(crate) fn scale_lanczos3(src: &Pixmap, dst_w: u32, dst_h: u32) -> Result<Pix
     #[cfg(not(feature = "parallel"))]
     {
         let mut acc = vec![0.0_f32; dw * 4];
-        for oy in 0..dst_h as usize {
-            let out_row = &mut out.data[oy * dw * 4..(oy + 1) * dw * 4];
+        for (oy, out_row) in out.data.chunks_mut(dw * 4).enumerate() {
             v_row(oy, out_row, &mut acc);
         }
     }
@@ -289,6 +385,51 @@ mod tests {
                 (r as i32 - 200).abs() <= 5 && g <= 5 && b <= 5,
                 "expected near-red (200,0,0), got ({r},{g},{b})"
             );
+        }
+    }
+
+    /// A windowed rescale from just the source it reads is byte-identical
+    /// to the same window of the whole rescale, down and up, at every edge.
+    #[test]
+    fn scale_lanczos3_window_matches_whole_crop() {
+        let (sw, sh) = (37u32, 23u32);
+        let mut src = Pixmap::white(sw, sh);
+        for (i, b) in src.data.iter_mut().enumerate() {
+            if i % 4 != 3 {
+                *b = (i.wrapping_mul(2_654_435_761) >> 7) as u8;
+            }
+        }
+        for (dw, dh) in [(12u32, 9u32), (74, 46), (50, 11), (5, 60)] {
+            let whole = scale_lanczos3(&src, dw, dh).unwrap();
+            for (x, y, w, h) in [
+                (0, 0, 1, 1),
+                (dw - 1, dh - 1, 1, 1),
+                (0, 0, dw, dh),
+                (dw / 3, dh / 4, dw / 2, dh / 2),
+                (1, dh / 2, dw - 1, 1),
+            ] {
+                let (ox, oy, ow, oh) = lanczos3_source_window((sw, sh), (dw, dh), (x, y, w, h));
+                assert!(ox + ow <= sw && oy + oh <= sh);
+                let mut part = Pixmap::white(ow, oh);
+                for row in 0..oh {
+                    let from = (((oy + row) * sw + ox) * 4) as usize;
+                    let to = (row * ow * 4) as usize;
+                    part.data[to..to + ow as usize * 4]
+                        .copy_from_slice(&src.data[from..from + ow as usize * 4]);
+                }
+                let got = scale_lanczos3_window(&part, (ox, oy), (sw, sh), (dw, dh), (x, y, w, h))
+                    .unwrap();
+                assert_eq!((got.width, got.height), (w, h));
+                for row in 0..h {
+                    let from = (((y + row) * dw + x) * 4) as usize;
+                    let to = (row * w * 4) as usize;
+                    assert_eq!(
+                        got.data[to..to + w as usize * 4],
+                        whole.data[from..from + w as usize * 4],
+                        "{dw}x{dh} window {x},{y} {w}x{h} row {row}"
+                    );
+                }
+            }
         }
     }
 

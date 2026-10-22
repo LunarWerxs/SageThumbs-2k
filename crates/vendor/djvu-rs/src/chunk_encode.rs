@@ -2,7 +2,7 @@
 //! encoders.
 //!
 //! The individual encoders (`encode_navm`, `encode_fgbz`, `encode_text_layer`,
-//! `encode_smmr`, `encode_jb2`) each own a single DjVu chunk's wire format but
+//! `encode_smmr`, `encode_jb2_lossless`) each own a single DjVu chunk's wire format but
 //! historically diverged on two axes the consumer had to track by hand:
 //!
 //! * **the chunk id** — `NAVM`, `FGbz`, … was out-of-band knowledge, repeated
@@ -12,16 +12,16 @@
 //!   while the rest were infallible.
 //!
 //! This module is the one place that pairs each encoder with its id and routes
-//! every fallible case through a single [`EncodeError`]. A wrapper implements
-//! [`ChunkEncoder`] and yields an [`EncodedChunk`]; [`EncodedChunk::into_leaf`]
-//! bridges to the `iff` emission seam ([`Chunk::Leaf`]) so framing and
+//! every fallible case through a single [`EncodeError`](crate::chunk_encode::EncodeError). A wrapper implements
+//! [`ChunkEncoder`](crate::chunk_encode::ChunkEncoder) and yields an [`EncodedChunk`](crate::chunk_encode::EncodedChunk); [`EncodedChunk::into_leaf`](crate::chunk_encode::EncodedChunk::into_leaf)
+//! bridges to the `iff` emission seam ([`Chunk::Leaf`](crate::iff::Chunk::Leaf)) so framing and
 //! word-alignment padding stay centralised there (see issue #367).
 
 use crate::bitmap::Bitmap;
 use crate::djvu_document::DjVuBookmark;
 use crate::fgbz_encode::{FgbzColor, encode_fgbz};
 use crate::iff::{Chunk, ChunkId};
-use crate::jb2_encode::encode_jb2;
+use crate::jb2_encode::encode_jb2_lossless;
 use crate::navm_encode::encode_navm;
 use crate::smmr::encode_smmr;
 use crate::text::TextLayer;
@@ -224,14 +224,15 @@ impl ChunkEncoder for SmmrChunk<'_> {
     }
 }
 
-/// `Sjbz` — a bilevel mask encoded with JB2.
+/// `Sjbz` — a bilevel mask encoded with JB2, via [`encode_jb2_lossless`]
+/// (symbol dictionary with refinement, or direct tiles when smaller).
 pub struct Jb2Chunk<'a>(pub &'a Bitmap);
 
 impl ChunkEncoder for Jb2Chunk<'_> {
     fn encode_chunk(&self) -> Result<EncodedChunk, EncodeError> {
         Ok(EncodedChunk {
             id: *b"Sjbz",
-            payload: encode_jb2(self.0),
+            payload: encode_jb2_lossless(self.0),
         })
     }
 }

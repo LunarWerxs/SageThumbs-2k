@@ -27,7 +27,7 @@ whether the trait should be collapsed, deepened, or deliberately retained.
 
 Two facts decide the question:
 
-1. **The seam has real consumers.** `src/bin/djvu.rs` exposes a CLI
+1. **The seam has real consumers.** `src/bin/djvu/` exposes a CLI
    `--backend tesseract|onnx|candle` selector (`OcrBackendChoice`), and
    `build_ocr_backend` returns a `Box<dyn OcrBackend>` that `cmd_ocr` drives
    polymorphically (`ocr_backend.recognize(&pixmap, &options)`). The trait is the

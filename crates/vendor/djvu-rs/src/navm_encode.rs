@@ -1,7 +1,7 @@
 //! NAVM bookmark encoder.
 //!
 //! Serializes a slice of [`DjVuBookmark`] trees into the BZZ-compressed
-//! binary NAVM chunk format, mirroring the decoder in `djvu_document.rs`.
+//! binary NAVM chunk format, mirroring the decoder in `djvu_document/bookmark.rs`.
 //!
 //! ## Binary format (after BZZ decompression)
 //!

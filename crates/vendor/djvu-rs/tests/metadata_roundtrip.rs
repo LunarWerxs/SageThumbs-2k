@@ -221,6 +221,7 @@ fn annotations_roundtrip_soak() {
             zoom: (rng.next(2) == 0).then(|| 10 + rng.next(400)),
             mode: (rng.next(2) == 0)
                 .then(|| ["color", "bw", "fore", "back"][rng.next(4) as usize].to_string()),
+            extra: Vec::new(),
         };
         let n_areas = rng.next(5);
         let areas: Vec<MapArea> = (0..n_areas)
@@ -238,12 +239,14 @@ fn annotations_roundtrip_soak() {
                 },
                 shape: rand_shape(&mut rng),
                 border: (rng.next(2) == 0).then(|| Border {
-                    style: ["(xor)", "(border #0000FF)", "(shadow_in 4)"][rng.next(3) as usize]
+                    style: ["xor", "border #0000FF", "shadow_in 4"][rng.next(3) as usize]
                         .to_string(),
                 }),
                 highlight: (rng.next(2) == 0).then(|| Highlight {
                     color: rand_color(&mut rng),
                 }),
+                target: None,
+                extra: Vec::new(),
             })
             .collect();
 

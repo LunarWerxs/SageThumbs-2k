@@ -11,6 +11,7 @@ on:
       - 'examples/diff_djvulibre.rs'
       - 'examples/conformance_semantic.rs'
       - 'examples/interop_encode.rs'
+      - 'examples/writer_conformance.rs'
       - 'scripts/conformance_report.py'
       - 'scripts/test_conformance_report.py'
       - 'scripts/run_conformance.sh'
@@ -25,6 +26,7 @@ on:
       - 'examples/diff_djvulibre.rs'
       - 'examples/conformance_semantic.rs'
       - 'examples/interop_encode.rs'
+      - 'examples/writer_conformance.rs'
       - 'scripts/conformance_report.py'
       - 'scripts/test_conformance_report.py'
       - 'scripts/run_conformance.sh'
@@ -97,6 +99,7 @@ jobs:
             semantic_results.jsonl
             writer_results.txt
             writer_status.txt
+            writer_conformance_results.txt
             conformance_site/
           if-no-files-found: error
           retention-days: 90
