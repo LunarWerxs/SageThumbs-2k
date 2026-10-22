@@ -75,7 +75,7 @@ rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8", "
 # Audio cover-art reader (MP3/FLAC/Ogg/Opus/M4A/WMA/APE/WavPack/Musepack/…).
 # Pure-Rust, MIT OR Apache-2.0. Used read-only — we only pull the picture block.
 lofty = "0.25"
-moxcms = "0.8"
+moxcms = "0.9"
 # RAR (cbr) cover decode — the PURE-RUST `rars` crate (MIT OR Apache-2.0, no C, no
 # proprietary UnRAR, `#![forbid(unsafe_code)]`). Validated byte-identical to UnRAR on
 # real RAR3/RAR5 + a real comic. Replaces the old optional `unrar` C++ dep (2026-06-15),
@@ -90,7 +90,7 @@ moxcms = "0.8"
 # only rars API that touches rayon); a guard test in rar.rs keeps it that way. The
 # exposure is binary size plus a future call-site regression, not a live pool inside
 # Explorer. Revisit (pin/patch) if upstream ships a release with `rayon` optional again.
-rars = "0.9.4"
+rars = "0.11.0"
 # Pure-Rust SVG rasterizer (MIT/Apache) — a format Windows can't thumbnail.
 # default-features off: we render with `usvg::Options::default()` and never load a
 # fontdb, so `text`/`system-fonts`/`memmap-fonts` are dead weight, and we don't need
@@ -110,7 +110,7 @@ serde_json = "1"
 # dep), keeping the build C-free (no bzip2/zstd/brotli/lz4). 0.21 (from 0.13) is the
 # version that BOUNDS the header's declared entry count (`bounded_count`), so a crafted
 # `.7z` can no longer abort us with a capacity-overflow allocation during header parse.
-sevenz-rust2 = { version = "0.23", default-features = false }
+sevenz-rust2 = { version = "0.24", default-features = false }
 # A TIFF read a strip at a time (BigTIFF past the input ceiling, which WIC cannot open);
 # the same crate and version `image` already builds.
 tiff = { version = "0.11", default-features = false }
@@ -132,7 +132,7 @@ st2k_base = { package = "sagethumbs2k-base", path = "../base" }
 [dev-dependencies]
 # Test-only 7z writer: builds non-solid/duplicate-name archives in memory for the extraction
 # tests. The dependency above stays decode-only (`compress` never ships).
-sevenz-rust2 = { version = "0.23", default-features = false, features = ["compress"] }
+sevenz-rust2 = { version = "0.24", default-features = false, features = ["compress"] }
 # This crate's own tests decode AVIF in process whatever the features (see `decode/avif.rs`).
 rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
 # rav1d's own locks, the version it already brings: `tests/alloc_ceilings.rs` sets up their

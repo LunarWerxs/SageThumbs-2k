@@ -161,7 +161,7 @@ exr = { version = "=1.74.2", default-features = false }
 # moxcms in the lock and in every binary until `image` itself moves to 0.9; cargo deny
 # lists it as a duplicate the moment the two drift apart again.
 # Pure-Rust, Apache-2.0 OR BSD-3 (no C, no GPL).
-moxcms = "0.8"
+moxcms = "0.9"
 # Anti-aliased fills for the format badge's letters (`src/badge.rs`). NOT a new dependency:
 # resvg already links tiny-skia 0.12 into the DLL for SVG thumbnails, so naming it here
 # shares the same compiled crate. Keep it on the version resvg uses.
