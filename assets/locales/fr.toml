@@ -854,3 +854,11 @@ tip_shot_save_format = "Le format utilisé par le bouton Enregistrer. PNG et Web
 tip_shot_save_quality = "Qualité JPEG des captures d’écran enregistrées, de 1 à 100. Tous les autres formats sont sans perte et ignorent ce réglage."
 
 tip_menu_quick_moves = "Placez Convertir, Redimensionner et Pivoter directement dans le menu contextuel principal. Ils quittent le sous-menu SageThumbs 2K pour éviter les doublons."
+
+lbl_checker_colors = "Couleurs du damier :"
+checker_colors_auto = "Automatique"
+checker_colors_dark = "Sombre"
+checker_colors_custom = "Personnalisé…"
+checker_pick_first = "Damier : première couleur"
+checker_pick_second = "Damier : deuxième couleur"
+tip_checker_colors = "Les deux couleurs du damier derrière les images avec transparence, dans les vignettes, l’aperçu au clic droit et l’aperçu rapide. Automatique affiche des cases claires dans les vignettes et reprend la couleur de la fenêtre dans les aperçus ; Sombre fait ressortir les images blanches ; Personnalisé… permet de choisir les deux couleurs. Toute modification vide le cache des vignettes lorsque le damier des vignettes est activé."

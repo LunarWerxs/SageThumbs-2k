@@ -356,7 +356,12 @@ impl ThumbnailProvider_Impl {
         // composited over it would sit on top of the label. This makes the tile opaque.
         let mut img = img;
         if cfg.thumb_checker {
-            st2k_base::checkerpx::compose_under(&mut img.rgba, img.width, img.height);
+            st2k_base::checkerpx::compose_under(
+                &mut img.rgba,
+                img.width,
+                img.height,
+                cfg.checker_colors,
+            );
         }
 
         // Optional format badge (`FormatBadge`, off by default). Stamped HERE, on the

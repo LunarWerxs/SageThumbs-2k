@@ -7,11 +7,16 @@ use apply::*;
 mod hotkeys;
 #[cfg(test)]
 use hotkeys::*;
+mod checker;
 mod dependents;
 mod maintenance;
 #[cfg(test)]
 pub(super) use apply::apply_tuning_numbers;
 pub(super) use apply::{apply_menu_list_now, apply_settings, custom_action_chord};
+pub(super) use checker::{
+    checker_colors_in_dialog, on_checker_colors_command, pick_checker_colors, seed_checker_colors,
+    WM_APP_CHECKER_PICK,
+};
 pub(super) use dependents::{
     badge_size_active, is_dependent_switch, sync_dependent_switches, update_badge_style_enabled,
     update_custom_action_enabled, update_quick_enabled, update_save_dir_enabled,

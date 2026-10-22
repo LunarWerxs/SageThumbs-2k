@@ -30,6 +30,7 @@ pub(super) fn appearance_page_has_non_defaults() -> bool {
     s::corner_mark() != s::CornerMark::default()
         || !s::format_badge_icon()
         || s::thumb_checker()
+        || s::checker_colors() != st2k_base::checkerpx::CheckerColors::default()
         || s::prefer_cover_art()
         || s::video_offset_pct() != s::DEFAULT_VIDEO_OFFSET_PCT
         || s::app_theme() != 0

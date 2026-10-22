@@ -611,21 +611,7 @@ fn thumb_checker_fills_transparency_and_leaves_an_opaque_tile() {
         .create(TEST_SETTINGS_ROOT)
         .expect("settings key");
 
-    // Half transparent, half opaque. NOT a fully transparent image: `decode/thumb.rs`
-    // deliberately forces one of those opaque (DDS texture maps and render passes use alpha
-    // for something other than transparency), so it would prove nothing here.
-    let mut img = RgbaImage::new(80, 80);
-    for y in 0..80u32 {
-        for x in 0..80u32 {
-            let px = if x < 40 {
-                [0, 0, 0, 0]
-            } else {
-                [200, 0, 0, 255]
-            };
-            img.put_pixel(x, y, Rgba(px));
-        }
-    }
-    let png = encode(img, ImageFormat::Png);
+    let png = half_transparent_png();
 
     let _ = key.set_u32("ThumbChecker", 0);
     let plain = unsafe { get_thumbnail(&png, 64) }.expect("thumbnail");
@@ -653,6 +639,56 @@ fn thumb_checker_fills_transparency_and_leaves_an_opaque_tile() {
         rr > 180 && rg < 60 && rb < 60,
         "the opaque half must still be the picture, got BGRA {:?}",
         [rb, rg, rr, ra]
+    );
+}
+
+/// Half transparent, half opaque red. NOT a fully transparent image: `decode/thumb.rs`
+/// deliberately forces one of those opaque (DDS texture maps and render passes use alpha for
+/// something other than transparency), so it would prove nothing about the checkerboard.
+fn half_transparent_png() -> Vec<u8> {
+    let mut img = RgbaImage::new(80, 80);
+    for y in 0..80u32 {
+        for x in 0..80u32 {
+            let px = if x < 40 {
+                [0, 0, 0, 0]
+            } else {
+                [200, 0, 0, 255]
+            };
+            img.put_pixel(x, y, Rgba(px));
+        }
+    }
+    encode(img, ImageFormat::Png)
+}
+
+/// Issue #69: the pair picked in Settings is the one burned into the thumbnail. Both colours
+/// blue, so it does not matter which cell the sample lands in.
+#[test]
+fn custom_checker_colors_reach_the_thumbnail() {
+    let _settings = settings_lock();
+    use windows_registry::CURRENT_USER;
+
+    isolate_settings();
+    let key = CURRENT_USER
+        .create(TEST_SETTINGS_ROOT)
+        .expect("settings key");
+    let names = [
+        "ThumbChecker",
+        "CheckerColors",
+        "CheckerColorA",
+        "CheckerColorB",
+    ];
+    for (name, v) in names.into_iter().zip([1, 2, 0x00FF_0000, 0x00FF_0000]) {
+        let _ = key.set_u32(name, v);
+    }
+    let tile = unsafe { get_thumbnail(&half_transparent_png(), 64) }.expect("thumbnail");
+    for name in names {
+        let _ = key.remove_value(name);
+    }
+    let [b, g, r, a] = tile.px(2, 2);
+    assert!(
+        a == 255 && b > 250 && g < 5 && r < 5,
+        "the see-through half should be the picked blue, got BGRA {:?}",
+        [b, g, r, a]
     );
 }
 

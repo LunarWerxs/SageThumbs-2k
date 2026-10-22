@@ -18,6 +18,11 @@ pub(in super::super) unsafe fn load_values(hwnd: HWND) {
     );
     check(hwnd, ID_BADGE_ICON, settings::format_badge_icon());
     check(hwnd, ID_THUMB_CHECKER, settings::thumb_checker());
+    seed_checker_colors(
+        hwnd,
+        settings::checker_colors().mode() as usize,
+        settings::checker_custom_pair(),
+    );
     check(hwnd, ID_VIDEO_COVER_ART, settings::prefer_cover_art());
     update_badge_style_enabled(hwnd);
     check(hwnd, ID_ENABLE_MENU, settings::menu_enabled());
@@ -153,6 +158,8 @@ pub(in super::super) unsafe fn load_defaults(hwnd: HWND) {
     );
     check(hwnd, ID_BADGE_ICON, true); // ...but when it IS on, colour beats three letters
     check(hwnd, ID_THUMB_CHECKER, false); // real alpha is the better default
+                                          // Automatic, keeping the last custom pair for the next time Custom… is chosen.
+    seed_checker_colors(hwnd, 0, settings::checker_custom_pair());
     check(hwnd, ID_VIDEO_COVER_ART, false); // see settings::prefer_cover_art's documented default
     update_badge_style_enabled(hwnd);
     check(hwnd, ID_ENABLE_MENU, true);

@@ -852,3 +852,11 @@ tip_shot_save_format = "Das Dateiformat, in dem „Speichern“ die Screenshots 
 tip_shot_save_quality = "JPEG-Qualität für gespeicherte Screenshots, von 1 bis 100. Alle anderen Formate sind verlustfrei und ignorieren diesen Wert."
 
 tip_menu_quick_moves = "Konvertieren, Größe ändern und Drehen direkt im Windows-Rechtsklickmenü anzeigen. Sie werden dann aus dem Untermenü „SageThumbs 2K“ entfernt, damit nichts doppelt aufgeführt wird."
+
+lbl_checker_colors = "Schachbrettfarben:"
+checker_colors_auto = "Automatisch"
+checker_colors_dark = "Dunkel"
+checker_colors_custom = "Benutzerdefiniert…"
+checker_pick_first = "Schachbrett: erste Farbe"
+checker_pick_second = "Schachbrett: zweite Farbe"
+tip_checker_colors = "Die beiden Farben des Schachbretts hinter transparenten Bildern, in Miniaturansichten, der Vorschau per Rechtsklick und der Schnellvorschau. Automatisch zeichnet helle Felder in Miniaturansichten und passt die Farben in den Vorschauen an die Fensterfarbe an; Dunkel hebt weiße Bilder hervor; Benutzerdefiniert… lässt Sie beide Farben auswählen. Eine Änderung leert den Miniaturansichten-Cache, solange das Schachbrett in Miniaturansichten aktiviert ist."

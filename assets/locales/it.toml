@@ -858,3 +858,11 @@ tip_shot_save_format = "Il formato di file usato da Salva. PNG e WebP mantengono
 tip_shot_save_quality = "Qualità JPEG per gli screenshot salvati, da 1 a 100. Tutti gli altri formati sono senza perdita di qualità e ignorano questo valore."
 
 tip_menu_quick_moves = "Metti Converti, Ridimensiona e Ruota direttamente nel menu principale del clic destro. Verranno rimossi dal sottomenu SageThumbs 2K, così non compariranno due volte."
+
+lbl_checker_colors = "Colori della scacchiera:"
+checker_colors_auto = "Automatico"
+checker_colors_dark = "Scuro"
+checker_colors_custom = "Personalizzato…"
+checker_pick_first = "Scacchiera: primo colore"
+checker_pick_second = "Scacchiera: secondo colore"
+tip_checker_colors = "I due colori della scacchiera dietro le immagini trasparenti, nelle miniature, nell’anteprima con il clic destro e nell’anteprima rapida. Automatico mostra quadrati chiari nelle miniature e si adatta al colore della finestra nelle anteprime; Scuro fa risaltare le immagini bianche; Personalizzato… permette di scegliere entrambi i colori. Se la scacchiera delle miniature è attiva, una modifica svuota la cache delle miniature."

@@ -855,3 +855,11 @@ tip_shot_save_format = "「儲存」寫入的檔案格式。PNG 和 WebP 會完�
 tip_shot_save_quality = "儲存螢幕截圖時的 JPEG 品質，範圍為 1 到 100。其他格式都是無損格式，不會使用此設定。"
 
 tip_menu_quick_moves = "將「轉換」、「調整大小」和「旋轉」直接放在主要的右鍵選單中。這些項目會從 SageThumbs 2K 子選單中移除，避免重複列出。"
+
+lbl_checker_colors = "棋盤格顏色："
+checker_colors_auto = "自動"
+checker_colors_dark = "深色"
+checker_colors_custom = "自訂…"
+checker_pick_first = "棋盤格：第一個顏色"
+checker_pick_second = "棋盤格：第二個顏色"
+tip_checker_colors = "設定縮圖、右鍵預覽和快速預覽中，透明圖片背景的棋盤格顏色。自動會在縮圖中顯示淺色方格，並在預覽中配合視窗顏色；深色可讓白色圖片更醒目；自訂…可讓您選擇兩種顏色。啟用縮圖棋盤格時，變更顏色會清除縮圖快取。"

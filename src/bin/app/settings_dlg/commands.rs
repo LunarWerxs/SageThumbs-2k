@@ -32,6 +32,7 @@ pub(super) unsafe fn on_command(hwnd: HWND, wparam: WPARAM) -> LRESULT {
     on_command_dialog(hwnd, id, notify);
     on_command_shot(hwnd, id);
     on_command_sync_nav(hwnd, id, notify);
+    on_checker_colors_command(hwnd, id, notify);
     on_command_admin(hwnd, id);
     on_command_licence(hwnd, id);
     LRESULT(0)

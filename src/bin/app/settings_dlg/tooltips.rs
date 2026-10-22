@@ -21,6 +21,8 @@ pub(super) const TOOLTIPS: &[(i32, &str)] = &[
     (ID_BADGE_SIZE, "tip_badge_size"),
     (ID_BADGE_ICON, "tip_badge_icon"),
     (ID_THUMB_CHECKER, "tip_thumb_checker"),
+    (ID_LBL_CHECKER_COLORS, "tip_checker_colors"),
+    (ID_CHECKER_COLORS, "tip_checker_colors"),
     (ID_VIDEO_COVER_ART, "tip_video_cover_art"),
     (ID_LBL_VIDEO_OFFSET, "tip_video_offset"),
     (ID_ENABLE_MENU, "tip_enable_menu"),

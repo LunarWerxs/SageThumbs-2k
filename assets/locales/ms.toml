@@ -856,3 +856,11 @@ tip_shot_save_format = "Format fail yang ditulis oleh Simpan. PNG dan WebP menge
 tip_shot_save_quality = "Kualiti JPEG untuk tangkapan skrin yang disimpan, dari 1 hingga 100. Semua format lain tanpa kehilangan kualiti dan tidak menggunakan nilai ini."
 
 tip_menu_quick_moves = "Letakkan Tukar, Ubah saiz dan Putar terus pada menu klik kanan utama. Pilihan ini dikeluarkan daripada submenu SageThumbs 2K supaya tiada pilihan disenaraikan dua kali."
+
+lbl_checker_colors = "Warna papan dam:"
+checker_colors_auto = "Automatik"
+checker_colors_dark = "Gelap"
+checker_colors_custom = "Tersuai…"
+checker_pick_first = "Papan dam: warna pertama"
+checker_pick_second = "Papan dam: warna kedua"
+tip_checker_colors = "Dua warna papan dam di belakang gambar lutsinar, dalam thumbnail, pratonton klik kanan dan Pratonton Pantas. Automatik memaparkan petak cerah pada thumbnail dan mengikut warna tetingkap dalam pratonton; Gelap menjadikan gambar putih lebih menonjol; Tersuai… membolehkan anda memilih kedua-dua warna. Perubahan akan mengosongkan cache thumbnail apabila papan dam thumbnail diaktifkan."

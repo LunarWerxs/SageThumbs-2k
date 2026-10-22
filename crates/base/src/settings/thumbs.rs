@@ -180,6 +180,9 @@ pub struct ThumbSettings {
     /// see-through pixels. OFF by default; correct alpha is the better default, this is for
     /// people who want the original SageThumbs' look back.
     pub thumb_checker: bool,
+    /// `CheckerColors` and its custom pair - see [`checker_colors`]. Only read when
+    /// `thumb_checker` is true.
+    pub checker_colors: crate::checkerpx::CheckerColors,
     /// `VideoCoverArt` — for a video that carries embedded poster art, show the poster
     /// instead of a frame from the film. OFF by default: a real frame is the more useful
     /// tile for the videos most people have (phone clips, screen recordings, camera
@@ -252,6 +255,11 @@ pub fn thumb_settings() -> ThumbSettings {
         badge_style: BadgeStyle::from_dword(g("FormatBadgeStyle", DEFAULT_BADGE_STYLE)),
         badge_size: crate::settings::BadgeSize::from_dword(g("BadgeSize", DEFAULT_BADGE_SIZE)),
         thumb_checker: g("ThumbChecker", 0) != 0,
+        checker_colors: crate::checkerpx::CheckerColors::from_dwords(
+            g("CheckerColors", 0),
+            g("CheckerColorA", DEFAULT_CHECKER_PAIR.0),
+            g("CheckerColorB", DEFAULT_CHECKER_PAIR.1),
+        ),
         prefer_cover_art: g("VideoCoverArt", 0) != 0,
         video_offset_frac: f64::from(clamp_video_offset_pct(g(
             "VideoOffset",
@@ -273,6 +281,34 @@ pub fn thumb_checker() -> bool {
 
 pub fn set_thumb_checker(on: bool) -> windows_registry::Result<()> {
     set_dword("ThumbChecker", u32::from(on))
+}
+
+/// The custom pair before anyone picks one: the thumbnail's own white and light grey, so
+/// the colour picker opens on the colours the user is looking at.
+pub const DEFAULT_CHECKER_PAIR: (u32, u32) = (0x00FF_FFFF, 0x00CC_CCCC);
+
+/// `CheckerColors` with `CheckerColorA`/`CheckerColorB`: which two colours every checkerboard
+/// is drawn in (#69). Default automatic, which is each surface's look before the setting.
+pub fn checker_colors() -> crate::checkerpx::CheckerColors {
+    let (a, b) = checker_custom_pair();
+    crate::checkerpx::CheckerColors::from_dwords(get_dword("CheckerColors", 0), a, b)
+}
+
+/// The last custom pair picked, kept while another mode is chosen so choosing Custom again
+/// starts from it.
+pub fn checker_custom_pair() -> (u32, u32) {
+    (
+        get_dword("CheckerColorA", DEFAULT_CHECKER_PAIR.0),
+        get_dword("CheckerColorB", DEFAULT_CHECKER_PAIR.1),
+    )
+}
+
+pub fn set_checker_colors(c: crate::checkerpx::CheckerColors) -> windows_registry::Result<()> {
+    if let crate::checkerpx::CheckerColors::Custom(a, b) = c {
+        set_dword("CheckerColorA", a)?;
+        set_dword("CheckerColorB", b)?;
+    }
+    set_dword("CheckerColors", c.mode())
 }
 
 /// `CloudThumbs` — draw our thumbnails inside cloud sync folders (OneDrive, Synology Drive,

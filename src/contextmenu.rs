@@ -114,8 +114,8 @@ pub(crate) struct Preview {
     /// The "checker backdrop under a transparent thumbnail" setting, snapshotted once
     /// when the preview is built rather than re-read by `paint_preview` on every
     /// `WM_DRAWITEM` (mousing up and down a portable install's menu used to mean one
-    /// ini read + parse per repaint).
-    checker: bool,
+    /// ini read + parse per repaint). `None` is off; otherwise the colours to draw it in.
+    checker: Option<st2k_base::checkerpx::CheckerColors>,
     /// The DPI the tile is laid out and decoded for (#61); 96 is the 100% tile.
     dpi: u32,
 }
@@ -329,7 +329,7 @@ fn build_preview(
         h,
         name,
         info: info.encode_utf16().collect(),
-        checker: settings::preview_checker(),
+        checker: settings::preview_checker().then(settings::checker_colors),
         dpi,
     })
 }

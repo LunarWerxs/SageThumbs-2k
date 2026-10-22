@@ -858,3 +858,11 @@ tip_shot_save_format = "De bestandsindeling waarin Opslaan schrijft. PNG en WebP
 tip_shot_save_quality = "JPEG-kwaliteit voor opgeslagen schermafbeeldingen, van 1 tot 100. Alle andere indelingen zijn verliesvrij en negeren deze instelling."
 
 tip_menu_quick_moves = "Zet Converteren, Formaat wijzigen en Draaien rechtstreeks in het hoofdmenu van de rechtermuisknop. Ze verdwijnen dan uit het submenu van SageThumbs 2K, zodat ze niet dubbel worden vermeld."
+
+lbl_checker_colors = "Dambordkleuren:"
+checker_colors_auto = "Automatisch"
+checker_colors_dark = "Donker"
+checker_colors_custom = "Aangepast…"
+checker_pick_first = "Dambord: eerste kleur"
+checker_pick_second = "Dambord: tweede kleur"
+tip_checker_colors = "De twee kleuren van het dambord achter doorzichtige afbeeldingen, in miniaturen, de voorvertoning via rechtsklikken en Snelle voorvertoning. Automatisch gebruikt lichte vakken in miniaturen en volgt de vensterkleur in de voorvertoningen; Donker laat witte afbeeldingen beter uitkomen; Aangepast… laat je beide kleuren kiezen. Bij een wijziging wordt de miniatuurcache gewist wanneer het miniatuurdambord is ingeschakeld."

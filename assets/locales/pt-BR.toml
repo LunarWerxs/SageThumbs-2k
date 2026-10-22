@@ -858,3 +858,11 @@ tip_shot_save_format = "O formato de arquivo usado pelo botão Salvar. PNG e Web
 tip_shot_save_quality = "Qualidade do JPEG para capturas de tela salvas, de 1 a 100. Todos os outros formatos são sem perdas e ignoram esse valor."
 
 tip_menu_quick_moves = "Coloque Converter, Redimensionar e Girar diretamente no menu principal do botão direito. Eles saem do submenu do SageThumbs 2K, então nada aparece duplicado."
+
+lbl_checker_colors = "Cores do xadrez:"
+checker_colors_auto = "Automático"
+checker_colors_dark = "Escuro"
+checker_colors_custom = "Personalizado…"
+checker_pick_first = "Xadrez: primeira cor"
+checker_pick_second = "Xadrez: segunda cor"
+tip_checker_colors = "As duas cores do xadrez atrás de imagens transparentes, nas miniaturas, na visualização com o botão direito e na Visualização rápida. Automático desenha quadrados claros nas miniaturas e segue a cor da janela nas visualizações; Escuro faz imagens brancas se destacarem; Personalizado… permite escolher as duas cores. Uma alteração limpa o cache de miniaturas enquanto o xadrez das miniaturas está ativado."

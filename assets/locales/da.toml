@@ -850,3 +850,11 @@ tip_shot_save_format = "Filformatet, som Gem bruger. PNG og WebP bevarer hver pi
 tip_shot_save_quality = "JPEG-kvalitet for gemte skærmbilleder, fra 1 til 100. Alle andre formater er tabsfri og ignorerer denne indstilling."
 
 tip_menu_quick_moves = "Vis Konvertér, Tilpas størrelse og Rotér direkte i Windows' hovedmenu ved højreklik. De fjernes fra undermenuen SageThumbs 2K, så de ikke vises to gange."
+
+lbl_checker_colors = "Farver på ternet mønster:"
+checker_colors_auto = "Automatisk"
+checker_colors_dark = "Mørk"
+checker_colors_custom = "Brugerdefineret…"
+checker_pick_first = "Ternet mønster: første farve"
+checker_pick_second = "Ternet mønster: anden farve"
+tip_checker_colors = "De to farver i det ternede mønster bag gennemsigtige billeder i miniaturer, forhåndsvisningen ved højreklik og Hurtig forhåndsvisning. Automatisk viser lyse felter i miniaturer og følger vinduets farve i forhåndsvisningerne; Mørk får hvide billeder til at skille sig ud; Brugerdefineret… lader dig vælge begge farver. En ændring rydder miniaturecachen, når det ternede mønster vises i miniaturerne."

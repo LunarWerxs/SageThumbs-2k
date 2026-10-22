@@ -5,7 +5,7 @@
 //! here is a 96-DPI design value scaled to the DPI the menu is shown at.
 
 use super::*;
-use st2k_base::checkerpx::{checker_shades, fill_checker};
+use st2k_base::checkerpx::fill_checker;
 use windows::Win32::Foundation::{POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
     GetTextMetricsW, MonitorFromPoint, MonitorFromWindow, RestoreDC, SaveDC,
@@ -323,8 +323,8 @@ pub(crate) unsafe fn paint_preview(hdc: HDC, rc: RECT, p: &Preview, bg: u32, fg:
         // against the flat menu colour (default on; toggleable in Settings).
         // Snapshotted once when the preview was built (`Preview::checker`), not
         // re-read here — this runs on every `WM_DRAWITEM` repaint.
-        if p.checker {
-            let (c0, c1) = checker_shades(bg);
+        if let Some(colors) = p.checker {
+            let (c0, c1) = colors.on(bg);
             let cr = RECT {
                 left: bx,
                 top: by,

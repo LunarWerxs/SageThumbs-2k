@@ -858,3 +858,11 @@ tip_shot_save_format = "저장 시 사용할 파일 형식입니다. PNG와 WebP
 tip_shot_save_quality = "저장할 스크린샷의 JPEG 품질입니다(1~100). 다른 모든 형식은 무손실이며 이 설정을 사용하지 않습니다."
 
 tip_menu_quick_moves = "변환, 크기 조정, 회전을 기본 우클릭 메뉴에 바로 표시합니다. 이 항목들은 SageThumbs 2K 하위 메뉴에서 빠지므로 중복 표시되지 않습니다."
+
+lbl_checker_colors = "체커보드 색상:"
+checker_colors_auto = "자동"
+checker_colors_dark = "어둡게"
+checker_colors_custom = "사용자 지정…"
+checker_pick_first = "체커보드: 첫 번째 색상"
+checker_pick_second = "체커보드: 두 번째 색상"
+tip_checker_colors = "투명한 이미지 뒤에 표시되는 체커보드의 두 가지 색상입니다. 썸네일, 마우스 오른쪽 버튼 미리보기 및 빠른 미리보기에 적용됩니다. 자동은 썸네일에 밝은 사각형을 표시하고 미리보기에서는 창 색상을 따릅니다. 어둡게는 흰색 이미지가 잘 보이게 합니다. 사용자 지정…에서는 두 색상을 직접 선택할 수 있습니다. 썸네일 체커보드가 켜져 있을 때 색상을 변경하면 썸네일 캐시가 지워집니다."

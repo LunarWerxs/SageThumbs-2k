@@ -855,3 +855,11 @@ tip_shot_save_format = "“保存”写入的文件格式。PNG 和 WebP 会完�
 tip_shot_save_quality = "保存截图时的 JPEG 质量，范围为 1 到 100。其他格式均为无损格式，且会忽略此设置。"
 
 tip_menu_quick_moves = "将转换、调整大小和旋转直接放到主右键菜单中。它们会从 SageThumbs 2K 子菜单中移除，避免重复显示。"
+
+lbl_checker_colors = "棋盘格颜色："
+checker_colors_auto = "自动"
+checker_colors_dark = "深色"
+checker_colors_custom = "自定义…"
+checker_pick_first = "棋盘格：第一种颜色"
+checker_pick_second = "棋盘格：第二种颜色"
+tip_checker_colors = "设置透明图片后面的棋盘格颜色，适用于缩略图、右键预览和快速预览。自动模式下，缩略图使用浅色方格，预览中的颜色则与窗口颜色一致；深色模式让白色图片更加醒目；自定义…可让你选择两种颜色。启用缩略图棋盘格时，更改此设置会清除缩略图缓存。"

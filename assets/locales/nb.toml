@@ -858,3 +858,11 @@ tip_shot_save_format = "Filformatet som Lagre bruker. PNG og WebP bevarer hver p
 tip_shot_save_quality = "JPEG-kvalitet for lagrede skjermbilder, fra 1 til 100. Alle andre formater er tapsfrie og ignorerer denne innstillingen."
 
 tip_menu_quick_moves = "Legg Konverter, Endre størrelse og Roter direkte i hovedmenyen som vises når du høyreklikker. De fjernes fra undermenyen «SageThumbs 2K», slik at de ikke vises to ganger."
+
+lbl_checker_colors = "Rutemønsterfarger:"
+checker_colors_auto = "Automatisk"
+checker_colors_dark = "Mørk"
+checker_colors_custom = "Egendefinert…"
+checker_pick_first = "Rutemønster: første farge"
+checker_pick_second = "Rutemønster: andre farge"
+tip_checker_colors = "De to fargene i rutemønsteret bak gjennomsiktige bilder, i miniatyrbilder, forhåndsvisningen ved høyreklikk og hurtigforhåndsvisningen. Automatisk viser lyse ruter i miniatyrbilder og følger vindusfargen i forhåndsvisningene; Mørk gjør at hvite bilder skiller seg ut; Egendefinert… lar deg velge begge fargene. En endring tømmer miniatyrbufferen når rutemønsteret i miniatyrbilder er aktivt."

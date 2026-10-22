@@ -857,3 +857,11 @@ tip_shot_save_format = "Kaydet'in yazdığı dosya biçimi. PNG ve WebP her piks
 tip_shot_save_quality = "Kaydedilen ekran görüntüleri için JPEG kalitesi, 1 ile 100 arasında. Diğer tüm biçimler kayıpsızdır ve bu ayarı yok sayar."
 
 tip_menu_quick_moves = "Dönüştür, Yeniden boyutlandır ve Döndür seçeneklerini doğrudan ana sağ tıklama menüsüne ekler. Böylece SageThumbs 2K alt menüsünden kaldırılır ve aynı seçenekler iki kez listelenmez."
+
+lbl_checker_colors = "Dama tahtası renkleri:"
+checker_colors_auto = "Otomatik"
+checker_colors_dark = "Koyu"
+checker_colors_custom = "Özel…"
+checker_pick_first = "Dama tahtası: ilk renk"
+checker_pick_second = "Dama tahtası: ikinci renk"
+tip_checker_colors = "Saydam resimlerin arkasında, küçük resimlerde, sağ tıklama önizlemesinde ve Hızlı Önizleme'de kullanılan dama tahtasının iki rengi. Otomatik, küçük resimlerde açık renkli kareler kullanır ve önizlemelerde pencere rengine uyum sağlar; Koyu, beyaz resimlerin öne çıkmasını sağlar; Özel… iki rengi de seçmenizi sağlar. Küçük resimlerde dama tahtası etkinken yapılan değişiklik, küçük resim önbelleğini temizler."

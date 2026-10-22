@@ -20,6 +20,66 @@
 const LIGHT: (u8, u8, u8) = (255, 255, 255);
 const DARK: (u8, u8, u8) = (204, 204, 204);
 
+/// [`CheckerColors::Dark`]'s pair as COLORREFs: GIMP's "dark checks", the light pair's
+/// contrast moved to the bottom of the range, so a white logo reads against it (#69).
+const DARK_PAIR: (u32, u32) = (0x0066_6666, 0x0033_3333);
+
+/// Which two colours every checkerboard is drawn in: Explorer thumbnails, the right-click
+/// tile and Quick preview (`CheckerColors`, issue #69: a white PNG or SVG all but vanishes
+/// into the light squares). The first colour is the top-left cell's on every surface.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum CheckerColors {
+    /// Each surface's own pair: [`LIGHT`]/[`DARK`] burned into a thumbnail, and
+    /// [`checker_shades`] of the window colour in the two previews.
+    #[default]
+    Auto,
+    /// [`DARK_PAIR`] everywhere.
+    Dark,
+    /// The user's two picks, as COLORREFs (0x00BBGGRR).
+    Custom(u32, u32),
+}
+
+impl CheckerColors {
+    /// `CheckerColors` (0 automatic, 1 dark, 2 custom) with the custom pair from
+    /// `CheckerColorA`/`CheckerColorB`. An unknown mode falls to [`Self::Auto`], and the top
+    /// byte is masked off a colour, because GDI reads a non-zero one as a palette index.
+    pub const fn from_dwords(mode: u32, a: u32, b: u32) -> Self {
+        match mode {
+            1 => Self::Dark,
+            2 => Self::Custom(a & 0x00FF_FFFF, b & 0x00FF_FFFF),
+            _ => Self::Auto,
+        }
+    }
+
+    /// The stored mode, which is also the Settings combo's option index.
+    pub const fn mode(self) -> u32 {
+        match self {
+            Self::Auto => 0,
+            Self::Dark => 1,
+            Self::Custom(..) => 2,
+        }
+    }
+
+    /// The pair a GDI surface fills its checkerboard with, on a window whose colour is `bg`.
+    pub fn on(self, bg: u32) -> (u32, u32) {
+        match self {
+            Self::Auto => checker_shades(bg),
+            Self::Dark => DARK_PAIR,
+            Self::Custom(a, b) => (a, b),
+        }
+    }
+
+    /// The pair burned into an Explorer thumbnail, which has no window colour to follow.
+    fn rgb_pair(self) -> ((u8, u8, u8), (u8, u8, u8)) {
+        let rgb = |c: u32| (c as u8, (c >> 8) as u8, (c >> 16) as u8);
+        match self {
+            Self::Auto => (LIGHT, DARK),
+            Self::Dark => (rgb(DARK_PAIR.0), rgb(DARK_PAIR.1)),
+            Self::Custom(a, b) => (rgb(a), rgb(b)),
+        }
+    }
+}
+
 /// Checker cell size as a fraction of the short edge, then clamped. A fixed pixel size looks
 /// coarse on a 96 px tile and invisible on a 1024 px one; scaling keeps the pattern reading
 /// as "transparent" at every size Explorer asks for.
@@ -28,9 +88,9 @@ fn cell_for(edge: u32) -> u32 {
 }
 
 /// Composite `rgba` (straight, non-premultiplied RGBA8, `w * h * 4` bytes) over a
-/// checkerboard. No-ops on a buffer too small for the claimed size, and skips the work
-/// entirely when the image has no transparent pixel to reveal.
-pub fn compose_under(rgba: &mut [u8], w: u32, h: u32) {
+/// checkerboard in `colors`. No-ops on a buffer too small for the claimed size, and skips the
+/// work entirely when the image has no transparent pixel to reveal.
+pub fn compose_under(rgba: &mut [u8], w: u32, h: u32, colors: CheckerColors) {
     // Release builds run with overflow-checks off (see Cargo.toml), so a plain `w * h * 4`
     // could wrap and silently defeat this truncated-buffer guard, leading to out-of-bounds
     // indexing in the pixel loop below — matching the `checked_mul` `dib.rs` and
@@ -51,14 +111,15 @@ pub fn compose_under(rgba: &mut [u8], w: u32, h: u32) {
     }
 
     let cell = cell_for(w.min(h));
+    let pair = colors.rgb_pair();
     for y in 0..h {
-        blend_row(rgba, w, y, cell);
+        blend_row(rgba, w, y, cell, pair);
     }
 }
 
 /// Blend one image row (`y`) of `rgba` over its checkerboard cells, leaving opaque pixels
-/// untouched. `cell` is the checker cell size in pixels.
-fn blend_row(rgba: &mut [u8], w: u32, y: u32, cell: u32) {
+/// untouched. `cell` is the checker cell size in pixels; `pair.0` fills the top-left cell.
+fn blend_row(rgba: &mut [u8], w: u32, y: u32, cell: u32, pair: ((u8, u8, u8), (u8, u8, u8))) {
     let row_dark = (y / cell) % 2 == 1;
     for x in 0..w {
         let i = ((y * w + x) * 4) as usize;
@@ -67,9 +128,9 @@ fn blend_row(rgba: &mut [u8], w: u32, y: u32, cell: u32) {
             continue;
         }
         let bg = if ((x / cell) % 2 == 1) != row_dark {
-            DARK
+            pair.1
         } else {
-            LIGHT
+            pair.0
         };
         let over = |src: u8, dst: u8| ((src as u32 * a + dst as u32 * (255 - a)) / 255) as u8;
         rgba[i] = over(rgba[i], bg.0);
@@ -160,7 +221,7 @@ mod tests {
     fn a_fully_transparent_image_becomes_the_bare_checkerboard() {
         let (w, h) = (64u32, 64u32);
         let mut px = vec![0u8; (w * h * 4) as usize];
-        compose_under(&mut px, w, h);
+        compose_under(&mut px, w, h, CheckerColors::Auto);
         let cell = cell_for(64);
         let at = |x: u32, y: u32| {
             let i = ((y * w + x) * 4) as usize;
@@ -184,7 +245,7 @@ mod tests {
             .flat_map(|i| [(i % 251) as u8, 9, 9, 255])
             .collect();
         let before = px.clone();
-        compose_under(&mut px, w, h);
+        compose_under(&mut px, w, h, CheckerColors::Auto);
         assert_eq!(px, before);
     }
 
@@ -197,7 +258,7 @@ mod tests {
         for p in chunks {
             p[3] = 128;
         }
-        compose_under(&mut px, w, h);
+        compose_under(&mut px, w, h, CheckerColors::Auto);
         assert_eq!(px[0], ((255 * (255 - 128)) / 255) as u8);
         assert_eq!(px[3], 255);
     }
@@ -205,7 +266,7 @@ mod tests {
     #[test]
     fn does_not_panic_on_a_truncated_buffer() {
         let mut px = vec![0u8; 10];
-        compose_under(&mut px, 256, 256);
+        compose_under(&mut px, 256, 256, CheckerColors::Auto);
     }
 
     /// `w * h * 4` must not wrap. `w == h == u32::MAX` fits in a 64-bit `usize`
@@ -215,6 +276,45 @@ mod tests {
     #[test]
     fn does_not_panic_on_dimensions_whose_byte_count_overflows_usize() {
         let mut px = vec![0u8; 16];
-        compose_under(&mut px, u32::MAX, u32::MAX);
+        compose_under(&mut px, u32::MAX, u32::MAX, CheckerColors::Auto);
+    }
+
+    /// Issue #69: the colours picked in Settings are the ones burned into the thumbnail,
+    /// the first in the top-left cell, and COLORREF's 0x00BBGGRR order lands as RGB.
+    #[test]
+    fn a_custom_pair_is_the_checkerboard_a_thumbnail_gets() {
+        let (w, h) = (64u32, 64u32);
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        compose_under(
+            &mut px,
+            w,
+            h,
+            CheckerColors::Custom(0x0000_00FF, 0x0000_FF00),
+        );
+        let cell = cell_for(64);
+        let at = |x: u32, y: u32| {
+            let i = ((y * w + x) * 4) as usize;
+            (px[i], px[i + 1], px[i + 2])
+        };
+        assert_eq!(at(0, 0), (255, 0, 0), "first colour, red, top-left");
+        assert_eq!(at(cell, 0), (0, 255, 0), "second colour, green, beside it");
+    }
+
+    /// A stored value we cannot read is not a request for a colour, and a stray top byte
+    /// must never reach GDI, which reads it as a palette index.
+    #[test]
+    fn stored_values_read_back_safely() {
+        for c in [
+            CheckerColors::Auto,
+            CheckerColors::Dark,
+            CheckerColors::Custom(1, 2),
+        ] {
+            assert_eq!(CheckerColors::from_dwords(c.mode(), 1, 2), c);
+        }
+        assert_eq!(CheckerColors::from_dwords(7, 1, 2), CheckerColors::Auto);
+        assert_eq!(
+            CheckerColors::from_dwords(2, 0xFF12_3456, 0x0100_0000).on(0),
+            (0x0012_3456, 0)
+        );
     }
 }

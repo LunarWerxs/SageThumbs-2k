@@ -858,3 +858,11 @@ tip_shot_save_format = "Format file yang ditulis oleh Simpan. PNG dan WebP mempe
 tip_shot_save_quality = "Kualitas JPEG untuk screenshot yang disimpan, 1 hingga 100. Semua format lainnya lossless dan mengabaikannya."
 
 tip_menu_quick_moves = "Tampilkan Konversi, Ubah ukuran, dan Putar langsung di menu utama saat klik kanan. Ketiganya dipindahkan dari submenu SageThumbs 2K agar tidak muncul dua kali."
+
+lbl_checker_colors = "Warna kotak-kotak:"
+checker_colors_auto = "Otomatis"
+checker_colors_dark = "Gelap"
+checker_colors_custom = "Kustom…"
+checker_pick_first = "Kotak-kotak: warna pertama"
+checker_pick_second = "Kotak-kotak: warna kedua"
+tip_checker_colors = "Dua warna kotak-kotak di belakang gambar transparan, pada thumbnail, pratinjau klik kanan, dan Pratinjau cepat. Otomatis menampilkan kotak-kotak berwarna terang pada thumbnail dan mengikuti warna jendela pada pratinjau; Gelap membuat gambar putih lebih menonjol; Kustom… memungkinkan Anda memilih kedua warna. Perubahan akan menghapus cache thumbnail saat kotak-kotak pada thumbnail aktif."

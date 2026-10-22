@@ -858,3 +858,11 @@ tip_shot_save_format = "Format pliku używany przez przycisk Zapisz. PNG i WebP 
 tip_shot_save_quality = "Jakość JPEG dla zapisanych zrzutów ekranu, od 1 do 100. Wszystkie pozostałe formaty są bezstratne i ignorują to ustawienie."
 
 tip_menu_quick_moves = "Umieść Konwertuj, Zmień rozmiar i Obróć bezpośrednio w głównym menu kontekstowym. Znikną z podmenu SageThumbs 2K, więc nic nie będzie wyświetlane dwukrotnie."
+
+lbl_checker_colors = "Kolory szachownicy:"
+checker_colors_auto = "Automatyczne"
+checker_colors_dark = "Ciemne"
+checker_colors_custom = "Niestandardowe…"
+checker_pick_first = "Szachownica: pierwszy kolor"
+checker_pick_second = "Szachownica: drugi kolor"
+tip_checker_colors = "Dwa kolory szachownicy wyświetlanej za przezroczystymi obrazami w miniaturach, podglądzie po kliknięciu prawym przyciskiem myszy i szybkim podglądzie. Opcja Automatyczne wyświetla jasne pola w miniaturach i dopasowuje kolory do okna w podglądach; opcja Ciemne pomaga wyróżnić białe obrazy; opcja Niestandardowe… pozwala wybrać oba kolory. Zmiana czyści pamięć podręczną miniatur, gdy szachownica jest włączona."

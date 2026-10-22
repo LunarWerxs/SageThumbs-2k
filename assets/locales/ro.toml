@@ -853,3 +853,11 @@ tip_shot_save_format = "Formatul de fișier folosit de butonul Salvează. PNG ș
 tip_shot_save_quality = "Calitatea JPEG pentru capturile de ecran salvate, de la 1 la 100. Toate celelalte formate sunt fără pierderi și ignoră această setare."
 
 tip_menu_quick_moves = "Pune Convertire, Redimensionare și Rotire direct în meniul principal de clic dreapta. Acestea ies din submeniul SageThumbs 2K, astfel încât să nu fie listate de două ori."
+
+lbl_checker_colors = "Culori tablă de șah:"
+checker_colors_auto = "Automat"
+checker_colors_dark = "Întunecat"
+checker_colors_custom = "Personalizat…"
+checker_pick_first = "Tablă de șah: prima culoare"
+checker_pick_second = "Tablă de șah: a doua culoare"
+tip_checker_colors = "Cele două culori ale tablei de șah din spatele imaginilor transparente, în miniaturi, în previzualizarea din meniul contextual și în Previzualizare rapidă. Automat desenează pătrate deschise la miniaturi și urmează culoarea ferestrei în previzualizări; Întunecat face imaginile albe să iasă în evidență; Personalizat… îți permite să alegi ambele culori. O modificare golește memoria cache a miniaturilor cât timp tabla de șah pentru miniaturi este activată."

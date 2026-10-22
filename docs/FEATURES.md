@@ -604,7 +604,9 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   original, or Medium or Large for reading the format at a glance); it scales with the tile,
   so the choice looks the same in every Explorer view. Alongside it:
   **paint a checkerboard behind transparent thumbnails** (off by default; Explorer normally
-  shows the folder background through them) and **use a video's cover art instead of a frame**.
+  shows the folder background through them), **its colours** (Automatic, Dark so white images
+  stand out, or any two of your own from the Windows colour picker; the same colours draw the
+  right-click and Quick preview checkerboards) and **use a video's cover art instead of a frame**.
 - **File types:** purely the per-format list, with search, bulk select and **Defaults**.
 - **Right-click menu:** enable the menu, **show it on all file types** (so it's there everywhere; an
   unsupported file gets a condensed file-utility set: Files to folder / Sort into folders

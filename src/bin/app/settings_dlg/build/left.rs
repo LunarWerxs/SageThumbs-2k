@@ -164,6 +164,27 @@ pub(super) unsafe fn build_general(lc: &mut LeftCol, sty: &Styles) {
     dark_theme_combo(badge_size);
     restyle::dark_combo_subclass(badge_size, ID_BADGE_SIZE);
 
+    // Which two colours the checkerboards are drawn in (#69). Option order IS the stored mode
+    // (`CheckerColors::mode`); Custom… opens the colour picker (`values::checker`).
+    let checker = lc.combo(
+        t("lbl_checker_colors"),
+        ID_LBL_CHECKER_COLORS,
+        156,
+        ID_CHECKER_COLORS,
+    );
+    for key in CHECKER_COLOR_KEYS {
+        let w = wide(t(key));
+        SendMessageW(
+            checker,
+            CB_ADDSTRING,
+            None,
+            Some(LPARAM(w.as_ptr() as isize)),
+        );
+    }
+    SendMessageW(checker, CB_SETDROPPEDWIDTH, Some(WPARAM(230)), None);
+    dark_theme_combo(checker);
+    restyle::dark_combo_subclass(checker, ID_CHECKER_COLORS);
+
     lc.header(t("grp_app_look"), sty.hdr, ID_LBL_APP_LOOK, false);
     let theme = lc.combo(t("lbl_app_theme"), ID_LBL_APP_THEME, 160, ID_APP_THEME);
     for key in ["theme_system", "theme_light", "theme_dark"] {

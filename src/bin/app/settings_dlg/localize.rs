@@ -55,6 +55,13 @@ pub(super) unsafe fn on_lang_change(hwnd: HWND) {
 
 /// Locale keys for the tray double-click combo (`ID_TRAY_DBLCLICK`), in
 /// `settings::TrayDoubleClick::ALL` order: the stored value is the index.
+/// The checkerboard-colours combo's items, in `CheckerColors::mode` order.
+pub(super) const CHECKER_COLOR_KEYS: [&str; 3] = [
+    "checker_colors_auto",
+    "checker_colors_dark",
+    "checker_colors_custom",
+];
+
 pub(super) const TRAY_DBLCLICK_KEYS: [&str; 3] =
     ["tray_dbl_capture", "tray_dbl_settings", "tray_dbl_nothing"];
 
@@ -119,6 +126,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         (ID_LBL_BADGE_SIZE, "lbl_badge_size"),
         (ID_BADGE_ICON, "chk_badge_icon"),
         (ID_THUMB_CHECKER, "chk_thumb_checker"),
+        (ID_LBL_CHECKER_COLORS, "lbl_checker_colors"),
         (ID_VIDEO_COVER_ART, "chk_video_cover_art"),
         (ID_LBL_VIDEO_OFFSET, "lbl_video_offset"),
         (ID_ENABLE_MENU, "chk_enable_menu"),
@@ -285,6 +293,7 @@ pub(super) unsafe fn apply_labels(hwnd: HWND) {
         ID_BADGE_SIZE,
         ["badge_size_small", "badge_size_medium", "badge_size_large"].map(t),
     );
+    rebuild_combo(hwnd, ID_CHECKER_COLORS, CHECKER_COLOR_KEYS.map(t));
     rebuild_combo(
         hwnd,
         ID_APP_THEME,

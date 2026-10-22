@@ -852,3 +852,11 @@ tip_shot_save_format = "Filformatet som knappen Spara använder. PNG och WebP be
 tip_shot_save_quality = "JPEG-kvalitet för sparade skärmbilder, 1 till 100. Alla andra format är förlustfria och ignorerar värdet."
 
 tip_menu_quick_moves = "Lägg Konvertera, Ändra storlek och Rotera direkt i Windows huvudmeny när du högerklickar. De tas då bort från undermenyn SageThumbs 2K, så att inget visas två gånger."
+
+lbl_checker_colors = "Färger för schackrutmönster:"
+checker_colors_auto = "Automatisk"
+checker_colors_dark = "Mörk"
+checker_colors_custom = "Anpassad…"
+checker_pick_first = "Schackrutmönster: första färgen"
+checker_pick_second = "Schackrutmönster: andra färgen"
+tip_checker_colors = "De två färgerna i schackrutmönstret bakom genomskinliga bilder, i miniatyrer, förhandsvisningen vid högerklick och snabbförhandsvisningen. Automatisk visar ljusa rutor i miniatyrer och följer fönstrets färg i förhandsvisningarna; Mörk gör att vita bilder syns bättre; Anpassad… låter dig välja båda färgerna. En ändring rensar miniatyrcachen när schackrutmönstret visas i miniatyrerna."

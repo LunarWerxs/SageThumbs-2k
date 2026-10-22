@@ -40,6 +40,9 @@ pub(super) const ALLOW: &[(&str, Kind)] = &[
     // honoured exactly as it was set on the other machine.
     ("BadgeSize", Kind::Dword),
     ("ThumbChecker", Kind::Dword),
+    ("CheckerColors", Kind::Dword),
+    ("CheckerColorA", Kind::Dword),
+    ("CheckerColorB", Kind::Dword),
     // NOT synced: HideTypeOverlay. It is not just a value - flipping it rewrites
     // per-ProgID registry keys on THIS machine, and the ProgIDs differ per machine, so a
     // synced 1 would record a suppression that was never actually applied here.

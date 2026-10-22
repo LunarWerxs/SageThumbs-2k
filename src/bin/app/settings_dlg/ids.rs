@@ -266,6 +266,11 @@ pub(super) const ID_PREVIEW_BLOCKED_EXTS: i32 = 1260;
 /// actually catches a collision (1257 was one).
 pub(super) const ID_LBL_BADGE_SIZE: i32 = 1262;
 pub(super) const ID_BADGE_SIZE: i32 = 1263;
+/// "Checkerboard colours:" on Appearance (#69): Automatic, Dark or Custom…, read by every
+/// checkerboard (`settings::checker_colors`). 1286/1287: the next free ids past the menu
+/// table's 1284/1285.
+pub(super) const ID_LBL_CHECKER_COLORS: i32 = 1286;
+pub(super) const ID_CHECKER_COLORS: i32 = 1287;
 
 // ===== The Business-licence reminder strip (`settings_dlg/biznag.rs`) =====
 // Mirrors the sign-in nudge banner's ids just above (1240-1243) — see that block's

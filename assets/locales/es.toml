@@ -848,3 +848,11 @@ tip_shot_save_format = "El formato de archivo que usa Guardar. PNG y WebP conser
 tip_shot_save_quality = "Calidad JPEG de las capturas guardadas, de 1 a 100. Los demás formatos no tienen pérdida y no usan este valor."
 
 tip_menu_quick_moves = "Pon Convertir, Cambiar tamaño y Girar directamente en el menú contextual principal. Estas opciones salen del submenú SageThumbs 2K para no aparecer dos veces."
+
+lbl_checker_colors = "Colores del tablero de transparencia:"
+checker_colors_auto = "Automático"
+checker_colors_dark = "Oscuro"
+checker_colors_custom = "Personalizado…"
+checker_pick_first = "Tablero de transparencia: primer color"
+checker_pick_second = "Tablero de transparencia: segundo color"
+tip_checker_colors = "Los dos colores del tablero de transparencia que aparece detrás de las imágenes con transparencia, en las miniaturas, la vista previa con el botón derecho y la Vista rápida. Automático muestra cuadros claros en las miniaturas y se adapta al color de la ventana en las vistas previas; Oscuro hace que las imágenes blancas destaquen; Personalizado… te permite elegir ambos colores. Al cambiar esta opción, se borra la caché de miniaturas mientras esté activado el tablero de transparencia en las miniaturas."

@@ -855,3 +855,11 @@ tip_shot_save_format = "Định dạng tệp mà nút Lưu sử dụng. PNG và 
 tip_shot_save_quality = "Chất lượng JPEG cho ảnh chụp màn hình đã lưu, từ 1 đến 100. Các định dạng khác đều không mất dữ liệu và bỏ qua tùy chọn này."
 
 tip_menu_quick_moves = "Đưa Chuyển đổi, Thay đổi kích thước và Xoay thẳng vào menu chuột phải chính. Các mục này sẽ không còn nằm trong menu con SageThumbs 2K, tránh hiển thị trùng lặp."
+
+lbl_checker_colors = "Màu bàn cờ:"
+checker_colors_auto = "Tự động"
+checker_colors_dark = "Tối"
+checker_colors_custom = "Tùy chỉnh…"
+checker_pick_first = "Bàn cờ: màu thứ nhất"
+checker_pick_second = "Bàn cờ: màu thứ hai"
+tip_checker_colors = "Hai màu của bàn cờ phía sau ảnh trong suốt, dùng trong hình thu nhỏ, bản xem trước khi nhấp chuột phải và bản xem trước nhanh. Tự động hiển thị các ô sáng trong hình thu nhỏ và dùng màu cửa sổ trong bản xem trước; Tối giúp ảnh trắng nổi bật; Tùy chỉnh… cho phép bạn chọn cả hai màu. Khi bàn cờ trong hình thu nhỏ được bật, thay đổi này sẽ xóa bộ nhớ đệm hình thu nhỏ."

@@ -852,3 +852,11 @@ tip_shot_save_format = "Formát souboru, ve kterém tlačítko Uložit ukládá 
 tip_shot_save_quality = "Kvalita JPEG pro uložené snímky obrazovky, od 1 do 100. Všechny ostatní formáty jsou bezeztrátové a toto nastavení ignorují."
 
 tip_menu_quick_moves = "Zobrazí Převést, Změnit velikost a Otočit přímo v hlavní nabídce po kliknutí pravým tlačítkem. Tyto položky se přesunou z podnabídky SageThumbs 2K, takže se nebudou zobrazovat dvakrát."
+
+lbl_checker_colors = "Barvy šachovnice:"
+checker_colors_auto = "Automatické"
+checker_colors_dark = "Tmavé"
+checker_colors_custom = "Vlastní…"
+checker_pick_first = "Šachovnice: první barva"
+checker_pick_second = "Šachovnice: druhá barva"
+tip_checker_colors = "Dvě barvy šachovnice za průhlednými obrázky v miniaturách, náhledu po kliknutí pravým tlačítkem a rychlém náhledu. Automatické zobrazuje v miniaturách světlá políčka a v náhledech se přizpůsobuje barvě okna; Tmavé zvýrazní bílé obrázky; Vlastní… umožňuje vybrat obě barvy. Při zapnuté šachovnici v miniaturách se změnou vymaže mezipaměť miniatur."

@@ -166,6 +166,9 @@ pub(in super::super) fn cat_rows(ci: usize) -> &'static [Row] {
             Pair(ID_LBL_BADGE_SIZE, ID_BADGE_SIZE, 156, 200),
             Switch(ID_BADGE_ICON),
             Switch(ID_THUMB_CHECKER),
+            // Not greyed under the switch above: the same colours draw the right-click tile's and
+            // Quick preview's checkerboards, which have their own switches.
+            Pair(ID_LBL_CHECKER_COLORS, ID_CHECKER_COLORS, 156, 200),
             Switch(ID_VIDEO_COVER_ART),
             // Reads as the follow-up to the switch above: "or, if you'd rather have a frame,
             // here is which one." General could not take it (that page is already within a

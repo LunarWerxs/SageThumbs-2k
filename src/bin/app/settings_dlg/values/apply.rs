@@ -107,6 +107,8 @@ pub(super) unsafe fn apply_thumbnail_and_badge_settings(hwnd: HWND) -> bool {
     // that skipped the purge would look like it did nothing.
     let size_now = settings::BadgeSize::from_dword(combo_sel(hwnd, ID_BADGE_SIZE, 2) as u32);
     let checker_now = checked(hwnd, ID_THUMB_CHECKER);
+    // The colours are baked in too, but only into a thumbnail that has the checkerboard.
+    let colors_now = checker_colors_in_dialog(hwnd);
     // Cover-art-versus-frame decides WHICH PICTURE the tile is, so it belongs to this set
     // too: without the purge, ticking it looks like it did nothing until the cache happens
     // to turn over.
@@ -121,11 +123,13 @@ pub(super) unsafe fn apply_thumbnail_and_badge_settings(hwnd: HWND) -> bool {
         || icon_now != settings::format_badge_icon()
         || size_now != settings::badge_size()
         || checker_now != settings::thumb_checker()
+        || (checker_now && colors_now != settings::checker_colors())
         || cover_now != settings::prefer_cover_art();
     let _ = note(settings::set_corner_mark(mark_now));
     let _ = note(settings::set_format_badge_icon(icon_now));
     let _ = note(settings::set_badge_size(size_now));
     let _ = note(settings::set_thumb_checker(checker_now));
+    let _ = note(settings::set_checker_colors(colors_now));
     let _ = note(settings::set_prefer_cover_art(cover_now));
     sync_corner_registry(overlay_was, slot_was);
     badge_changed

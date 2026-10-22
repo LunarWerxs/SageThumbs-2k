@@ -17,6 +17,7 @@ pub(super) unsafe fn on_lifecycle_msg(
         WM_APP_SYNC => Some(on_app_sync(hwnd, lparam)),
         WM_APP_CACHE => Some(on_app_cache(hwnd, lparam)),
         WM_APP_LICENCE => Some(on_app_licence(hwnd, lparam)),
+        WM_APP_CHECKER_PICK => Some(pick_checker_colors(hwnd)),
         WM_GETMINMAXINFO => Some(on_getminmaxinfo(lparam)),
         WM_SIZE => {
             let client_h = ((lparam.0 >> 16) & 0xFFFF) as i32;

@@ -297,7 +297,7 @@ pub(crate) unsafe fn paint_image(
     bg: u32,
     zoom: f64,
     pan: (i32, i32),
-    checker: Option<i32>,
+    checker: Option<(i32, st2k_base::checkerpx::CheckerColors)>,
 ) {
     let brush = CreateSolidBrush(COLORREF(bg));
     FillRect(hdc, rc, brush);
@@ -330,8 +330,8 @@ pub(crate) unsafe fn paint_image(
         // fully transparent and nothing draws at all (measured, not assumed). So the blend reads
         // straight from the source bitmap. Only translucent images take this path.
         true => {
-            if let Some(cell) = checker {
-                let (c0, c1) = st2k_base::checkerpx::checker_shades(bg);
+            if let Some((cell, colors)) = checker {
+                let (c0, c1) = colors.on(bg);
                 let cr = RECT {
                     left: dx,
                     top: dy,

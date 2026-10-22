@@ -15,6 +15,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 - **Screenshots save in HDR: PNG HDR and JPEG XR HDR**
 - **Each divider in the right-click menu can be switched off**
+- **Pick the checkerboard's colours**
 
 **Changed**
 
@@ -49,6 +50,11 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   Edit menu items now has a tick box next to every divider line, as it has next to every item.
   Clear one and the menu draws no line there; the row keeps its place in the list, so it can be
   ticked again later. Thanks to justdeek on Discord for the idea.
+- **Pick the checkerboard's colours.** Settings ▸ Appearance ▸ Checkerboard colours sets the
+  two colours of the checkerboard behind see-through pictures: Automatic (the light squares,
+  as before), Dark, so a white logo or icon stands out, or Custom…, which opens the Windows
+  colour picker for each colour. The same colours draw the checkerboard in thumbnails, the
+  right-click preview and Quick preview. Thanks to Geijoh for the idea (#69).
 - **Done in Edit menu items applies the menu straight away.** Done (or closing the window)
   saves the list and the next right-click shows it. It used to only close the window, and the
   change waited for Settings' own Save. Thanks to justdeek on Discord.

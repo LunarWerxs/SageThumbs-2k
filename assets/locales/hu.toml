@@ -859,3 +859,11 @@ tip_shot_save_format = "A Mentés gomb által használt fájlformátum. A PNG é
 tip_shot_save_quality = "A mentett képernyőképek JPEG-minősége 1 és 100 között. Minden más formátum veszteségmentes, és figyelmen kívül hagyja ezt az értéket."
 
 tip_menu_quick_moves = "Tegye az Átalakítás, Átméretezés és Elforgatás műveleteket közvetlenül a fő jobb gombos menübe. Így kikerülnek a SageThumbs 2K almenüből, ezért nem jelennek meg kétszer."
+
+lbl_checker_colors = "Sakktábla színei:"
+checker_colors_auto = "Automatikus"
+checker_colors_dark = "Sötét"
+checker_colors_custom = "Egyéni…"
+checker_pick_first = "Sakktábla: első szín"
+checker_pick_second = "Sakktábla: második szín"
+tip_checker_colors = "Az átlátszó képek mögötti sakktábla két színe a bélyegképeken, a jobb gombbal megnyitható előnézetben és a gyors előnézetben. Az Automatikus világos négyzeteket rajzol a bélyegképeken, az előnézetekben pedig az ablak színéhez igazodik; a Sötét kiemeli a fehér képeket; az Egyéni… lehetővé teszi mindkét szín kiválasztását. Ha a bélyegképek sakktáblája be van kapcsolva, a módosítás törli a bélyegképek gyorsítótárát."

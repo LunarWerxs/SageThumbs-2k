@@ -848,3 +848,11 @@ tip_shot_save_format = "Ang format ng file na ginagamit ng Save. Eksaktong pinan
 tip_shot_save_quality = "Kalidad ng JPEG para sa mga naka-save na screenshot, mula 1 hanggang 100. Lossless ang lahat ng iba pang format at hindi ginagamit ang setting na ito."
 
 tip_menu_quick_moves = "Ilagay ang I-convert, Baguhin ang laki at I-rotate nang direkta sa pangunahing right-click menu. Aalisin ang mga ito sa submenu ng SageThumbs 2K para hindi madoble ang pagkakalista."
+
+lbl_checker_colors = "Mga kulay ng checkerboard:"
+checker_colors_auto = "Awtomatiko"
+checker_colors_dark = "Madilim"
+checker_colors_custom = "Pasadya…"
+checker_pick_first = "Checkerboard: unang kulay"
+checker_pick_second = "Checkerboard: ikalawang kulay"
+tip_checker_colors = "Ang dalawang kulay ng checkerboard sa likod ng mga larawang may transparency, sa mga thumbnail, preview sa right-click at Quick preview. Gumuguhit ang Awtomatiko ng mga mapuputing parisukat sa mga thumbnail at sumusunod sa kulay ng window sa mga preview; pinapalutang ng Madilim ang mga puting larawan; hinahayaan ka ng Pasadya… na piliin ang parehong kulay. Binubura ng pagbabago ang cache ng thumbnail habang naka-on ang checkerboard ng thumbnail."

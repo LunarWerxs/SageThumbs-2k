@@ -852,3 +852,11 @@ tip_shot_save_format = "Zapis zapiše v izbrani obliki zapisa. PNG in WebP ohran
 tip_shot_save_quality = "Kakovost JPEG za shranjene posnetke zaslona, od 1 do 100. Vsi drugi formati so brez izgub in te nastavitve ne upoštevajo."
 
 tip_menu_quick_moves = "Pretvorbo, spreminjanje velikosti in vrtenje dodajte neposredno v glavni meni ob kliku z desno tipko miške. Tako se odstranijo iz podmenija SageThumbs 2K, da niso navedeni dvakrat."
+
+lbl_checker_colors = "Barve šahovnice:"
+checker_colors_auto = "Samodejno"
+checker_colors_dark = "Temno"
+checker_colors_custom = "Po meri…"
+checker_pick_first = "Šahovnica: prva barva"
+checker_pick_second = "Šahovnica: druga barva"
+tip_checker_colors = "Dve barvi šahovnice za prozornimi slikami v sličicah, predogledu ob desnem kliku in hitrem predogledu. Samodejno prikaže svetle kvadratke v sličicah, v predogledih pa se prilagodi barvi okna; Temno poskrbi, da bele slike bolj izstopajo; Po meri… omogoča izbiro obeh barv. Sprememba počisti predpomnilnik sličic, ko je šahovnica v sličicah vklopljena."

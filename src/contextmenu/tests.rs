@@ -16,7 +16,7 @@ fn preview_measures_a_real_tile_rect() {
         h: 0,
         name: st2k_base::host::wide("photo.jpg"),
         info: st2k_base::host::wide("1500 x 1500 px - 96 KB"),
-        checker: true,
+        checker: Some(st2k_base::checkerpx::CheckerColors::Auto),
         dpi: USER_DEFAULT_SCREEN_DPI,
     };
     unsafe {
@@ -77,7 +77,7 @@ fn unskinned_preview_item_is_a_bitmap() {
             h: 0,
             name: st2k_base::host::wide("photo.jpg"),
             info: st2k_base::host::wide("1500 x 1500 px - 96 KB"),
-            checker: true,
+            checker: Some(st2k_base::checkerpx::CheckerColors::Auto),
             dpi: USER_DEFAULT_SCREEN_DPI,
         };
         let bmp = preview_ddb(&p);
@@ -404,7 +404,7 @@ fn caption_rows_hold_the_whole_line_at_every_scale() {
             h: 0,
             name: st2k_base::host::wide("photo.jpg"),
             info: st2k_base::host::wide("621 \u{00d7} 652 px  \u{2013}  177 KB"),
-            checker: false,
+            checker: None,
             dpi,
         };
         unsafe {

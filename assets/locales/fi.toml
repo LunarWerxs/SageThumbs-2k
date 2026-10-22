@@ -848,3 +848,11 @@ tip_shot_save_format = "Tiedoston tallennusmuoto. PNG ja WebP säilyttävät jok
 tip_shot_save_quality = "Tallennettujen kuvakaappausten JPEG-laatu, 1–100. Kaikki muut muodot ovat häviöttömiä eivätkä käytä tätä asetusta."
 
 tip_menu_quick_moves = "Lisää Muunna-, Muuta kokoa- ja Kierrä-toiminnot suoraan Windowsin pääasialliseen hiiren kakkospainikkeen valikkoon. Ne poistuvat SageThumbs 2K -alivalikosta, joten samoja toimintoja ei näytetä kahdesti."
+
+lbl_checker_colors = "Ruudukkokuvion värit:"
+checker_colors_auto = "Automaattinen"
+checker_colors_dark = "Tumma"
+checker_colors_custom = "Mukautettu…"
+checker_pick_first = "Ruudukkokuvio: ensimmäinen väri"
+checker_pick_second = "Ruudukkokuvio: toinen väri"
+tip_checker_colors = "Läpinäkyvien kuvien taustalla näkyvän ruudukkokuvion kaksi väriä pienoiskuvissa, hiiren oikean painikkeen esikatselussa ja pikakatselussa. Automaattinen näyttää pienoiskuvissa vaaleita ruutuja ja mukautuu esikatseluissa ikkunan väriin. Tumma tuo valkoiset kuvat paremmin esiin. Mukautettu… antaa valita molemmat värit. Muutos tyhjentää pienoiskuvien välimuistin, kun pienoiskuvien ruudukkokuvio on käytössä."
