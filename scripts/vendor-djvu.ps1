@@ -25,7 +25,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = '0.35.0',
+    [string]$Version = '0.43.0',
     # Verify only: regenerate into a temp directory and diff against the committed tree.
     [switch]$Check,
     # Refuse to skip. Without this, a `-Check` run that cannot find the pristine source prints
@@ -71,6 +71,10 @@ if ($Check) { New-Item -ItemType Directory -Force $dest | Out-Null }
 $out = Join-Path $dest $name
 Remove-Item -Recurse -Force $out -ErrorAction SilentlyContinue
 Copy-Item -Recurse $src $out
+# Upstream's own .claude/ (agent settings and a SessionStart hook) is not ours to run: the repo's
+# .gitignore keeps .claude/ out of git, so the vendored copy drops it too. Left in, the -Check below
+# would find it on disk and not committed.
+Remove-Item -Recurse -Force (Join-Path $out '.claude') -ErrorAction SilentlyContinue
 
 Push-Location $out
 try {
