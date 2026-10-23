@@ -92,3 +92,17 @@ diff -ruN pristine/jxl-color/src/icc/synthesize.rs patched/jxl-color/src/icc/syn
      }
  
      let data_offset = 128 + 4 + tags.len() as u32 * 12;
+--- pristine/jxl-color/Cargo.lock
++++ patched/jxl-color/Cargo.lock
+@@ -36,9 +36,9 @@
+ 
+ [[package]]
+ name = "jxl-grid"
+-version = "0.6.0"
++version = "0.6.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "335e4371396c5729ba80a42798746d198897d3b854ba4f3684efac5f4025d84f"
++checksum = "01671307879a033bfa52e6e8784b941aca770b3f3a7d33830b455b6844f793fb"
+ dependencies = [
+  "tracing",
+ ]

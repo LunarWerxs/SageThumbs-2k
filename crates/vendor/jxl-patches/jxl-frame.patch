@@ -95,3 +95,17 @@ diff -ruN pristine/jxl-frame/src/lib.rs patched/jxl-frame/src/lib.rs
          Some(if self.toc.is_single_entry() {
              if self.all_group_offsets.has_error.load(Ordering::Relaxed) != 0 {
                  return Some(Err(Error::HadError));
+--- pristine/jxl-frame/Cargo.lock
++++ patched/jxl-frame/Cargo.lock
+@@ -38,9 +38,9 @@
+ 
+ [[package]]
+ name = "jxl-grid"
+-version = "0.6.1"
++version = "0.6.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "a0e0ef92d5d60e76bf41098e57e985f523185e08fad54268da448637feca6989"
++checksum = "01671307879a033bfa52e6e8784b941aca770b3f3a7d33830b455b6844f793fb"
+ dependencies = [
+  "tracing",
+ ]
