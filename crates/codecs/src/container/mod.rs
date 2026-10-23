@@ -531,7 +531,7 @@ pub fn archive_cover_seek<R: std::io::Read + std::io::Seek>(
         // The already-open archive is shared with `extract_from_archive` instead of being
         // re-parsed, and a `.apk`-suffixed entry that turns out not to be a real wrapper
         // falls through to the generic pick below instead of losing the cover entirely.
-        let Ok(mut zip) = zipguard::open(reader) else {
+        let Ok(mut zip) = zipguard::open_seek(reader) else {
             return None;
         };
         if apk::archive_is_apk(&mut zip) {

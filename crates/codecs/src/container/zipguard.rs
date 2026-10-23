@@ -91,6 +91,25 @@ pub fn open_unprefixed<R: Read + Seek>(mut reader: R) -> ZipResult<ZipArchive<R>
     )
 }
 
+/// [`open`] for a reader that may be budgeted: an archive that starts at byte 0 is opened from
+/// its end-of-central-directory record alone (zip 9.0.5's detecting open scans the whole file,
+/// which a byte-budgeted stream refuses on a big archive); prepended data (a self-extractor)
+/// takes the detecting [`open`].
+pub fn open_seek<R: Read + Seek>(mut reader: R) -> ZipResult<ZipArchive<R>> {
+    if zip64_declares_over_ceiling(&mut reader) {
+        return Err(ZipError::UnsupportedArchive(
+            "declared central directory entry count exceeds SageThumbs limit",
+        ));
+    }
+    let known = zip::read::Config {
+        archive_offset: zip::read::ArchiveOffset::Known(0),
+    };
+    match ZipArchive::with_config(known, &mut reader) {
+        Ok(_) => ZipArchive::with_config(known, reader),
+        Err(_) => open(reader),
+    }
+}
+
 /// Whether ANY end-of-central-directory candidate in the tail window resolves to a
 /// ZIP64 record declaring more than [`MAX_ZIP_DECLARED_ENTRIES`].
 ///

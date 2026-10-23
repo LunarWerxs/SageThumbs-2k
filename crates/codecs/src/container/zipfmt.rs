@@ -46,7 +46,7 @@ pub(crate) fn covers_from_reader<R: Read + Seek>(
     want: usize,
     prefs: &CoverPrefs,
 ) -> Option<Vec<Vec<u8>>> {
-    let mut zip = super::zipguard::open(reader).ok()?;
+    let mut zip = super::zipguard::open_seek(reader).ok()?;
     match dedicated_preview(&mut zip) {
         Dedicated::Final(cover) => cover.map(|c| vec![c]),
         Dedicated::FallThrough => covers_image_only(&mut zip, want, prefs),
