@@ -110,8 +110,6 @@ pub(super) const ID_LBL_MENU_ITEMS: i32 = 1164;
 // The "Menu items" visibility checklist — a compact checkbox ListView (like the
 // Supported File Types list) instead of ~14 stacked checkboxes.
 pub(super) const ID_MENU_ITEMS_LIST: i32 = 1165;
-// "Reset order" button under the checklist — restores the default drag-reorder order.
-pub(super) const ID_MENU_RESET: i32 = 1145;
 // "Reset all settings" button (left column, end of Diagnostics) — factory reset of the
 // whole dialog. (The top-right "Defaults" resets only the file-type list — see its tip.)
 pub(super) const ID_RESET_ALL: i32 = 1146;
@@ -382,9 +380,11 @@ pub(super) const ID_NAV_BASE: i32 = 1700; // nav items occupy ID_NAV_BASE .. ID_
 pub(super) const ID_PANE_HEADER: i32 = 1712; // NCAT = 12 (Screenshot files added it)
 
 // Menu-items popup editor (menuitems.rs). Moved here for the same reason as the nav-rail
-// ids above. NOT 1: that is IDOK, and a colliding id would route the popup's Done button
-// into Reset.
+// ids above. NOT 1 or 2: those are IDOK and IDCANCEL, and a colliding id would route the
+// popup's Done or Cancel button into Reset.
 pub(super) const ID_POP_RESET: i32 = 100;
+// The help text above the popup's list.
+pub(super) const ID_POP_HELP: i32 = 101;
 
 #[cfg(test)]
 mod tests {

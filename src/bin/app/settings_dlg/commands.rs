@@ -75,12 +75,6 @@ unsafe fn on_command_format_and_menu(hwnd: HWND, id: i32) -> bool {
             load_defaults(hwnd); // whole dialog → factory defaults
             true
         }
-        ID_MENU_RESET => {
-            if let Ok(mlist) = GetDlgItem(Some(hwnd), ID_MENU_ITEMS_LIST) {
-                list::reset_menu_order(mlist);
-            }
-            true
-        }
         // The checklist itself lives in a popup editor now — room it never
         // had on the page, and the page gets its breathing space back.
         ID_MENU_ITEMS_EDIT => {

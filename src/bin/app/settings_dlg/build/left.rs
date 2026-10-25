@@ -304,10 +304,8 @@ pub(super) unsafe fn build_menu_items(hwnd: HWND, lc: &mut LeftCol, sty: &Styles
         );
         lc.y = list_y_before + MT_CHECK + needed_dev * 96 / dpi;
     }
-    // A subtle "Reset order" button under the list — restores the default drag order
-    // when a reorder gets messy (keeps each item's checkbox state).
-    lc.button(t("btn_menu_reset"), 110, ID_MENU_RESET);
-    // Check states are seeded in load_values (rows exist now).
+    // Check states are seeded in load_values (rows exist now). Its Reset lives in the editor
+    // popup (`menuitems.rs`), the only place the list is ever shown.
 }
 
 /// Screenshots: capture service + hotkey

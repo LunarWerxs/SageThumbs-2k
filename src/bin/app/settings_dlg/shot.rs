@@ -187,13 +187,23 @@ unsafe fn click_control(hwnd: HWND, id: i32) {
     );
 }
 
-/// `--shot <png> --window menuitems [--drag FROM,TO] [--space ROW] [--done] [--report FILE]`:
-/// the "Edit menu items" editor over a headless Settings, driven the way a user drives it.
-/// `--drag` starts a drag of row FROM with the notification comctl32 sends, delivered to the
-/// window it really notifies ([`notify_target`]), then drops it just above row TO (TO = the row
-/// count drops it last) with the list's own mouse messages. `--space` presses Space on row ROW.
-/// `--done` clicks Done. The report holds `row <i> <lParam> <checked>` per row before Done,
-/// then `saved <MenuOrder>` after it. The PNG is the editor, or Settings after `--done`.
+/// `--shot <png> --window menuitems [--scroll ROW] [--drag FROM,TO] [--divider ROW,EDIT]
+/// [--space ROW] [--reset] [--done|--cancel|--escape] [--report FILE]`: the "Edit menu items"
+/// editor over a headless Settings, driven the way a user drives it, in that order.
+/// `--scroll` scrolls the list so row ROW is at the top. `--drag` starts a drag of row FROM with
+/// the notification comctl32 sends, delivered to the window it really notifies
+/// ([`notify_target`]), then drops it just above row TO (TO = the row count drops it last) with
+/// the list's own mouse messages. `--divider` runs the right-click menu's EDIT (`above`, `below`
+/// or `remove`) on row ROW. `--space` presses Space on row ROW. `--reset` clicks Reset. Then
+/// `--done` clicks Done, `--cancel` closes the window the way its title bar's X does, and
+/// `--escape` presses Escape through the dialog key handling the modal pump runs.
+///
+/// The report holds `top <row>` (the list's first visible row) and `row <i> <lParam> <checked>`
+/// per row before the close, then after it `final <i> <lParam> <checked>` per row of the list
+/// handed back to Settings, `saved <MenuOrder>`, and `owner_enabled <0|1>`: Settings starts
+/// disabled, as under the modal editor, and the close must enable it again before the editor
+/// goes, or Windows activates some other program. The PNG is the editor, or Settings after a
+/// close.
 pub(crate) unsafe fn run_shot_menu_items(
     hinst: HINSTANCE,
     dark: bool,
@@ -213,17 +223,95 @@ pub(crate) unsafe fn run_shot_menu_items(
         let _ = DestroyWindow(settings);
         return false;
     };
-    let mut report = drag_from_args(list, settings, popup, args);
-    if let Some(row) = arg_after(args, "--space").and_then(|s| s.parse().ok()) {
-        press_space(list, row);
-    }
+    // Disabled, as the modal editor leaves it, so a close can show it re-enables Settings itself.
+    let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(settings, false);
+    let mut report = drive_menu_items(list, settings, popup, args);
     st2k_appkit::win::settle_pump(popup, 4, 4, false);
-    report.push_str(&rows_report(list));
-    let ok = finish_menu_items(settings, popup, out, args, &mut report);
+    let top = SendMessageW(
+        list,
+        windows::Win32::UI::Controls::LVM_GETTOPINDEX,
+        None,
+        None,
+    )
+    .0;
+    report.push_str(&format!("top {top}\n"));
+    let colw = SendMessageW(
+        list,
+        windows::Win32::UI::Controls::LVM_GETCOLUMNWIDTH,
+        Some(WPARAM(0)),
+        None,
+    )
+    .0;
+    let mut lrc = RECT::default();
+    let _ = GetClientRect(list, &mut lrc);
+    report.push_str(&format!("column {colw} {}\n", lrc.right - lrc.left));
+    report.push_str(&rows_report(list, "row"));
+    let ok = finish_menu_items(settings, popup, list, out, args, &mut report);
     if let Some(file) = arg_after(args, "--report") {
         let _ = std::fs::write(file, report);
     }
     ok
+}
+
+/// `--scroll`, `--drag`, `--divider`, `--space` and `--reset`, in that order; returns the
+/// `scrolled <top>` line (the first visible row once scrolled, as far as the list goes) and the
+/// drag's `notify` line, if any.
+unsafe fn drive_menu_items(list: HWND, settings: HWND, popup: HWND, args: &[String]) -> String {
+    let mut report = String::new();
+    if let Some(row) = arg_after(args, "--scroll").and_then(|s| s.parse::<i32>().ok()) {
+        scroll_to_row(list, row);
+        let top = SendMessageW(
+            list,
+            windows::Win32::UI::Controls::LVM_GETTOPINDEX,
+            None,
+            None,
+        )
+        .0;
+        report.push_str(&format!("scrolled {top}\n"));
+    }
+    report.push_str(&drag_from_args(list, settings, popup, args));
+    if let Some((row, edit)) = arg_after(args, "--divider").and_then(|s| s.split_once(',')) {
+        let edit = match edit {
+            "above" => Some(list::DividerEdit::Above),
+            "below" => Some(list::DividerEdit::Below),
+            "remove" => Some(list::DividerEdit::Remove),
+            _ => None,
+        };
+        if let (Ok(row), Some(edit)) = (row.parse(), edit) {
+            list::apply_divider_edit(list, row, edit);
+        }
+    }
+    if let Some(row) = arg_after(args, "--space").and_then(|s| s.parse().ok()) {
+        press_space(list, row);
+    }
+    if args.iter().any(|a| a == "--reset") {
+        SendMessageW(popup, WM_COMMAND, Some(WPARAM(ID_POP_RESET as usize)), None);
+    }
+    report
+}
+
+/// Scroll `list` so `row` is its first visible row (as far as the list can scroll).
+unsafe fn scroll_to_row(list: HWND, row: i32) {
+    let mut r = RECT::default(); // .left = LVIR_BOUNDS (0)
+    SendMessageW(
+        list,
+        windows::Win32::UI::Controls::LVM_GETITEMRECT,
+        Some(WPARAM(0)),
+        Some(LPARAM(&mut r as *mut _ as isize)),
+    );
+    let top = SendMessageW(
+        list,
+        windows::Win32::UI::Controls::LVM_GETTOPINDEX,
+        None,
+        None,
+    )
+    .0 as i32;
+    SendMessageW(
+        list,
+        windows::Win32::UI::Controls::LVM_SCROLL,
+        Some(WPARAM(0)),
+        Some(LPARAM(((row - top) * (r.bottom - r.top)) as isize)),
+    );
 }
 
 /// `--drag FROM,TO`: the drag, and a `notify <who>` line naming the window comctl32 notified
@@ -242,13 +330,13 @@ unsafe fn drag_from_args(list: HWND, settings: HWND, popup: HWND, args: &[String
     format!("notify {who}\n")
 }
 
-/// `row <i> <lParam> <checked>` for every row of the editor's list.
-unsafe fn rows_report(list: HWND) -> String {
+/// `<tag> <i> <lParam> <checked>` for every row of the editor's list.
+unsafe fn rows_report(list: HWND, tag: &str) -> String {
     let count = SendMessageW(list, LVM_GETITEMCOUNT, None, None).0 as i32;
     (0..count)
         .map(|row| {
             format!(
-                "row {row} {} {}\n",
+                "{tag} {row} {} {}\n",
                 menu_row_param(list, row),
                 is_checked(list, row) as u8
             )
@@ -256,24 +344,53 @@ unsafe fn rows_report(list: HWND) -> String {
         .collect()
 }
 
-/// `--done` clicks Done, records the saved `MenuOrder` and captures Settings; without it the
-/// editor is captured. Both windows are gone afterwards. Returns whether the PNG was written.
+/// `--done`, `--cancel` or `--escape` closes the editor that way, records the rows Settings got
+/// back and the saved `MenuOrder`, and captures Settings; without one the editor is captured.
+/// Both windows are gone afterwards. Returns whether the PNG was written.
 unsafe fn finish_menu_items(
     settings: HWND,
     popup: HWND,
+    list: HWND,
     out: &str,
     args: &[String],
     report: &mut String,
 ) -> bool {
-    if !args.iter().any(|a| a == "--done") {
+    let has = |flag: &str| args.iter().any(|a| a == flag);
+    if has("--done") {
+        SendMessageW(popup, WM_COMMAND, Some(WPARAM(IDOK as usize)), None);
+    } else if has("--cancel") {
+        SendMessageW(popup, WM_CLOSE, None, None);
+    } else if has("--escape") {
+        press_escape(popup, list);
+    } else {
         let ok = st2k_appkit::win::capture_and_destroy(popup, out);
         let _ = DestroyWindow(settings);
         return ok;
     }
-    SendMessageW(popup, WM_COMMAND, Some(WPARAM(IDOK as usize)), None);
+    report.push_str(&rows_report(list, "final"));
     report.push_str(&format!("saved {}\n", settings::menu_order().join(",")));
+    let enabled = windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(settings);
+    report.push_str(&format!("owner_enabled {}\n", u8::from(enabled.as_bool())));
     st2k_appkit::win::settle_pump(settings, 4, 4, false);
     st2k_appkit::win::capture_and_destroy(settings, out)
+}
+
+/// Escape on the list, through `IsDialogMessageW` exactly as the editor's modal pump hands it
+/// every message: that is what turns the key into the popup's IDCANCEL.
+unsafe fn press_escape(popup: HWND, list: HWND) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{SetFocus, VK_ESCAPE};
+    let _ = SetFocus(Some(list));
+    let msg = MSG {
+        hwnd: list,
+        message: WM_KEYDOWN,
+        wParam: WPARAM(VK_ESCAPE.0 as usize),
+        lParam: LPARAM(1),
+        ..Default::default()
+    };
+    if !IsDialogMessageW(popup, &msg).as_bool() {
+        let _ = TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
 }
 
 thread_local! {

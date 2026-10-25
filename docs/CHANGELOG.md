@@ -7,6 +7,55 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## Unreleased
+
+**TL;DR**
+
+**New**
+
+- **Add and remove dividers in Edit menu items**
+
+**Changed**
+
+- **Edit menu items saves only on Done**
+- **One Reset in Edit menu items brings back the whole factory menu**
+- **Edit menu items explains itself above the list**
+
+**Fixed**
+
+- **Dragging a row in Edit menu items keeps the list where it was scrolled**
+- **A divider dragged beside another stays until Done**
+- **Escape closes Edit menu items**
+- **Settings comes back to the front when Edit menu items closes**
+- **The list in Edit menu items fills its window**
+
+**Everything in Unreleased**
+
+- **Add and remove dividers in Edit menu items.** Right-click a row in Settings ▸ Right-click
+  menu ▸ Edit menu items for Add divider above, Add divider below and, on a divider, Remove
+  divider. There was no way to add a divider before. The Check, Uncheck and Toggle selected
+  entries, which did nothing a click on the tick box did not, are gone from that list's menu.
+- **Edit menu items saves only on Done.** Cancel, Escape and the window's X now throw the edit
+  away and put the list back the way it was when the window opened. In 3.9.0 the X saved
+  everything, so there was no way to back out of a change.
+- **One Reset in Edit menu items brings back the whole factory menu.** Reset order only put the
+  rows back in order and left the ticks alone. Reset now restores the order, the ticks and the
+  dividers, and like every other edit it takes effect on Done.
+- **Edit menu items explains itself above the list.** The help text was a tooltip that
+  followed the mouse over every row and the scrollbar; it is now a line of text above the list.
+- **Dragging a row in Edit menu items keeps the list where it was scrolled.** Every drop sent
+  the list back to the top. It now stays put, and dragging to the top or bottom edge scrolls
+  the list a row at a time.
+- **A divider dragged beside another stays until Done.** A divider dropped next to another
+  divider, or at the very top or bottom, vanished on the spot. It now stays while you edit, and
+  Done tidies doubled dividers and dividers at either end.
+- **Escape closes Edit menu items.** Escape did nothing; it now cancels like the X. During a
+  drag it drops only the drag.
+- **Settings comes back to the front when Edit menu items closes.** Closing the editor could
+  leave another program in front instead of Settings.
+- **The list in Edit menu items fills its window.** A selected row's highlight stopped well
+  short of the scrollbar.
+
 ## 3.9.0
 
 **TL;DR**

@@ -4,7 +4,8 @@
 //!     the text drawn black; only custom-draw overrides the per-item color);
 //!   * SPACE bulk-toggles the checkboxes of every selected row (the control would
 //!     otherwise toggle only the focused one);
-//!   * right-click / Shift+F10 opens a Check / Uncheck / Toggle-selected menu.
+//!   * right-click / Shift+F10 opens a Check / Uncheck / Toggle-selected menu on the file-types
+//!     list, and an add / remove divider menu on the menu-items list.
 
 use super::*;
 
@@ -46,48 +47,53 @@ unsafe fn bulk_toggle_selected(list: HWND) {
     bulk_set_selected(list, target);
 }
 
-/// Label for an owner-drawn format-list context-menu item.
+// Context-menu command ids. One numbering for both lists' menus, because the owner-drawn
+// (dark mode) items are labelled by id alone in WM_MEASUREITEM / WM_DRAWITEM.
+const CTX_CHECK: usize = 1;
+const CTX_UNCHECK: usize = 2;
+const CTX_TOGGLE: usize = 3;
+const CTX_DIVIDER_ABOVE: usize = 4;
+const CTX_DIVIDER_BELOW: usize = 5;
+const CTX_DIVIDER_REMOVE: usize = 6;
+
+/// Label for an owner-drawn context-menu item of either list.
 pub(super) fn ctx_menu_label(id: usize) -> &'static str {
     match id {
-        1 => t("ctx_check_selected"),
-        2 => t("ctx_uncheck_selected"),
-        3 => t("ctx_toggle_selected"),
+        CTX_CHECK => t("ctx_check_selected"),
+        CTX_UNCHECK => t("ctx_uncheck_selected"),
+        CTX_TOGGLE => t("ctx_toggle_selected"),
+        CTX_DIVIDER_ABOVE => t("ctx_divider_above"),
+        CTX_DIVIDER_BELOW => t("ctx_divider_below"),
+        CTX_DIVIDER_REMOVE => t("ctx_divider_remove"),
         _ => "",
     }
 }
 
-pub(super) unsafe fn list_context_menu(list: HWND, owner: HWND, l: LPARAM) {
-    // Keyboard invocation (Shift+F10 / Apps key) sets BOTH coords to -1 — not the
-    // whole lParam — and real multi-monitor coords can be negative, so test the
-    // sign-extended halves separately.
+/// A `WM_CONTEXTMENU` lParam as screen coordinates, or `None` for the keyboard (Shift+F10 /
+/// the Apps key), which sets BOTH halves to -1. Not the whole lParam: real multi-monitor
+/// coordinates can be negative, so the sign-extended halves are tested separately.
+fn ctx_point(l: LPARAM) -> Option<(i32, i32)> {
     let x = (l.0 & 0xFFFF) as u16 as i16 as i32;
     let y = ((l.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
-    let (px, py) = if x == -1 && y == -1 {
-        let mut r = RECT::default();
-        let _ = GetWindowRect(list, &mut r);
-        (r.left + 8, r.top + 8)
-    } else {
-        (x, y)
+    (x != -1 || y != -1).then_some((x, y))
+}
+
+/// Show a context menu of `ids` at screen point `(px, py)` and return the id picked (0 for
+/// none). Dark mode owner-draws the items: a normal menu renders black text on the immersive
+/// dark background (unreadable until the row is highlighted), so `owner`'s WM_DRAWITEM draws
+/// the text light. Light mode uses a normal menu.
+unsafe fn track_ctx_menu(owner: HWND, px: i32, py: i32, ids: &[usize]) -> usize {
+    let Ok(menu) = CreatePopupMenu() else {
+        return 0;
     };
-    let menu = match CreatePopupMenu() {
-        Ok(m) => m,
-        Err(_) => return,
-    };
-    // Dark mode: owner-draw the items. A normal menu renders black text on the
-    // immersive dark background (unreadable until the row is highlighted), so we
-    // draw the text light ourselves in WM_DRAWITEM. Light mode uses a normal menu.
-    let (s1, s2, s3);
-    if is_dark() {
-        let _ = AppendMenuW(menu, MF_OWNERDRAW, 1, PCWSTR(std::ptr::dangling::<u16>()));
-        let _ = AppendMenuW(menu, MF_OWNERDRAW, 2, PCWSTR(std::ptr::dangling::<u16>()));
-        let _ = AppendMenuW(menu, MF_OWNERDRAW, 3, PCWSTR(3 as *const u16));
-    } else {
-        s1 = wide(t("ctx_check_selected"));
-        s2 = wide(t("ctx_uncheck_selected"));
-        s3 = wide(t("ctx_toggle_selected"));
-        let _ = AppendMenuW(menu, MF_STRING, 1, PCWSTR(s1.as_ptr()));
-        let _ = AppendMenuW(menu, MF_STRING, 2, PCWSTR(s2.as_ptr()));
-        let _ = AppendMenuW(menu, MF_STRING, 3, PCWSTR(s3.as_ptr()));
+    let labels: Vec<Vec<u16>> = ids.iter().map(|&id| wide(ctx_menu_label(id))).collect();
+    let dark = is_dark();
+    for (&id, label) in ids.iter().zip(&labels) {
+        let _ = if dark {
+            AppendMenuW(menu, MF_OWNERDRAW, id, PCWSTR(std::ptr::dangling::<u16>()))
+        } else {
+            AppendMenuW(menu, MF_STRING, id, PCWSTR(label.as_ptr()))
+        };
     }
     // Foreground + WM_NULL bracket: the documented fix for the "menu shows then
     // immediately vanishes" quirk. Owner is the top-level dialog, not the list.
@@ -103,11 +109,115 @@ pub(super) unsafe fn list_context_menu(list: HWND, owner: HWND, l: LPARAM) {
     );
     let _ = PostMessageW(Some(owner), WM_NULL, WPARAM(0), LPARAM(0));
     let _ = DestroyMenu(menu);
-    match cmd.0 {
-        1 => bulk_set_selected(list, true),
-        2 => bulk_set_selected(list, false),
-        3 => bulk_toggle_selected(list),
+    cmd.0.max(0) as usize
+}
+
+/// The file-types list's right-click menu: check, uncheck or toggle every selected row.
+pub(super) unsafe fn list_context_menu(list: HWND, owner: HWND, l: LPARAM) {
+    let (px, py) = ctx_point(l).unwrap_or_else(|| {
+        let mut r = RECT::default();
+        let _ = GetWindowRect(list, &mut r);
+        (r.left + 8, r.top + 8)
+    });
+    match track_ctx_menu(owner, px, py, &[CTX_CHECK, CTX_UNCHECK, CTX_TOGGLE]) {
+        CTX_CHECK => bulk_set_selected(list, true),
+        CTX_UNCHECK => bulk_set_selected(list, false),
+        CTX_TOGGLE => bulk_toggle_selected(list),
         _ => {}
+    }
+}
+
+/// The row a context menu is for and the screen point to open it at: the row under the cursor,
+/// or from the keyboard the focused row, opened just under it. `None` over empty space.
+unsafe fn ctx_row(list: HWND, l: LPARAM) -> Option<(i32, i32, i32)> {
+    use windows::Win32::Graphics::Gdi::{ClientToScreen, ScreenToClient};
+    if let Some((x, y)) = ctx_point(l) {
+        let mut p = POINT { x, y };
+        let _ = ScreenToClient(list, &mut p);
+        let row = hit_row(list, p.x, p.y);
+        return (row >= 0).then_some((row, x, y));
+    }
+    let row = lv_next(list, -1, LVNI_FOCUSED);
+    if row < 0 {
+        return None;
+    }
+    let r = row_rect(list, row);
+    let mut p = POINT {
+        x: r.left + 8,
+        y: r.bottom,
+    };
+    let _ = ClientToScreen(list, &mut p);
+    Some((row, p.x, p.y))
+}
+
+/// What the menu-items list's right-click menu does to the dividers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DividerEdit {
+    Above,
+    Below,
+    Remove,
+}
+
+/// The menu-items list's right-click menu: add a divider above or below the row, or remove the
+/// row when it is a divider. The list selects one row at a time, so the file-types list's
+/// Check / Uncheck / Toggle selected did nothing a click on the row's box does not (feedback,
+/// 2026-10-22: "there's no option to add new divider items").
+pub(super) unsafe fn menu_list_context_menu(list: HWND, owner: HWND, l: LPARAM) {
+    let Some((row, px, py)) = ctx_row(list, l) else {
+        return;
+    };
+    let on_divider = menu_row_param(list, row) == SEP_PARAM;
+    let ids: &[usize] = if on_divider {
+        &[CTX_DIVIDER_ABOVE, CTX_DIVIDER_BELOW, CTX_DIVIDER_REMOVE]
+    } else {
+        &[CTX_DIVIDER_ABOVE, CTX_DIVIDER_BELOW]
+    };
+    let edit = match track_ctx_menu(owner, px, py, ids) {
+        CTX_DIVIDER_ABOVE => DividerEdit::Above,
+        CTX_DIVIDER_BELOW => DividerEdit::Below,
+        CTX_DIVIDER_REMOVE => DividerEdit::Remove,
+        _ => return,
+    };
+    apply_divider_edit(list, row, edit);
+}
+
+/// Carry out `edit` on `row` of the menu-items list, keeping its scroll position and selecting
+/// the new divider (or the row that took a removed one's place).
+pub(super) unsafe fn apply_divider_edit(list: HWND, row: i32, edit: DividerEdit) {
+    if row < 0 {
+        return;
+    }
+    let (rows, select) = edit_dividers(&snapshot_rows(list), row as usize, edit);
+    rebuild_rows_keep_scroll(list, &rows, select);
+}
+
+/// `rows` with `edit` applied at `row`, and the row to select afterwards. A new divider is
+/// ticked (the menu draws it). Remove only ever takes a divider out: on an item row, or past the
+/// end, the rows come back unchanged.
+fn edit_dividers(
+    rows: &[(isize, bool)],
+    row: usize,
+    edit: DividerEdit,
+) -> (Vec<(isize, bool)>, Option<usize>) {
+    let mut out = rows.to_vec();
+    if row >= out.len() {
+        return (out, None);
+    }
+    match edit {
+        DividerEdit::Above => {
+            out.insert(row, (SEP_PARAM, true));
+            (out, Some(row))
+        }
+        DividerEdit::Below => {
+            out.insert(row + 1, (SEP_PARAM, true));
+            (out, Some(row + 1))
+        }
+        DividerEdit::Remove if out[row].0 == SEP_PARAM => {
+            out.remove(row);
+            let select = (!out.is_empty()).then(|| row.min(out.len() - 1));
+            (out, select)
+        }
+        DividerEdit::Remove => (out, Some(row)),
     }
 }
 
@@ -128,7 +238,15 @@ thread_local! {
     /// `anchor_row < 0` hides it. We paint it ourselves (WM_PAINT) rather than via the
     /// native insertion mark, which crashes comctl32 in REPORT view.
     static INSERT_MARK: Cell<(i32, bool)> = const { Cell::new((-1, false)) };
+    /// Which way the list is auto-scrolling while the cursor is held at its top or bottom
+    /// edge mid-drag: -1 up, 1 down, 0 not.
+    static DRAG_SCROLL: Cell<i32> = const { Cell::new(0) };
 }
+
+/// The timer that steps [`DRAG_SCROLL`]. Far from comctl32's own small listview timer ids.
+const DRAG_SCROLL_TIMER: usize = 0x5354_4453;
+/// How often the held-at-the-edge auto-scroll moves one row, in ms.
+const DRAG_SCROLL_MS: u32 = 70;
 
 /// Begin a drag-reorder of the menu-items list (from the dialog's LVN_BEGINDRAG).
 /// Captures the mouse so WM_MOUSEMOVE/WM_LBUTTONUP come back to this subclass; the
@@ -140,6 +258,101 @@ pub(super) unsafe fn begin_menu_drag(list: HWND, source: i32) {
     DRAG_SRC.with(|s| s.set(source));
     INSERT_MARK.with(|m| m.set((-1, false)));
     SetCapture(list);
+}
+
+/// Cancel a drag in progress (Escape while dragging): nothing moves. `false` when no drag was
+/// active, so the caller's own Escape (closing the editor) goes ahead.
+pub(super) unsafe fn cancel_menu_drag(list: HWND) -> bool {
+    if DRAG_SRC.with(|s| s.get()) < 0 {
+        return false;
+    }
+    end_drag(list);
+    true
+}
+
+/// End the drag: release the mouse and drop every piece of drag state.
+unsafe fn end_drag(list: HWND) {
+    clear_drag_state(list);
+    let _ = ReleaseCapture();
+}
+
+/// The source row, the auto-scroll timer and the drop-indicator line, but not the capture: on
+/// WM_CAPTURECHANGED it is already someone else's.
+unsafe fn clear_drag_state(list: HWND) {
+    use windows::Win32::UI::WindowsAndMessaging::KillTimer;
+    DRAG_SRC.with(|s| s.set(-1));
+    DRAG_SCROLL.with(|d| d.set(0));
+    let _ = KillTimer(Some(list), DRAG_SCROLL_TIMER);
+    set_insert_mark(list, -1, false);
+}
+
+/// `row`'s bounds in the list's client coordinates.
+unsafe fn row_rect(list: HWND, row: i32) -> RECT {
+    let mut r = RECT::default(); // .left = LVIR_BOUNDS (0)
+    SendMessageW(
+        list,
+        windows::Win32::UI::Controls::LVM_GETITEMRECT,
+        Some(WPARAM(row.max(0) as usize)),
+        Some(LPARAM(&mut r as *mut _ as isize)),
+    );
+    r
+}
+
+/// The height of one row in device px (every row of a report-view list has the same).
+unsafe fn row_height(list: HWND) -> i32 {
+    let r = row_rect(list, 0);
+    (r.bottom - r.top).max(1)
+}
+
+/// Which way to auto-scroll for a cursor at client `y` mid-drag: within one row of the top
+/// edge (or above it) is up, within one row of the bottom edge (or below it) is down.
+fn drag_scroll_dir(y: i32, client_h: i32, row_h: i32) -> i32 {
+    if y < row_h {
+        -1
+    } else if y >= client_h - row_h {
+        1
+    } else {
+        0
+    }
+}
+
+/// Start, steer or stop the edge auto-scroll for a cursor at client `y`: a row dragged to the
+/// edge of the visible rows keeps the list moving, so it can reach a row scrolled out of view.
+unsafe fn update_drag_scroll(list: HWND, y: i32) {
+    use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
+    let mut cr = RECT::default();
+    let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(list, &mut cr);
+    let dir = drag_scroll_dir(y, cr.bottom - cr.top, row_height(list));
+    let was = DRAG_SCROLL.with(|d| d.replace(dir));
+    if dir != 0 && was == 0 {
+        SetTimer(Some(list), DRAG_SCROLL_TIMER, DRAG_SCROLL_MS, None);
+    } else if dir == 0 && was != 0 {
+        let _ = KillTimer(Some(list), DRAG_SCROLL_TIMER);
+    }
+}
+
+/// One auto-scroll step: move the list one row, then put the drop line back under the cursor.
+unsafe fn drag_scroll_step(list: HWND) {
+    use windows::Win32::Graphics::Gdi::ScreenToClient;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let dir = DRAG_SCROLL.with(|d| d.get());
+    if dir == 0 {
+        return;
+    }
+    // The old line scrolls with the rows, so repaint everything rather than just its band.
+    INSERT_MARK.with(|m| m.set((-1, false)));
+    SendMessageW(
+        list,
+        windows::Win32::UI::Controls::LVM_SCROLL,
+        Some(WPARAM(0)),
+        Some(LPARAM((dir * row_height(list)) as isize)),
+    );
+    let _ = InvalidateRect(Some(list), None, true);
+    let mut p = POINT::default();
+    if GetCursorPos(&mut p).is_ok() && ScreenToClient(list, &mut p).as_bool() {
+        let (row, after) = insert_point(list, p.x, p.y);
+        set_insert_mark(list, row, after);
+    }
 }
 
 /// Client-point → row index (LVM_HITTEST); -1 if past the last row.
@@ -167,15 +380,22 @@ unsafe fn insert_point(list: HWND, x: i32, y: i32) -> (i32, bool) {
     }
     let row = hit_row(list, x, y);
     if row < 0 {
-        return (count - 1, true);
+        // Above the first visible row (dragging into the top edge) is just above it; anywhere
+        // else off the rows is after the last one.
+        let top = SendMessageW(
+            list,
+            windows::Win32::UI::Controls::LVM_GETTOPINDEX,
+            None,
+            None,
+        )
+        .0 as i32;
+        return if y < row_rect(list, top).top {
+            (top, false)
+        } else {
+            (count - 1, true)
+        };
     }
-    let mut r = RECT::default(); // .left = LVIR_BOUNDS (0)
-    SendMessageW(
-        list,
-        windows::Win32::UI::Controls::LVM_GETITEMRECT,
-        Some(WPARAM(row as usize)),
-        Some(LPARAM(&mut r as *mut _ as isize)),
-    );
+    let r = row_rect(list, row);
     let mid = (r.top + r.bottom) / 2;
     (row, y >= mid)
 }
@@ -195,13 +415,7 @@ unsafe fn set_insert_mark(list: HWND, row: i32, after: bool) {
 /// The mark line's y on the anchor row (its top, or its bottom when `after`) plus the
 /// list's client rect whose `left`/`right` the line spans.
 unsafe fn mark_y_and_client(list: HWND, anchor: i32, after: bool) -> (i32, RECT) {
-    let mut ir = RECT::default(); // .left = LVIR_BOUNDS (0)
-    SendMessageW(
-        list,
-        windows::Win32::UI::Controls::LVM_GETITEMRECT,
-        Some(WPARAM(anchor as usize)),
-        Some(LPARAM(&mut ir as *mut _ as isize)),
-    );
+    let ir = row_rect(list, anchor);
     let y = if after { ir.bottom } else { ir.top };
     let mut cr = RECT::default();
     let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(list, &mut cr);
@@ -250,15 +464,35 @@ unsafe fn draw_insert_line(list: HWND) {
 }
 
 /// Collapse meaningless dividers so the list shows EXACTLY the menu it produces: drop a
-/// leading divider, collapse consecutive dividers to one, drop a trailing divider (the
-/// menu builder normalizes identically + adds its own divider before Settings). Keeps the
-/// list truly WYSIWYG — no confusing double/edge dividers that the menu wouldn't show.
+/// leading divider, collapse consecutive dividers to one (ticked if either was, the same rule
+/// the menu applies to the saved tokens), drop a trailing divider (the menu builder normalizes
+/// identically + adds its own divider before Settings). Applied when the list loads and when
+/// Done saves it, never mid-edit: a divider that vanished the moment it was dragged next to
+/// another, or to either end, made reordering jarring (feedback, 2026-10-22).
 pub(super) fn normalize_rows(rows: &[(isize, bool)]) -> Vec<(isize, bool)> {
-    normalize_rows_tracking(rows, None).0
+    let mut out: Vec<(isize, bool)> = Vec::with_capacity(rows.len());
+    for &(p, c) in rows {
+        if keep_row(&mut out, p, c) {
+            out.push((p, c));
+        }
+    }
+    while out.last().map(|r| r.0) == Some(SEP_PARAM) {
+        out.pop();
+    }
+    out
+}
+
+/// Normalize the list in place ([`normalize_rows`]); Done calls it before saving.
+pub(super) unsafe fn normalize_list(list: HWND) {
+    let rows = snapshot_rows(list);
+    let tidy = normalize_rows(&rows);
+    if tidy != rows {
+        rebuild_rows_keep_scroll(list, &tidy, None);
+    }
 }
 
 /// Snapshot every row as `(lParam-key, checked)` in current display order.
-unsafe fn snapshot_rows(list: HWND) -> Vec<(isize, bool)> {
+pub(super) unsafe fn snapshot_rows(list: HWND) -> Vec<(isize, bool)> {
     use windows::Win32::UI::Controls::{LVIF_PARAM, LVM_GETITEMW};
     let count = SendMessageW(list, LVM_GETITEMCOUNT, None, None).0 as i32;
     let mut rows = Vec::with_capacity(count.max(0) as usize);
@@ -287,10 +521,9 @@ pub(super) const SEP_LABEL: &str = "──────────────�
 /// Rebuild the list from `(lParam, checked)` rows: item rows (lParam = toggle index) get
 /// their translated label; divider rows (lParam == [`SEP_PARAM`]) get the rule label. Every
 /// row gets its checkbox: a divider's says whether the menu draws it. Optionally selects the
-/// row at display INDEX `select` — not by
-/// lParam key, because every divider shares [`SEP_PARAM`] and a key match would always land
-/// on the FIRST divider rather than whichever one the caller actually means (see A266 at
-/// [`finish_menu_drag`]).
+/// row at display INDEX `select` — not by lParam key, because every divider shares
+/// [`SEP_PARAM`] and a key match would always land on the FIRST divider rather than whichever
+/// one the caller actually means (A266).
 pub(super) unsafe fn rebuild_rows(list: HWND, rows: &[(isize, bool)], select: Option<usize>) {
     use windows::Win32::UI::Controls::{
         LVIF_PARAM, LVIF_TEXT, LVIS_FOCUSED, LVIS_SELECTED, LVM_DELETEALLITEMS,
@@ -340,64 +573,81 @@ pub(super) unsafe fn rebuild_rows(list: HWND, rows: &[(isize, bool)], select: Op
     }
 }
 
-/// Finish the drag: move the source row to the insertion point under the cursor by
-/// rebuilding the list in the new order (key + check preserved), then reselect it.
+/// [`rebuild_rows`] without the jump back to the top: the rows rebuild with drawing off, then
+/// the list scrolls back so the row that was at the top stays there, and `select` is brought
+/// into view. Every drag used to send the scrollbar to the top, which made sorting a long list
+/// a chore (feedback, 2026-10-22).
+pub(super) unsafe fn rebuild_rows_keep_scroll(
+    list: HWND,
+    rows: &[(isize, bool)],
+    select: Option<usize>,
+) {
+    use windows::Win32::UI::Controls::{LVM_ENSUREVISIBLE, LVM_SCROLL};
+    use windows::Win32::UI::WindowsAndMessaging::WM_SETREDRAW;
+    let top = SendMessageW(
+        list,
+        windows::Win32::UI::Controls::LVM_GETTOPINDEX,
+        None,
+        None,
+    )
+    .0 as i32;
+    SendMessageW(list, WM_SETREDRAW, Some(WPARAM(0)), None);
+    rebuild_rows(list, rows, select);
+    // Drawing back on BEFORE the scroll: with it off the list does not update its scroll range
+    // for the new rows, and the scroll stopped a row short at the bottom. Nothing paints until
+    // the next message pump, by which time the list is back where it was.
+    SendMessageW(list, WM_SETREDRAW, Some(WPARAM(1)), None);
+    if top > 0 {
+        // Report view scrolls in whole rows, by pixels.
+        SendMessageW(
+            list,
+            LVM_SCROLL,
+            Some(WPARAM(0)),
+            Some(LPARAM((top * row_height(list)) as isize)),
+        );
+    }
+    if let Some(i) = select {
+        SendMessageW(list, LVM_ENSUREVISIBLE, Some(WPARAM(i)), Some(LPARAM(0)));
+    }
+    let _ = InvalidateRect(Some(list), None, true);
+}
+
+/// Finish the drag: move the source row to the insertion point under the cursor (key and
+/// check kept), then select it where it landed. Dividers are left exactly where they are put,
+/// next to each other or at either end included; Done tidies them ([`normalize_list`]).
 unsafe fn finish_menu_drag(list: HWND, x: i32, y: i32) {
-    let src = DRAG_SRC.with(|s| s.replace(-1));
-    let _ = ReleaseCapture();
-    set_insert_mark(list, -1, false);
-    let count = SendMessageW(list, LVM_GETITEMCOUNT, None, None).0 as i32;
-    if src < 0 || src >= count {
-        return;
-    }
+    let src = DRAG_SRC.with(|s| s.get());
     let (anchor, after) = insert_point(list, x, y);
-    if anchor < 0 {
-        return;
+    end_drag(list);
+    let rows = snapshot_rows(list);
+    if let Some((rows, dest)) = moved_rows(&rows, src, anchor, after) {
+        rebuild_rows_keep_scroll(list, &rows, Some(dest));
     }
-    // Destination in the ORIGINAL list, then adjust for removing `src` first.
-    let mut dest = if after { anchor + 1 } else { anchor };
-    let mut rows = snapshot_rows(list);
-    let elem = rows.remove(src as usize);
+}
+
+/// `rows` with row `src` moved to the insertion point `(anchor, after)` (just before `anchor`,
+/// or just after it when `after`), and the index it lands at. `None` when `src` or `anchor`
+/// is not a row.
+fn moved_rows(
+    rows: &[(isize, bool)],
+    src: i32,
+    anchor: i32,
+    after: bool,
+) -> Option<(Vec<(isize, bool)>, usize)> {
+    let len = rows.len() as i32;
+    if !(0..len).contains(&src) || !(0..len).contains(&anchor) {
+        return None;
+    }
+    // Destination in the ORIGINAL list, then adjusted for removing `src` first.
+    let mut dest = anchor + i32::from(after);
     if src < dest {
         dest -= 1;
     }
-    let dest = (dest.max(0) as usize).min(rows.len());
-    rows.insert(dest, elem);
-    // Collapse any double/edge divider the drop created so the list mirrors the menu, while
-    // tracking where the JUST-DROPPED row (not merely "a row with the same key") ends up. A
-    // plain lParam-key lookup can't tell dividers apart — every one shares SEP_PARAM — so it
-    // always resolves to the FIRST divider in the list rather than the one just dragged (A266).
-    let (rows, sel_idx) = normalize_rows_tracking(&rows, Some(dest));
-    rebuild_rows(list, &rows, sel_idx);
-}
-
-/// [`normalize_rows`], the single implementation of the divider rules, with an optional input
-/// index `track`: when `Some(track)`, also reports where the row at that input index ended up in
-/// the output, or `None` if normalization dropped that exact row (it collapsed into an earlier
-/// divider, or it was a trailing divider that got trimmed). Two dividers that meet keep one row,
-/// ticked if either was, the same rule the menu applies to the saved tokens.
-fn normalize_rows_tracking(
-    rows: &[(isize, bool)],
-    track: Option<usize>,
-) -> (Vec<(isize, bool)>, Option<usize>) {
-    let mut out: Vec<(isize, bool)> = Vec::with_capacity(rows.len());
-    let mut tracked = None;
-    for (i, &(p, c)) in rows.iter().enumerate() {
-        if !keep_row(&mut out, p, c) {
-            continue;
-        }
-        if track == Some(i) {
-            tracked = Some(out.len());
-        }
-        out.push((p, c));
-    }
-    while out.last().map(|r| r.0) == Some(SEP_PARAM) {
-        if tracked == Some(out.len() - 1) {
-            tracked = None; // the tracked row was itself the trimmed trailing divider
-        }
-        out.pop();
-    }
-    (out, tracked)
+    let mut out = rows.to_vec();
+    let elem = out.remove(src as usize);
+    let dest = (dest.max(0) as usize).min(out.len());
+    out.insert(dest, elem);
+    Some((out, dest))
 }
 
 /// Whether row `(p, c)` goes after `out`: a leading divider is dropped, and a divider right
@@ -416,18 +666,12 @@ fn keep_row(out: &mut [(isize, bool)], p: isize, c: bool) -> bool {
     }
 }
 
-/// Reset the menu-items list to its DEFAULT order (items + dividers in tree order),
-/// preserving each item's current check state. Wired to the "Reset order" button.
-pub(super) unsafe fn reset_menu_order(list: HWND) {
-    let snap = snapshot_rows(list);
-    let mut checked = vec![true; MENU_ITEM_TOGGLES.len()];
-    for &(param, chk) in &snap {
-        if param >= 0 && (param as usize) < MENU_ITEM_TOGGLES.len() {
-            checked[param as usize] = chk;
-        }
-    }
-    let rows = super::default_menu_rows(|i| checked[i]);
-    rebuild_rows(list, &rows, None);
+/// Put the menu-items list back to the factory menu: the default order, every entry and
+/// divider ticked, added dividers gone. Wired to the editor's Reset, which used to restore only
+/// the order and leave no way back for the ticks (feedback, 2026-10-22); the editor's Cancel
+/// still brings back what was there before.
+pub(super) unsafe fn reset_menu_rows(list: HWND) {
+    rebuild_rows(list, &super::default_menu_rows(|_| true), None);
 }
 
 pub(super) unsafe extern "system" fn list_subclass(
@@ -458,7 +702,7 @@ pub(super) unsafe extern "system" fn list_subclass(
         // commit on release (capture routes these here). Idle → fall through to default.
         // While a drag is active, repaint the rows normally, then draw our accent
         // drop-indicator line on top (the native insertion mark crashes in report view).
-        WM_PAINT | WM_MOUSEMOVE | WM_LBUTTONUP | WM_CAPTURECHANGED
+        WM_PAINT | WM_MOUSEMOVE | WM_LBUTTONUP | WM_CAPTURECHANGED | WM_TIMER
             if DRAG_SRC.with(|s| s.get()) >= 0 =>
         {
             if let Some(res) = on_drag_msg(h, msg, w, l) {
@@ -472,9 +716,12 @@ pub(super) unsafe extern "system" fn list_subclass(
 }
 
 /// `list_subclass`'s drag-active messages: repaint the rows normally then draw the accent
-/// drop-indicator line, move/release to commit the reorder, or cancel on capture-loss.
-/// `Some(res)` means the subclass should return `res`; `None` falls through to `DefSubclassProc`.
+/// drop-indicator line, move/release to commit the reorder, step the edge auto-scroll, or
+/// cancel on capture-loss. `Some(res)` means the subclass should return `res`; `None` falls
+/// through to `DefSubclassProc`.
 unsafe fn on_drag_msg(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> Option<LRESULT> {
+    let x = (l.0 & 0xFFFF) as u16 as i16 as i32;
+    let y = ((l.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
     match msg {
         WM_PAINT => {
             let res = DefSubclassProc(h, msg, w, l);
@@ -482,22 +729,22 @@ unsafe fn on_drag_msg(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> Option<LRESULT
             Some(res)
         }
         WM_MOUSEMOVE => {
-            let x = (l.0 & 0xFFFF) as u16 as i16 as i32;
-            let y = ((l.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
             let (row, after) = insert_point(h, x, y);
             set_insert_mark(h, row, after);
+            update_drag_scroll(h, y);
             Some(LRESULT(0))
         }
         WM_LBUTTONUP => {
-            let x = (l.0 & 0xFFFF) as u16 as i16 as i32;
-            let y = ((l.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
             finish_menu_drag(h, x, y);
             Some(LRESULT(0))
         }
+        WM_TIMER if w.0 == DRAG_SCROLL_TIMER => {
+            drag_scroll_step(h);
+            Some(LRESULT(0))
+        }
         WM_CAPTURECHANGED => {
-            // Capture pulled away (Esc / another window) — cancel cleanly.
-            DRAG_SRC.with(|s| s.set(-1));
-            set_insert_mark(h, -1, false);
+            // Capture pulled away (another window) — cancel cleanly.
+            clear_drag_state(h);
             None
         }
         _ => None,
@@ -711,76 +958,96 @@ mod header_drag_tests {
 mod menu_drag_reorder_tests {
     use super::*;
 
-    /// A266: dragging a divider row past ANOTHER divider must reselect the one that was just
-    /// dropped, not merely "a row with the same lParam" — every divider shares [`SEP_PARAM`],
-    /// so a naive key match always resolves to the FIRST divider in the list. Here the two
-    /// dividers aren't adjacent (an item sits between them), so normalize collapses nothing —
-    /// this pins that the tracker still finds the SECOND one, not the first.
+    const D: (isize, bool) = (SEP_PARAM, true);
+
+    /// Feedback 2026-10-22: a divider dragged next to another, or to either end, vanished the
+    /// moment it was dropped. A drop now only moves the row, and reports where it landed, so the
+    /// dropped divider (not the first one sharing [`SEP_PARAM`], A266) is the one selected.
     #[test]
-    fn tracks_the_dropped_divider_past_an_earlier_divider() {
+    fn a_dropped_divider_stays_where_it_was_put() {
+        let rows = vec![(0, true), D, (1, true), (SEP_PARAM, false), (2, true)];
+
+        // The second divider dropped just above the first: two dividers in a row, both kept.
+        let (out, at) = moved_rows(&rows, 3, 1, false).unwrap();
+        assert_eq!(
+            out,
+            vec![(0, true), (SEP_PARAM, false), D, (1, true), (2, true)]
+        );
+        assert_eq!(at, 1, "the dragged divider, not the first one");
+
+        // Dropped above the first row, and after the last: kept at either end.
+        let (out, at) = moved_rows(&rows, 1, 0, false).unwrap();
+        assert_eq!((out[0], at), (D, 0));
+        let (out, at) = moved_rows(&rows, 1, 4, true).unwrap();
+        assert_eq!((out[4], at), (D, 4));
+    }
+
+    /// Row 0 dropped just above row 3 lands at index 2 (removing it first shifts the rest up),
+    /// and a drop onto itself changes nothing.
+    #[test]
+    fn a_drop_accounts_for_the_row_it_takes_out() {
+        let rows = vec![(0, true), (1, true), (2, true), (3, true)];
+        let (out, at) = moved_rows(&rows, 0, 3, false).unwrap();
+        assert_eq!(out, vec![(1, true), (2, true), (0, true), (3, true)]);
+        assert_eq!(at, 2);
+        assert_eq!(moved_rows(&rows, 2, 2, false).unwrap(), (rows.clone(), 2));
+        assert_eq!(moved_rows(&rows, -1, 0, false), None);
+        assert_eq!(moved_rows(&rows, 0, 4, false), None);
+    }
+
+    /// Done tidies what the drags left: a leading or trailing divider goes, and two that meet
+    /// become one, ticked if either was (a shown divider never vanishes behind a switched-off
+    /// one).
+    #[test]
+    fn done_collapses_doubled_and_edge_dividers() {
         let rows = vec![
+            (SEP_PARAM, false),
             (0, true),
             (SEP_PARAM, false),
+            D,
             (1, true),
-            (SEP_PARAM, false), // dropped here, index 3
-            (2, true),
+            D,
         ];
-        let (out, sel) = normalize_rows_tracking(&rows, Some(3));
-        assert_eq!(
-            out, rows,
-            "no adjacent/edge dividers here, so nothing collapses"
-        );
-        assert_eq!(
-            sel,
-            Some(3),
-            "must track the SPECIFIC divider instance dropped at index 3, not index 1"
-        );
+        assert_eq!(normalize_rows(&rows), vec![(0, true), D, (1, true)]);
+        let tidy = vec![(0, true), D, (1, false)];
+        assert_eq!(normalize_rows(&tidy), tidy);
     }
 
-    /// Dropping a divider directly after an existing one collapses the pair (normalize_rows'
-    /// existing rule): the JUST-DROPPED instance is the one that gets skipped, so there is no
-    /// surviving row that IS the one the user dropped — `None` (no forced selection) is the
-    /// honest answer, and strictly better than the old bug of highlighting an unrelated divider.
-    /// The surviving row is ticked because the dropped one was: a shown divider dragged next
-    /// to a switched-off one must not vanish from the menu.
+    /// The right-click menu's three edits, and the row each leaves selected.
     #[test]
-    fn tracks_none_when_the_dropped_divider_collapses_into_an_earlier_one() {
-        let rows = vec![
-            (0, true),
-            (SEP_PARAM, false),
-            (SEP_PARAM, true), // dropped here, index 2, collapses into index 1
-            (1, true),
-        ];
-        let (out, sel) = normalize_rows_tracking(&rows, Some(2));
-        assert_eq!(out, vec![(0, true), (SEP_PARAM, true), (1, true)]);
+    fn dividers_are_added_and_removed_around_the_row() {
+        let rows = vec![(0, true), D, (1, true)];
         assert_eq!(
-            sel, None,
-            "the dropped instance was itself the one collapsed away"
+            edit_dividers(&rows, 0, DividerEdit::Above),
+            (vec![D, (0, true), D, (1, true)], Some(0))
         );
+        assert_eq!(
+            edit_dividers(&rows, 2, DividerEdit::Below),
+            (vec![(0, true), D, (1, true), D], Some(3))
+        );
+        assert_eq!(
+            edit_dividers(&rows, 1, DividerEdit::Remove),
+            (vec![(0, true), (1, true)], Some(1))
+        );
+        // Remove never takes out an item, and a row past the end changes nothing.
+        assert_eq!(
+            edit_dividers(&rows, 0, DividerEdit::Remove),
+            (rows.clone(), Some(0))
+        );
+        assert_eq!(edit_dividers(&rows, 3, DividerEdit::Above), (rows, None));
+        // The last row removed leaves nothing to select.
+        assert_eq!(edit_dividers(&[D], 0, DividerEdit::Remove), (vec![], None));
     }
 
-    /// A divider dropped at the very end is trimmed as a trailing divider — there is no row
-    /// left to select, so the tracker must say so rather than pointing past the end (or, worse,
-    /// silently pointing at whatever now happens to occupy that index).
+    /// Held within a row of the top or bottom edge (or past it) mid-drag, the list scrolls that
+    /// way; anywhere between, it stays put.
     #[test]
-    fn tracks_none_when_the_dropped_row_is_itself_trimmed_as_trailing() {
-        let rows = vec![(0, true), (SEP_PARAM, false)];
-        let (out, sel) = normalize_rows_tracking(&rows, Some(1));
-        assert_eq!(out, vec![(0, true)]);
-        assert_eq!(
-            sel, None,
-            "the trimmed trailing divider has no surviving row to select"
-        );
-    }
-
-    /// An ordinary item row (not a divider) is unaffected by any of the divider-collapsing
-    /// rules, so its tracked index simply carries through unchanged.
-    #[test]
-    fn tracks_a_plain_item_row_unchanged() {
-        let rows = vec![(SEP_PARAM, false), (0, true), (1, false)];
-        let (out, sel) = normalize_rows_tracking(&rows, Some(1));
-        // The leading divider is dropped, shifting index 1 down to output index 0.
-        assert_eq!(out, vec![(0, true), (1, false)]);
-        assert_eq!(sel, Some(0));
+    fn the_drag_scrolls_only_at_the_edges() {
+        assert_eq!(drag_scroll_dir(-5, 400, 20), -1);
+        assert_eq!(drag_scroll_dir(19, 400, 20), -1);
+        assert_eq!(drag_scroll_dir(20, 400, 20), 0);
+        assert_eq!(drag_scroll_dir(379, 400, 20), 0);
+        assert_eq!(drag_scroll_dir(380, 400, 20), 1);
+        assert_eq!(drag_scroll_dir(900, 400, 20), 1);
     }
 }

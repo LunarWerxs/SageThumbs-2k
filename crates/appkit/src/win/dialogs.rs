@@ -27,14 +27,38 @@ pub unsafe fn run_dialog(
             pump_until_quit(hwnd);
         }
         Some(owner) => {
+            let focus = windows::Win32::UI::Input::KeyboardAndMouse::GetFocus();
             let _ = EnableWindow(owner, false);
             let _ = ShowWindow(hwnd, SW_SHOW);
             force_foreground(hwnd);
             pump_until_closed(hwnd);
             let _ = EnableWindow(owner, true);
+            hand_back(owner, focus);
         }
     }
     Some(hwnd)
+}
+
+/// Give a modal dialog's owner the activation back once the dialog is gone, and the keyboard
+/// focus back to the control that had it. A popup destroyed while its owner is still disabled
+/// makes Windows activate whichever window is next in line, so Settings ended up behind another
+/// program after its "Menu items" editor closed (feedback, 2026-10-22). A dialog can avoid that
+/// by re-enabling its owner before it destroys itself (`EndDialog` does); this catches every
+/// one that does not.
+unsafe fn hand_back(owner: HWND, focus: HWND) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, IsChild, IsWindowVisible, SetForegroundWindow,
+    };
+    if !IsWindowVisible(owner).as_bool() {
+        return;
+    }
+    if GetForegroundWindow() != owner {
+        let _ = SetForegroundWindow(owner);
+    }
+    if !focus.is_invalid() && (focus == owner || IsChild(owner, focus).as_bool()) {
+        let _ = SetFocus(Some(focus));
+    }
 }
 
 /// [`run_dialog`]'s first half: register the class, create the window (its `WM_CREATE` builds

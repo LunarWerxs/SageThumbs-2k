@@ -78,8 +78,10 @@ pub(super) const TOOLTIPS: &[(i32, &str)] = &[
     // Same hints on the combo LABELS, like the Limits fields above.
     (ID_LBL_SHOT_ACTION, "tip_custom_action"),
     (ID_LBL_SHOT_ACTION_HK, "tip_custom_action_hk"),
-    (ID_MENU_ITEMS_LIST, "tip_menu_items"),
-    (ID_MENU_RESET, "tip_menu_reset"),
+    // On the button that opens the editor, never on the list itself: there it followed the
+    // mouse over every row and the scrollbar (feedback, 2026-10-22). The editor shows its own
+    // help above the list.
+    (ID_MENU_ITEMS_EDIT, "tip_menu_items"),
     (ID_VERBOSE_LOG, "tip_verbose_log"),
     (ID_OPEN_LOG, "tip_open_log"),
     (ID_REBUILD_CACHE, "tip_rebuild_cache"),

@@ -642,10 +642,13 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   Tick/untick to show or hide an item; **drag the rows
   to reorder them**, and **drag the divider rows** to regroup the menu; the right-click
   menu mirrors your arrangement exactly (group dividers included; an accent line shows the
-  drop point as you drag, and adjacent/edge dividers tidy themselves). Every divider row has
-  its own tick box too: clear it and the menu draws no line there, while the row keeps its
-  place. A **Reset order** button restores the default, and **Done** applies the list to the
-  menu straight away. Applies to both the classic and the modern Win11 menus.
+  drop point as you drag, the list scrolls when you drag to its top or bottom edge, and it
+  stays where it was scrolled after the drop). **Right-click a row to add a divider** above
+  or below it, or to remove a divider. Every divider row has its own tick box too: clear it
+  and the menu draws no line there, while the row keeps its place. **Reset** brings back the
+  factory menu (order, ticks and dividers). **Done** tidies doubled dividers and dividers at
+  either end, then applies the list to the menu straight away; **Cancel**, **Escape** and the
+  window's X throw the edit away. Applies to both the classic and the modern Win11 menus.
   Only an order you actually arranged is kept: if you leave the default, the menu follows
   the default in later versions too. In an arranged order, an entry a later version adds
   joins its own group instead of the bottom.

@@ -5,13 +5,13 @@ use super::*;
 /// Controls this dialog creates but the v3 nav-rail layout hides on EVERY page, with
 /// no page that ever un-hides them (`ID_LBL_GENERAL` is now a sub-header on the
 /// merged General page; `ID_LBL_EBOOK` is orphaned — Ebook/comic is its own tab with
-/// no sub-header; the menu-items checklist + its Reset button live in the popup
-/// editor (`menuitems.rs`), re-parented in only while that popup is open). Named so
+/// no sub-header; the menu-items checklist lives in the popup editor (`menuitems.rs`),
+/// re-parented in only while that popup is open). Named so
 /// other v2-era machinery that still keys off these ids (e.g. mod.rs's resize
 /// reflow table) can check itself against the SAME list instead of hand-copying it
 /// out of sync — see A048/A261.
 pub(in super::super) const V3_ALWAYS_HIDDEN: &[i32] =
-    &[ID_LBL_FORMATS, ID_BANNER, ID_MENU_ITEMS_LIST, ID_MENU_RESET];
+    &[ID_LBL_FORMATS, ID_BANNER, ID_MENU_ITEMS_LIST];
 
 /// Applies `place` to one control and collects it into the row's `Vec`: the tail every
 /// single-control row placer (`Head`, `Switch`, `Btn`, `Status`, `Wide`) repeats verbatim.
