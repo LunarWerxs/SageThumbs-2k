@@ -260,5 +260,12 @@ pub(super) fn inner_targets() -> Vec<Target> {
             "flv::strip_emulation_prevention",
             flv::strip_emulation_prevention,
         ),
+        // The Flash tier (issue #70): the tag walk, the shape and style resolver, the frame
+        // scan, every bitmap reader (JPEG stream joining, 15-bit, palette, 32-bit) and the
+        // rasteriser, all IN-PROCESS in the thumbnail host. Its seeds sat in the seed set from
+        // the start, but no target parsed SWF, so not one mutation had reached any of it.
+        ("flash::render_swf", |b| {
+            let _ = crate::decode::flash::render_swf(b);
+        }),
     ]
 }

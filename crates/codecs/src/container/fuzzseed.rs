@@ -577,6 +577,8 @@ pub(crate) fn seeds() -> Vec<(&'static str, Vec<u8>)> {
             "swf",
             crate::decode::flash::synthetic_square_movie(400, 200),
         ),
+        // Mutations of the square never reach the bitmap readers; this one holds them all.
+        ("swf-rich", crate::decode::flash::synthetic_rich_movie()),
         ("epub", synthetic_epub()),
         ("sevenz", synthetic_sevenz()),
         ("office-ooxml", synthetic_office_ooxml()),

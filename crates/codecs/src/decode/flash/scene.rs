@@ -64,12 +64,23 @@ impl<'a> Defs<'a> {
                     self.by_id.insert(sp.id, Def::Sprite(sp));
                     self.visit(&sp.tags, nest + 1, seen);
                 }
-                Tag::DefineBits { id, jpeg_data } | Tag::DefineBitsJpeg2 { id, jpeg_data } => {
+                Tag::DefineBits { id, jpeg_data } => {
                     self.by_id.insert(
                         *id,
                         Def::Bits(Bits::Jpeg {
                             data: jpeg_data,
                             alpha: None,
+                            shared_tables: true,
+                        }),
+                    );
+                }
+                Tag::DefineBitsJpeg2 { id, jpeg_data } => {
+                    self.by_id.insert(
+                        *id,
+                        Def::Bits(Bits::Jpeg {
+                            data: jpeg_data,
+                            alpha: None,
+                            shared_tables: false,
                         }),
                     );
                 }
@@ -79,6 +90,7 @@ impl<'a> Defs<'a> {
                         Def::Bits(Bits::Jpeg {
                             data: j.data,
                             alpha: Some(j.alpha_data),
+                            shared_tables: false,
                         }),
                     );
                 }

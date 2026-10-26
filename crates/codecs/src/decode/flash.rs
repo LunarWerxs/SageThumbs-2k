@@ -15,7 +15,12 @@ mod geom;
 mod paint;
 mod scene;
 #[cfg(test)]
+mod seed;
+#[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) use seed::synthetic_rich_movie;
 
 use std::time::Duration;
 

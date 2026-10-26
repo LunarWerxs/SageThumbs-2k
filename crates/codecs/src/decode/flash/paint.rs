@@ -192,11 +192,14 @@ pub(super) fn inflate_capped(data: &[u8], cap: usize) -> Option<Vec<u8>> {
 pub(super) const MAX_BITMAP_PIXELS: u64 = 4096 * 4096;
 
 /// A DefineBits* character: a JPEG (plus its alpha, for JPEG3) or a lossless pixel block.
+/// `shared_tables` marks an old-style DefineBits, whose tables are the file's JPEGTables; a
+/// JPEG2 or JPEG3 carries its own.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Bits<'a> {
     Jpeg {
         data: &'a [u8],
         alpha: Option<&'a [u8]>,
+        shared_tables: bool,
     },
     Lossless(&'a DefineBitsLossless<'a>),
 }
@@ -206,12 +209,27 @@ pub(super) enum Bits<'a> {
 /// decode or that is over budget.
 pub(super) fn decode_bits(bits: Bits<'_>, jpeg_tables: Option<&[u8]>) -> Option<Pixmap> {
     match bits {
-        Bits::Jpeg { data, alpha } => decode_jpeg(data, alpha, jpeg_tables),
+        Bits::Jpeg {
+            data,
+            alpha,
+            shared_tables,
+        } => decode_jpeg(data, alpha, jpeg_tables.filter(|_| shared_tables)),
         Bits::Lossless(l) => decode_lossless(l),
     }
 }
 
+/// A JPEG tag's picture. Since SWF 8 a DefineBitsJPEG2/3 may hold a PNG or a GIF instead
+/// (SWF19 pp.138-139), whose alpha is straight. A JPEG3's colours are stored already multiplied
+/// by its alpha mask, so they are kept as they are, each clamped to its alpha the way Flash
+/// Player draws a file that left them unmultiplied (Ruffle's `decode_jpeg` does the same).
 fn decode_jpeg(data: &[u8], alpha: Option<&[u8]>, tables: Option<&[u8]>) -> Option<Pixmap> {
+    if data.starts_with(b"\x89PNG") || data.starts_with(b"GIF8") {
+        let rgba = decode_bounded_image(data)?;
+        let (w, h) = rgba.dimensions();
+        let mut buf = rgba.into_raw();
+        premultiply(&mut buf);
+        return pixmap(w, h, buf);
+    }
     let bytes = match tables {
         Some(t) if !t.is_empty() => one_jpeg_stream(&[t, data]),
         _ => one_jpeg_stream(&[data]),
@@ -219,16 +237,16 @@ fn decode_jpeg(data: &[u8], alpha: Option<&[u8]>, tables: Option<&[u8]>) -> Opti
     let rgba = decode_bounded_image(&bytes)?;
     let (w, h) = rgba.dimensions();
     let mut buf = rgba.into_raw();
-    if let Some(a) = alpha {
-        if let Some(alpha) = inflate_capped(a, (w as usize) * (h as usize)) {
-            if alpha.len() == (w as usize) * (h as usize) {
-                for (px, al) in buf.as_chunks_mut::<4>().0.iter_mut().zip(alpha) {
-                    px[3] = al;
-                }
-            }
+    let pixels = (w as usize) * (h as usize);
+    if let Some(alpha) = alpha
+        .and_then(|a| inflate_capped(a, pixels))
+        .filter(|a| a.len() == pixels)
+    {
+        for (px, al) in buf.as_chunks_mut::<4>().0.iter_mut().zip(alpha) {
+            px[3] = al;
         }
+        clamp_to_alpha(&mut buf);
     }
-    premultiply(&mut buf);
     pixmap(w, h, buf)
 }
 
@@ -308,7 +326,9 @@ fn decode_lossless(l: &DefineBitsLossless<'_>) -> Option<Pixmap> {
     if w == 0 || h == 0 || (pixels as u64) > MAX_BITMAP_PIXELS {
         return None;
     }
-    // Each format to RGBA8. Version 1 has no alpha channel, so it is opaque.
+    // Each format to RGBA8. Version 1 has no alpha channel, so it is opaque; version 2's
+    // colours are stored already multiplied by their alpha (SWF19's DefineBitsLossless2, and
+    // Ruffle's `decode_define_bits_lossless` takes them as they are), so they are only clamped.
     let v2 = l.version == 2;
     let mut buf = match l.format {
         swf::BitmapFormat::ColorMap8 { num_colors } => {
@@ -317,22 +337,25 @@ fn decode_lossless(l: &DefineBitsLossless<'_>) -> Option<Pixmap> {
         swf::BitmapFormat::Rgb15 => rgb15(&l.data, (w, h))?,
         swf::BitmapFormat::Rgb32 => rgb32(&l.data, pixels, v2)?,
     };
-    premultiply(&mut buf);
+    clamp_to_alpha(&mut buf);
     pixmap(w as u32, h as u32, buf)
 }
 
 /// A palette of `colors` entries (RGB, or RGBA in version 2), then one index per pixel with
-/// each row padded to 4 bytes. An index past the palette refuses the whole picture.
+/// each row padded to 4 bytes. An index past the palette is a transparent pixel (opaque black
+/// in version 1), as Flash Player and Ruffle draw it.
 fn colormap8(packed: &[u8], (w, h): (usize, usize), colors: usize, v2: bool) -> Option<Vec<u8>> {
     let entry = if v2 { 4 } else { 3 };
     let table = colors * entry;
     let row = (w + 3) & !3;
     let data = inflate_capped(packed, table + row * h)?;
     let (palette, indices) = data.split_at_checked(table)?;
+    let missing = if v2 { [0, 0, 0, 0] } else { [0, 0, 0, 255] };
     let mut out = Vec::with_capacity(w * h * 4);
     for y in 0..h {
         for &i in indices.get(y * row..y * row + w)? {
-            out.extend_from_slice(&palette_rgba(palette, i as usize * entry, v2)?);
+            let c = palette_rgba(palette, i as usize * entry, v2).unwrap_or(missing);
+            out.extend_from_slice(&c);
         }
     }
     Some(out)
@@ -384,6 +407,17 @@ fn rgb32(packed: &[u8], pixels: usize, v2: bool) -> Option<Vec<u8>> {
         dst.copy_from_slice(&[src[1], src[2], src[3], if v2 { src[0] } else { 255 }]);
     }
     Some(out)
+}
+
+/// Colours stored premultiplied, held to the rule a `Pixmap` relies on: no channel above its
+/// alpha. A no-op on an opaque picture.
+fn clamp_to_alpha(buf: &mut [u8]) {
+    for px in buf.as_chunks_mut::<4>().0.iter_mut() {
+        let a = px[3];
+        for c in &mut px[..3] {
+            *c = (*c).min(a);
+        }
+    }
 }
 
 /// Straight RGBA to premultiplied, the layout a `Pixmap` holds.

@@ -509,10 +509,18 @@ pub(super) fn deep_session_over_the_new_parsers() {
         .unwrap_or(180);
 
     let mut seeds = new_surface_seeds();
+    // The Flash tier's seeds live in the container seed set; its renderer is a target here.
+    seeds.extend(
+        crate::container::fuzzseed::seeds()
+            .into_iter()
+            .filter(|(label, _)| label.starts_with("swf")),
+    );
     // Real samples where the corpus has them: a synthetic seed is a scaffold this code wrote
     // for itself, so it can only ever contain structures this code already thought of.
     let corpus = st2k_base::testcorpus::dir();
     for name in [
+        // Issue #70's movie: a preloader, split JPEG streams, a JPEGTables picture.
+        "real.swf",
         "sample.apk",
         "sample.xapk",
         "sample-vp6.flv",

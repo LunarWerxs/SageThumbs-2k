@@ -167,6 +167,78 @@ fn split_jpeg_streams_are_joined_into_one() {
     assert_eq!(paint::one_jpeg_stream(&[&[tables, picture].concat()]), want);
 }
 
+/// The rich seed's bitmaps, decoded the way the scene decodes them, by character id.
+fn rich_bitmap(id: u16) -> Option<Pixmap> {
+    let bytes = synthetic_rich_movie();
+    let buf = swf::decompress_swf(&bytes[..]).expect("the rich seed inflates");
+    let movie = swf::parse_swf(&buf).expect("the rich seed parses");
+    let defs = scene::Defs::collect(&movie.tags);
+    match defs.by_id.get(&id) {
+        Some(scene::Def::Bits(b)) => paint::decode_bits(*b, defs.jpeg_tables),
+        _ => panic!("character {id} is not a bitmap"),
+    }
+}
+
+fn premul(p: &Pixmap, x: u32, y: u32) -> [u8; 4] {
+    let c = p.pixel(x, y).expect("pixel in range");
+    [c.red(), c.green(), c.blue(), c.alpha()]
+}
+
+/// Every bitmap kind in the rich seed decodes (so its mutations reach every reader), and the
+/// movie's frame 2 is drawn, not its blank frame 1.
+#[test]
+fn the_rich_seed_reaches_every_bitmap_kind_and_draws_its_second_frame() {
+    for id in seed::RICH_BITMAPS {
+        assert!(rich_bitmap(id).is_some(), "bitmap {id} decodes");
+    }
+    let img = render_swf(&synthetic_rich_movie()).expect("the rich seed renders");
+    assert_eq!((img.width(), img.height()), (256, 128));
+    let drawn = img
+        .to_rgba8()
+        .pixels()
+        .filter(|p| p.0 != [255, 255, 255, 255])
+        .count();
+    assert!(drawn > 256 * 128 / 10, "frame 2 is drawn ({drawn} px)");
+}
+
+/// DefineBitsLossless2 stores its colours already multiplied by alpha: a half-transparent red
+/// is `80 00 00 80`, drawn as it is. Multiplied again it came out half as bright.
+#[test]
+fn a_lossless2_picture_is_not_premultiplied_twice() {
+    let p = rich_bitmap(14).expect("ARGB picture");
+    assert_eq!(premul(&p, 0, 0), [0, 0, 255, 255]);
+    assert_eq!(premul(&p, 1, 0), [128, 0, 0, 128]);
+}
+
+/// A version-2 palette entry is premultiplied too, and an index past the palette is a
+/// transparent pixel, not a refusal of the whole picture.
+#[test]
+fn a_palette_index_past_the_table_draws_transparent() {
+    let p = rich_bitmap(12).expect("RGBA palette picture");
+    assert_eq!(premul(&p, 0, 0), [0, 255, 0, 255]);
+    assert_eq!(premul(&p, 1, 0), [128, 0, 0, 128]);
+    assert_eq!(premul(&p, 0, 1), [0, 0, 0, 0]);
+}
+
+/// A JPEG3's colours are stored already multiplied by its mask; Flash clamps each to the alpha.
+/// The ramp's blue is 90 under an alpha of 200: kept near 90, where multiplying again made it 70.
+#[test]
+fn a_jpeg3_colour_is_clamped_to_its_alpha_not_multiplied() {
+    let p = rich_bitmap(17).expect("JPEG with an alpha mask");
+    let [r, g, b, a] = premul(&p, 0, 0);
+    assert_eq!(a, 200);
+    assert!((86..=94).contains(&b), "blue {b} kept, not multiplied");
+    assert!(r <= a && g <= a);
+}
+
+/// Since SWF 8 a JPEG tag may hold a PNG, whose alpha is straight and is multiplied in here.
+#[test]
+fn a_png_inside_a_jpeg_tag_decodes() {
+    let p = rich_bitmap(18).expect("PNG in a DefineBitsJPEG2");
+    assert_eq!(premul(&p, 0, 0), [128, 0, 0, 128]);
+    assert_eq!(premul(&p, 1, 0), [0, 0, 255, 255]);
+}
+
 /// Every picture in the reporter's movie decodes, its two photos (a tables stream and a
 /// picture stream in one tag) as well as the small one that leans on the file's JPEGTables.
 #[test]

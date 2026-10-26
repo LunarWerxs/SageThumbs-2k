@@ -257,6 +257,10 @@ fn every_seed_reaches_its_parser() {
         crate::decode::flash::render_swf(&by("swf")).is_ok(),
         "swf frame-1 vector render"
     );
+    assert!(
+        crate::decode::flash::render_swf(&by("swf-rich")).is_ok(),
+        "swf every bitmap kind, gradients, morph, sprite, clip"
+    );
     {
         let bytes = by("epub");
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("valid zip seed");
