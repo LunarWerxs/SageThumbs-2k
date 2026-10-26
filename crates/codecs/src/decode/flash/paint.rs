@@ -205,26 +205,48 @@ pub(super) enum Bits<'a> {
 }
 
 /// Decodes one bitmap character to premultiplied pixels. `jpeg_tables` is the file's shared
-/// `JPEGTables`, which an old-style JPEG leaves out. Returns `None` on anything it cannot
+/// `JPEGTables`, which an old-style JPEG leaves out. `pixels_left` is the render's bitmap
+/// budget: a picture's declared size is taken from it before any pixel is decoded, and a
+/// picture larger than what is left is not decoded. Returns `None` on anything it cannot
 /// decode or that is over budget.
-pub(super) fn decode_bits(bits: Bits<'_>, jpeg_tables: Option<&[u8]>) -> Option<Pixmap> {
+pub(super) fn decode_bits(
+    bits: Bits<'_>,
+    jpeg_tables: Option<&[u8]>,
+    pixels_left: &mut u64,
+) -> Option<Pixmap> {
     match bits {
         Bits::Jpeg {
             data,
             alpha,
             shared_tables,
-        } => decode_jpeg(data, alpha, jpeg_tables.filter(|_| shared_tables)),
-        Bits::Lossless(l) => decode_lossless(l),
+        } => decode_jpeg(
+            data,
+            alpha,
+            jpeg_tables.filter(|_| shared_tables),
+            pixels_left,
+        ),
+        Bits::Lossless(l) => decode_lossless(l, pixels_left),
     }
+}
+
+/// Takes `pixels` from the budget, or refuses when they are more than it has left.
+fn charge(pixels_left: &mut u64, pixels: u64) -> Option<()> {
+    *pixels_left = pixels_left.checked_sub(pixels)?;
+    Some(())
 }
 
 /// A JPEG tag's picture. Since SWF 8 a DefineBitsJPEG2/3 may hold a PNG or a GIF instead
 /// (SWF19 pp.138-139), whose alpha is straight. A JPEG3's colours are stored already multiplied
 /// by its alpha mask, so they are kept as they are, each clamped to its alpha the way Flash
 /// Player draws a file that left them unmultiplied (Ruffle's `decode_jpeg` does the same).
-fn decode_jpeg(data: &[u8], alpha: Option<&[u8]>, tables: Option<&[u8]>) -> Option<Pixmap> {
+fn decode_jpeg(
+    data: &[u8],
+    alpha: Option<&[u8]>,
+    tables: Option<&[u8]>,
+    pixels_left: &mut u64,
+) -> Option<Pixmap> {
     if data.starts_with(b"\x89PNG") || data.starts_with(b"GIF8") {
-        let rgba = decode_bounded_image(data)?;
+        let rgba = decode_bounded_image(data, pixels_left)?;
         let (w, h) = rgba.dimensions();
         let mut buf = rgba.into_raw();
         premultiply(&mut buf);
@@ -234,7 +256,7 @@ fn decode_jpeg(data: &[u8], alpha: Option<&[u8]>, tables: Option<&[u8]>) -> Opti
         Some(t) if !t.is_empty() => one_jpeg_stream(&[t, data]),
         _ => one_jpeg_stream(&[data]),
     };
-    let rgba = decode_bounded_image(&bytes)?;
+    let rgba = decode_bounded_image(&bytes, pixels_left)?;
     let (w, h) = rgba.dimensions();
     let mut buf = rgba.into_raw();
     let pixels = (w as usize) * (h as usize);
@@ -305,27 +327,31 @@ fn segment_end(data: &[u8], i: usize) -> Option<usize> {
 }
 
 /// Decodes a picture the `image` crate can read, after checking its declared size against
-/// the bitmap budget, so an oversized header is refused before any pixel is produced.
-fn decode_bounded_image(bytes: &[u8]) -> Option<image::RgbaImage> {
+/// the per-picture cap and taking it from the render's budget, so an oversized header is
+/// refused before any pixel is produced.
+fn decode_bounded_image(bytes: &[u8], pixels_left: &mut u64) -> Option<image::RgbaImage> {
     let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .ok()?;
     let (w, h) = reader.into_dimensions().ok()?;
-    if u64::from(w) * u64::from(h) > MAX_BITMAP_PIXELS.min(limits::MAX_PIXELS) {
+    let pixels = u64::from(w) * u64::from(h);
+    if pixels > MAX_BITMAP_PIXELS.min(limits::MAX_PIXELS) {
         return None;
     }
+    charge(pixels_left, pixels)?;
     let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .ok()?;
     Some(reader.decode().ok()?.to_rgba8())
 }
 
-fn decode_lossless(l: &DefineBitsLossless<'_>) -> Option<Pixmap> {
+fn decode_lossless(l: &DefineBitsLossless<'_>, pixels_left: &mut u64) -> Option<Pixmap> {
     let (w, h) = (l.width as usize, l.height as usize);
     let pixels = w.checked_mul(h)?;
     if w == 0 || h == 0 || (pixels as u64) > MAX_BITMAP_PIXELS {
         return None;
     }
+    charge(pixels_left, pixels as u64)?;
     // Each format to RGBA8. Version 1 has no alpha channel, so it is opaque; version 2's
     // colours are stored already multiplied by their alpha (SWF19's DefineBitsLossless2, and
     // Ruffle's `decode_define_bits_lossless` takes them as they are), so they are only clamped.

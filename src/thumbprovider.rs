@@ -142,21 +142,46 @@ fn refusal(cfg: &settings::ThumbSettings) -> Option<&'static str> {
 /// 2026-10-25: an icon request for a Store app's file type made one call here, a 256 x 256
 /// PNG of 14,639 bytes).
 ///
-/// Recognised by the stream's name: a path under `WindowsApps` or `SystemApps`, where packaged
-/// apps live, or a file name carrying a resource qualifier after its base name
-/// (`Square44x44Logo.targetsize-256_altform-unplated.png`, `StoreLogo.scale-200.png`), which is
-/// how an app package names the sizes and themes of one image.
+/// Recognised by the stream's name: a path inside the folders packaged apps are installed to
+/// (`<drive>:\Program Files\WindowsApps`, `<drive>:\WindowsApps` for apps moved to another
+/// drive, `<drive>:\Windows\SystemApps`), or a file name carrying a resource qualifier after
+/// its base name (`Square44x44Logo.targetsize-256_altform-unplated.png`,
+/// `StoreLogo.scale-200.png`), which is how an app package names the sizes and themes of one
+/// image. The shell hands over the bare file name for these (measured), so the name is all
+/// there is to go on: a picture of the user's own named that way is drawn plain too, and
+/// skips the master switch and the licence lock, which gains it nothing Windows' own PNG
+/// thumbnail would not give. Its size limits still apply (see [`plain_for_app_icon`]).
 fn is_app_asset(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    if lower.contains("\\windowsapps\\") || lower.contains("\\systemapps\\") {
+    let lower = name.to_ascii_lowercase().replace('/', "\\");
+    if is_in_app_install_folder(&lower) {
         return true;
     }
-    let file = lower.rsplit(['\\', '/']).next().unwrap_or(&lower);
+    let file = lower.rsplit('\\').next().unwrap_or(&lower);
     let stem = file.rsplit_once('.').map_or(file, |(s, _)| s);
     let Some((_, qualifiers)) = stem.split_once('.') else {
         return false;
     };
     qualifiers.split(['.', '_']).any(is_resource_qualifier)
+}
+
+/// Whether a lower-case, backslash path lies in a packaged-app install folder at its real place:
+/// a folder of the same name anywhere else (`C:\Users\me\WindowsApps\`) is the user's own.
+fn is_in_app_install_folder(lower: &str) -> bool {
+    let path = lower.strip_prefix("\\\\?\\").unwrap_or(lower);
+    let Some(rest) = path
+        .get(..2)
+        .filter(|d| d.as_bytes()[0].is_ascii_alphabetic() && d.ends_with(':'))
+        .and_then(|_| path.get(2..))
+    else {
+        return false;
+    };
+    [
+        "\\program files\\windowsapps\\",
+        "\\windowsapps\\",
+        "\\windows\\systemapps\\",
+    ]
+    .iter()
+    .any(|root| rest.starts_with(root))
 }
 
 /// One app-package resource qualifier, such as `scale-200`, `targetsize-48`,
@@ -167,13 +192,14 @@ fn is_resource_qualifier(part: &str) -> bool {
         .is_some_and(|(name, value)| NAMES.contains(&name) && !value.is_empty())
 }
 
-/// The settings an app icon is drawn with: the picture as it is, at the size asked for.
+/// The settings an app icon is drawn with: the picture as it is, at the size asked for (the
+/// user's thumbnail-size limit would blur a taskbar icon). The file-size limit stays: an app's
+/// logo is a few kilobytes, so it only ever stops a large picture that merely has such a name.
 fn plain_for_app_icon(cfg: &mut settings::ThumbSettings) {
     cfg.enabled = true;
     cfg.format_badge = false;
     cfg.thumb_checker = false;
     cfg.max_thumb = u32::MAX;
-    cfg.max_file_bytes = u64::MAX;
 }
 
 /// The breadcrumb a failed `GetThumbnail` leaves behind: one `ERROR` line with the HRESULT, and
@@ -288,12 +314,17 @@ impl ThumbnailProvider_Impl {
     /// Whether this call is for a Store app's own icon ([`is_app_asset`]). The name is in
     /// the debug log so a report can show what the shell asked for.
     fn is_app_icon(&self) -> bool {
-        let name = self.stream.try_borrow().ok().and_then(|b| {
-            b.as_ref()
-                .and_then(|s| unsafe { st2k_base::host::stream_name(s) })
-        });
+        let name = self.stream_file_name();
         safety::log_debugf!("GetThumbnail: stream {name:?}");
         name.is_some_and(|n| is_app_asset(&n))
+    }
+
+    /// The name the shell gave the stream, or `None` when it gave none or the slot is
+    /// already borrowed (`try_borrow`: this crate is `panic = "abort"`).
+    fn stream_file_name(&self) -> Option<String> {
+        let borrow = self.stream.try_borrow().ok()?;
+        let stream = borrow.as_ref()?;
+        unsafe { st2k_base::host::stream_name(stream) }
     }
 
     /// This call's identity for the failure memory, or `None` when the stream is
@@ -375,6 +406,38 @@ impl ThumbnailProvider_Impl {
         }
     }
 
+    /// Acquire the source on THIS thread: the marshaled IStream is apartment-bound. The
+    /// shared cascade never buffers an unbounded file. `try_borrow`, like every other read
+    /// of the slot: a re-entrant call must fail with an HRESULT, never panic in a
+    /// `panic = "abort"` host.
+    fn acquire_source(&self, cx: u32, cfg: &settings::ThumbSettings) -> Result<StreamSource> {
+        let borrow = self.stream.try_borrow().map_err(|_| Error::from(E_FAIL))?;
+        let stream = borrow.as_ref().ok_or_else(|| Error::from(E_FAIL))?;
+        unsafe { streamsrc::stream_source(stream, cfg, cx, "GetThumbnail") }
+    }
+
+    /// Optional format badge (`FormatBadge`, off by default). Stamped on the finished tile,
+    /// so it is the last thing applied and every decode tier gets it for free. Note the
+    /// shell CACHES what we return, so a toggle only shows up on tiles rendered after it —
+    /// the Settings dialog clears the thumbnail cache when the option changes, otherwise
+    /// turning it on looks like it did nothing.
+    fn stamp_badge(&self, img: &mut decode::Decoded, cx: u32, cfg: &settings::ThumbSettings) {
+        let Some(name) = self.stream_file_name() else {
+            return;
+        };
+        // A picture too small for the mark comes back centred on a `cx` tile.
+        let rgba = std::mem::take(&mut img.rgba);
+        (img.rgba, img.width, img.height) = crate::badge::mark_tile(
+            rgba,
+            img.width,
+            img.height,
+            cx,
+            &name,
+            cfg.badge_style,
+            cfg.badge_size,
+        );
+    }
+
     fn get_thumbnail_inner(
         &self,
         cx: u32,
@@ -398,13 +461,7 @@ impl ThumbnailProvider_Impl {
         // so it needs to know the tile size we actually want.
         let cx = capped_edge(cx, cfg.max_thumb);
 
-        // Acquire the source on THIS thread — the marshaled IStream is
-        // apartment-bound. The shared cascade never buffers an unbounded file.
-        let source = {
-            let borrow = self.stream.borrow();
-            let stream = borrow.as_ref().ok_or_else(|| Error::from(E_FAIL))?;
-            unsafe { streamsrc::stream_source(stream, cfg, cx, "GetThumbnail") }?
-        };
+        let source = self.acquire_source(cx, cfg)?;
 
         // A168: unlike `pdf.rs`/`ocr.rs`, this decode runs INLINE on the calling COM thread —
         // no detached-worker + `recv_timeout` host-side wall budget. That's deliberate, not an
@@ -434,31 +491,8 @@ impl ThumbnailProvider_Impl {
             );
         }
 
-        // Optional format badge (`FormatBadge`, off by default). Stamped HERE, on the
-        // finished tile, so it is the last thing applied and every decode tier gets it for
-        // free. Note the shell CACHES what we return, so a toggle only shows up on tiles
-        // rendered after it — the Settings dialog clears the thumbnail cache when the
-        // option changes, otherwise turning it on looks like it did nothing.
         if cfg.format_badge {
-            let name = {
-                let borrow = self.stream.borrow();
-                borrow
-                    .as_ref()
-                    .and_then(|s| unsafe { st2k_base::host::stream_name(s) })
-            };
-            if let Some(name) = name {
-                // A picture too small for the mark comes back centred on a `cx` tile.
-                let rgba = std::mem::take(&mut img.rgba);
-                (img.rgba, img.width, img.height) = crate::badge::mark_tile(
-                    rgba,
-                    img.width,
-                    img.height,
-                    cx,
-                    &name,
-                    cfg.badge_style,
-                    cfg.badge_size,
-                );
-            }
+            self.stamp_badge(&mut img, cx, cfg);
         }
 
         let hbmp = unsafe {
@@ -490,6 +524,10 @@ mod tests {
             "AppIcon.theme-dark.png",
             r"C:\Program Files\WindowsApps\Microsoft.WindowsCalculator_11.2405.2.0_x64__8wekyb3d8bbwe\Assets\Logo.png",
             r"C:\Windows\SystemApps\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\Assets\Icon.png",
+            // An app moved to another drive, a long-path prefix, forward slashes.
+            r"E:\WindowsApps\SpotifyAB.SpotifyMusic_1.2.0.0_x64__zpdnekdrzrea0\Assets\Logo.png",
+            r"\\?\C:\Program Files\WindowsApps\Microsoft.Paint_11.0.0.0_x64__8wekyb3d8bbwe\Logo.png",
+            "C:/Program Files/WindowsApps/Microsoft.Paint_11.0.0.0_x64__8wekyb3d8bbwe/Logo.png",
         ] {
             assert!(is_app_asset(name), "{name}");
         }
@@ -500,14 +538,19 @@ mod tests {
             "screen_contrast-.png",
             "report.scale.png",
             r"D:\Pictures\theme-dark\wallpaper.png",
+            // A folder of the install folders' name somewhere else is the user's own.
+            r"C:\Users\me\WindowsApps\holiday.png",
+            r"D:\Backup\Program Files\WindowsApps\holiday.png",
+            r"\\server\share\WindowsApps\holiday.png",
             "",
         ] {
             assert!(!is_app_asset(name), "{name}");
         }
     }
 
-    /// An app icon is drawn as the picture it is: no badge, no checkerboard, no size cap, and
-    /// never refused, whatever the user's thumbnail settings say.
+    /// An app icon is drawn as the picture it is: no badge, no checkerboard, no thumbnail-size
+    /// cap, and never refused, whatever the user's thumbnail settings say. The file-size limit
+    /// stays, so a large picture that only has a logo's name is still held to it.
     #[test]
     fn an_app_icon_is_drawn_plain_whatever_the_settings() {
         let mut cfg = settings::thumb_settings();
@@ -519,7 +562,7 @@ mod tests {
         plain_for_app_icon(&mut cfg);
         assert!(cfg.enabled && !cfg.format_badge && !cfg.thumb_checker);
         assert_eq!(capped_edge(256, cfg.max_thumb), 256);
-        assert_eq!(cfg.max_file_bytes, u64::MAX);
+        assert_eq!(cfg.max_file_bytes, 1);
     }
 
     /// Switched off, the provider refuses an ordinary picture; switched on, it goes on (on a

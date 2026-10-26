@@ -174,9 +174,15 @@ fn rich_bitmap(id: u16) -> Option<Pixmap> {
     let movie = swf::parse_swf(&buf).expect("the rich seed parses");
     let defs = scene::Defs::collect(&movie.tags);
     match defs.by_id.get(&id) {
-        Some(scene::Def::Bits(b)) => paint::decode_bits(*b, defs.jpeg_tables),
+        Some(scene::Def::Bits(b)) => decode_unbudgeted(*b, defs.jpeg_tables),
         _ => panic!("character {id} is not a bitmap"),
     }
+}
+
+/// One picture decoded on its own, with no movie-wide pixel budget behind it.
+fn decode_unbudgeted(bits: paint::Bits<'_>, tables: Option<&[u8]>) -> Option<Pixmap> {
+    let mut pixels_left = u64::MAX;
+    paint::decode_bits(bits, tables, &mut pixels_left)
 }
 
 fn premul(p: &Pixmap, x: u32, y: u32) -> [u8; 4] {
@@ -208,6 +214,26 @@ fn a_lossless2_picture_is_not_premultiplied_twice() {
     let p = rich_bitmap(14).expect("ARGB picture");
     assert_eq!(premul(&p, 0, 0), [0, 0, 255, 255]);
     assert_eq!(premul(&p, 1, 0), [128, 0, 0, 128]);
+}
+
+/// Every picture draws on one pixel budget, charged before decoding: a 2 x 1 picture is
+/// refused with 1 pixel left and takes 2 of 2. Without a total, a movie of many pictures each
+/// under the per-picture cap held all of them at once.
+#[test]
+fn every_picture_draws_on_one_pixel_budget() {
+    let bytes = synthetic_rich_movie();
+    let buf = swf::decompress_swf(&bytes[..]).expect("the rich seed inflates");
+    let movie = swf::parse_swf(&buf).expect("the rich seed parses");
+    let defs = scene::Defs::collect(&movie.tags);
+    let Some(scene::Def::Bits(b)) = defs.by_id.get(&14).copied() else {
+        panic!("character 14 is the 2x1 ARGB picture");
+    };
+    let mut left = 1;
+    assert!(paint::decode_bits(b, None, &mut left).is_none());
+    assert_eq!(left, 1, "a refused picture takes nothing");
+    let mut left = 2;
+    assert!(paint::decode_bits(b, None, &mut left).is_some());
+    assert_eq!(left, 0);
 }
 
 /// A version-2 palette entry is premultiplied too, and an index past the palette is a
@@ -255,7 +281,7 @@ fn the_reporters_pictures_all_decode() {
         .filter_map(|(id, d)| match d {
             scene::Def::Bits(b) => Some((
                 *id,
-                paint::decode_bits(*b, defs.jpeg_tables).map(|p| (p.width(), p.height())),
+                decode_unbudgeted(*b, defs.jpeg_tables).map(|p| (p.width(), p.height())),
             )),
             _ => None,
         })

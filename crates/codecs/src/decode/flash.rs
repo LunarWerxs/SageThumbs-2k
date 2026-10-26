@@ -179,8 +179,12 @@ pub(crate) fn try_swf_tier(bytes: &[u8]) -> Option<Result<DynamicImage>> {
     looks_like_swf(bytes).then(|| decode_swf(bytes))
 }
 
-/// Parse and render on a budgeted worker, joined with a deadline.
+/// Parse and render on a budgeted worker, joined with a deadline. A movie over the size cap is
+/// refused before its bytes are copied for the worker.
 fn decode_swf(bytes: &[u8]) -> Result<DynamicImage> {
+    if !within_cap(bytes) {
+        return Err(Error::from(E_FAIL));
+    }
     let owned = bytes.to_vec();
     match st2k_base::safety::spawn_budgeted("st2k-swf-render", SWF_TIMEOUT, move || {
         render_swf(&owned)
@@ -222,17 +226,29 @@ pub(crate) fn render_swf(bytes: &[u8]) -> Result<DynamicImage> {
 /// The header's declared length is checked against [`SWF_MAX_UNCOMPRESSED`] first, because the
 /// crate's decompressor would inflate it without bound.
 fn inflate(bytes: &[u8]) -> Option<swf::SwfBuf> {
-    if bytes.first() == Some(&b'Z') {
-        return None;
-    }
-    let declared = u32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?);
-    if declared > SWF_MAX_UNCOMPRESSED {
-        st2k_base::safety::log_debugf!("SWF declares {declared} bytes uncompressed; refused");
+    if !within_cap(bytes) {
         return None;
     }
     swf::decompress_swf(bytes)
         .map_err(|e| st2k_base::safety::log_debugf!("SWF decompress failed: {e:?}"))
         .ok()
+}
+
+/// Whether this tier takes the movie at all: not LZMA (which it does not inflate), and neither
+/// the file nor its declared uncompressed length past [`SWF_MAX_UNCOMPRESSED`].
+fn within_cap(bytes: &[u8]) -> bool {
+    if bytes.first() == Some(&b'Z') || bytes.len() as u64 > u64::from(SWF_MAX_UNCOMPRESSED) {
+        return false;
+    }
+    let Some(declared) = bytes.get(4..8).and_then(|d| d.try_into().ok()) else {
+        return false;
+    };
+    let declared = u32::from_le_bytes(declared);
+    if declared > SWF_MAX_UNCOMPRESSED {
+        st2k_base::safety::log_debugf!("SWF declares {declared} bytes uncompressed; refused");
+        return false;
+    }
+    true
 }
 
 /// The thumbnail's size for a stage, its longest side held in [`SWF_MIN_PX`]..[`SWF_MAX_PX`],

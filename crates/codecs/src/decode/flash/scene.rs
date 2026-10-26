@@ -2,6 +2,7 @@
 //! drawing of them into a pixmap. A sprite's own first frame is drawn the same way, nested.
 
 use std::collections::{BTreeMap, HashMap};
+use std::rc::Rc;
 
 use swf::{
     CharacterId, DefineMorphShape, Depth, FillStyle, LineStyle, PlaceObject, PlaceObjectAction,
@@ -18,6 +19,14 @@ const MAX_DEPTH: u32 = 12;
 const MAX_OBJECTS: u32 = 20_000;
 const MAX_SEGMENTS: usize = 2_000_000;
 const MAX_CLIP_LAYERS: u32 = 16;
+/// Clip layers alive at once: each holds a stage-sized layer and mask while the layers it
+/// encloses draw, so nesting is what multiplies memory. Past this a nested clip's contents are
+/// left out, as when the layer budget runs out.
+const MAX_LIVE_CLIPS: u32 = 4;
+/// Bitmap pixels one render decodes, all pictures together: each picture is capped on its own
+/// ([`paint::MAX_BITMAP_PIXELS`]), and without a total a movie of many large pictures held all
+/// of them. Charged before each decode, so a picture that fails to decode still counts.
+const MAX_BITMAP_TOTAL_PIXELS: u64 = paint::MAX_BITMAP_PIXELS;
 /// Tags scanned for definitions, across sprites too. A file past this is not parsed further.
 const MAX_TAGS: usize = 200_000;
 
@@ -190,13 +199,22 @@ fn place(list: &mut BTreeMap<Depth, Placed>, po: &PlaceObject<'_>) {
     }
 }
 
-/// Work counters for one render, shared down the recursion.
+/// Work counters for one render, shared down the recursion and by every frame scanned.
 pub(super) struct Scene<'a> {
     defs: Defs<'a>,
     bitmaps: HashMap<CharacterId, Option<tiny_skia::Pixmap>>,
+    /// Each shape's outline resolved once, however many times it is placed: resolving it per
+    /// placement walked a large shape's records up to [`MAX_OBJECTS`] times before any
+    /// segment budget was charged. A morph keeps its start and end outlines, a sprite its
+    /// first frame's display list, for the same reason.
+    shapes: HashMap<CharacterId, Rc<Resolved>>,
+    morphs: HashMap<CharacterId, Rc<(Resolved, Resolved)>>,
+    sprites: HashMap<CharacterId, Rc<Vec<(Depth, Placed)>>>,
     objects_left: u32,
     segments_left: usize,
     clip_layers_left: u32,
+    clips_live: u32,
+    bitmap_pixels_left: u64,
     width: u32,
     height: u32,
 }
@@ -206,9 +224,14 @@ impl<'a> Scene<'a> {
         Scene {
             defs,
             bitmaps: HashMap::new(),
+            shapes: HashMap::new(),
+            morphs: HashMap::new(),
+            sprites: HashMap::new(),
             objects_left: MAX_OBJECTS,
             segments_left: MAX_SEGMENTS,
             clip_layers_left: MAX_CLIP_LAYERS,
+            clips_live: 0,
+            bitmap_pixels_left: MAX_BITMAP_TOTAL_PIXELS,
             width,
             height,
         }
@@ -236,8 +259,9 @@ impl<'a> Scene<'a> {
                 .iter()
                 .position(|(d, _)| *d > clip_to)
                 .map_or(items.len(), |k| i + 1 + k);
-            if self.clip_layers_left > 0 {
+            if self.clip_layers_left > 0 && self.clips_live < MAX_LIVE_CLIPS {
                 self.clip_layers_left -= 1;
+                self.clips_live += 1;
                 if let Some(mask) = self.clip_mask(&p, parent, cx, depth) {
                     if let Some(mut layer) = Pixmap::new(self.width, self.height) {
                         self.draw_list(&mut layer, &items[i + 1..end], parent, cx, depth + 1);
@@ -251,6 +275,7 @@ impl<'a> Scene<'a> {
                         );
                     }
                 }
+                self.clips_live -= 1;
             }
             i = end;
         }
@@ -283,7 +308,13 @@ impl<'a> Scene<'a> {
         };
         match def {
             Def::Shape(s) => {
-                let res = geom::resolve(&s.shape, &s.styles.fill_styles, &s.styles.line_styles);
+                let res = Rc::clone(self.shapes.entry(p.character).or_insert_with(|| {
+                    Rc::new(geom::resolve(
+                        &s.shape,
+                        &s.styles.fill_styles,
+                        &s.styles.line_styles,
+                    ))
+                }));
                 let rule = if s.flags.contains(ShapeFlag::NON_ZERO_WINDING_RULE) {
                     FillRule::Winding
                 } else {
@@ -291,16 +322,26 @@ impl<'a> Scene<'a> {
                 };
                 self.draw_resolved(target, &res, rule, aff, cx, mask_only);
             }
-            Def::Morph(m) => {
-                let start =
-                    geom::resolve(&m.start.shape, &m.start.fill_styles, &m.start.line_styles);
-                let end = geom::resolve(&m.end.shape, &m.end.fill_styles, &m.end.line_styles);
+            // The blend is built per placement (its ratio is the placement's), so it waits
+            // until there is segment budget left to draw it.
+            Def::Morph(m) if self.segments_left > 0 => {
+                let ends = Rc::clone(self.morphs.entry(p.character).or_insert_with(|| {
+                    Rc::new((
+                        geom::resolve(&m.start.shape, &m.start.fill_styles, &m.start.line_styles),
+                        geom::resolve(&m.end.shape, &m.end.fill_styles, &m.end.line_styles),
+                    ))
+                }));
                 let t = p.ratio as f64 / 65535.0;
-                let res = geom::morph(&start, &end, t);
+                let res = geom::morph(&ends.0, &ends.1, t);
                 self.draw_resolved(target, &res, FillRule::EvenOdd, aff, cx, mask_only);
             }
+            Def::Morph(_) => {}
             Def::Sprite(sp) => {
-                let items: Vec<(Depth, Placed)> = first_frame(&sp.tags).into_iter().collect();
+                let items = Rc::clone(
+                    self.sprites
+                        .entry(p.character)
+                        .or_insert_with(|| Rc::new(first_frame(&sp.tags).into_iter().collect())),
+                );
                 self.draw_list(target, &items, aff, cx, depth + 1);
             }
             Def::Bits(_) => {}
@@ -314,7 +355,9 @@ impl<'a> Scene<'a> {
             return;
         }
         let decoded = match self.defs.by_id.get(&id).copied() {
-            Some(Def::Bits(bits)) => paint::decode_bits(bits, self.defs.jpeg_tables),
+            Some(Def::Bits(bits)) => {
+                paint::decode_bits(bits, self.defs.jpeg_tables, &mut self.bitmap_pixels_left)
+            }
             _ => None,
         };
         self.bitmaps.insert(id, decoded);

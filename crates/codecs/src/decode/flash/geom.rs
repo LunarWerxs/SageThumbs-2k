@@ -331,10 +331,14 @@ pub(super) fn fill_paths(
 
 /// Chains edges end to end into closed loops and emits them as one path. A loop that will
 /// not close on its own is closed with a straight line back to its start.
+///
+/// Each point keeps a cursor past the edges from it already used, so finding the next edge is
+/// amortised constant: searching each point's list from the front made a shape with many
+/// edges from one point quadratic, which a hostile movie can build within the segment cap.
 fn close_loops(edges: &[Edge], aff: Aff) -> Option<tiny_skia::Path> {
-    let mut starts: HashMap<Key, Vec<usize>> = HashMap::new();
+    let mut starts: HashMap<Key, (Vec<usize>, usize)> = HashMap::new();
     for (i, e) in edges.iter().enumerate() {
-        starts.entry(key(e.from)).or_default().push(i);
+        starts.entry(key(e.from)).or_default().0.push(i);
     }
     let mut used = vec![false; edges.len()];
     let mut pb = PathBuilder::new();
@@ -349,9 +353,12 @@ fn close_loops(edges: &[Edge], aff: Aff) -> Option<tiny_skia::Path> {
         push_edge(&mut pb, edges[first], aff);
         let mut cur = edges[first].to;
         while key(cur) != key(origin) {
-            let next = starts
-                .get(&key(cur))
-                .and_then(|v| v.iter().copied().find(|&i| !used[i]));
+            let next = starts.get_mut(&key(cur)).and_then(|(from_here, at)| {
+                while from_here.get(*at).is_some_and(|&i| used[i]) {
+                    *at += 1;
+                }
+                from_here.get(*at).copied()
+            });
             let Some(i) = next else { break };
             used[i] = true;
             push_edge(&mut pb, edges[i], aff);
