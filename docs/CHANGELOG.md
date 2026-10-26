@@ -7,7 +7,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 3.10.0
 
 **TL;DR**
 
@@ -31,7 +31,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **Settings comes back to the front when Edit menu items closes**
 - **The list in Edit menu items fills its window**
 
-**Everything in Unreleased**
+**Everything in 3.10.0**
 
 - **Adobe Flash (.swf) movies get thumbnails.** A Flash movie used to keep the plain file
   icon. SageThumbs now draws the movie from its own shapes, gradients and pictures, with no
