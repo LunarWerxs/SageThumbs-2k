@@ -274,7 +274,9 @@ pub unsafe fn wm_dpichanged(hwnd: HWND, lparam: LPARAM) {
 /// It lives here, beside `set_dpi_override`, rather than in each test module: a second
 /// module previously copied the reset-on-drop guard because this one was "unreachable from
 /// there", and duplicating it is what let the two tests race in the first place. Any new
-/// test that touches the override must take this lock BEFORE setting it.
+/// test that touches the override must take this lock BEFORE setting it, and so must a test
+/// that lays a window out through `dpi_scale` and measures it: the dialog fit test read 2x
+/// for its controls and 1x for its fit while another test held the override at 192.
 #[cfg(test)]
 pub(crate) static DPI_OVERRIDE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

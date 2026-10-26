@@ -474,7 +474,12 @@ mod tests {
 
     /// Create a `w` x `h` design-px dialog holding `layout` the way `run_dialog` does, and
     /// return its window size, its client rect and every control's rect in client px.
+    ///
+    /// Holds the DPI-override lock throughout: the controls and the fit both scale through
+    /// `dpi_scale`, and a test that set the override to 192 between the two laid the controls
+    /// out at 2x and measured the fit at 1x ("right gap 24 is narrower than the left margin 32").
     unsafe fn open(w: i32, h: i32, layout: Layout) -> ((i32, i32), RECT, Vec<RECT>) {
+        let _dpi = crate::win::scaling::DpiOverrideGuard::acquire();
         LAYOUT.with(|l| l.set(layout));
         let hwnd = create_dialog(w!("St2kFitTest"), Some(layout_wndproc), "fit", w, h, None)
             .expect("dialog created");
