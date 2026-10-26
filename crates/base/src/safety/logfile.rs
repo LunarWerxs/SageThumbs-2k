@@ -21,11 +21,36 @@ pub fn log_debug(msg: &str) {
     }
 }
 
-/// Whether `HKCU\Software\SageThumbs2K\Debug = 1` is set, cached for `DEBUG_TTL_MS`.
-/// Shared by [`log_debug`] and [`log_debugf!`]; see [`log_debug`] for why it is a TTL and
-/// not a one-time read.
+thread_local! {
+    /// How many [`with_debug_log_muted`] calls this thread is inside.
+    pub(super) static MUTED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Run `body` with this thread's debug lines dropped, whatever the registry switch says. For
+/// the fuzz harness: each of its thousands of deliberately broken inputs logs why it failed,
+/// and with `Debug = 1` set a deep run rotated a live session's log away in seconds, the
+/// lines an installed-surface check was counting with it (2026-10-25). Per thread, like the
+/// harness's quiet panics, so a test running beside it keeps its own lines.
+pub fn with_debug_log_muted<T>(body: impl FnOnce() -> T) -> T {
+    struct Unmute;
+    impl Drop for Unmute {
+        fn drop(&mut self) {
+            MUTED.with(|m| m.set(m.get() - 1));
+        }
+    }
+    MUTED.with(|m| m.set(m.get() + 1));
+    let _unmute = Unmute;
+    body()
+}
+
+/// Whether `HKCU\Software\SageThumbs2K\Debug = 1` is set, cached for `DEBUG_TTL_MS`, and this
+/// thread is not inside [`with_debug_log_muted`]. Shared by [`log_debug`] and [`log_debugf!`];
+/// see [`log_debug`] for why it is a TTL and not a one-time read.
 pub fn debug_logging_on() -> bool {
     const DEBUG_TTL_MS: u64 = 1000;
+    if MUTED.with(std::cell::Cell::get) > 0 {
+        return false;
+    }
     // Packed: high 63 bits = elapsed-ms timestamp of the last probe, low bit = on.
     // 0 means "never probed". Relaxed is fine: a stale read just costs one extra
     // registry probe or one extra/skipped line around a toggle — never UB.

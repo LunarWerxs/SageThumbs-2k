@@ -275,7 +275,8 @@ thread_local! {
 
 /// Silence panics on THIS thread for the duration of `body` so the thousands of intentionally
 /// caught panics (in a failing run) don't flood stderr with backtraces. The quiet hook still
-/// records each panic's location for [`last_panic_site`].
+/// records each panic's location for [`last_panic_site`]. The thread's debug-log lines are
+/// dropped too: every broken input explains itself there, and the log is the user's.
 ///
 /// One hook, installed once, that is quiet only on a thread inside this call and passes every
 /// other panic to the hook it replaced. It used to swap the process-wide hook in and out per
@@ -304,7 +305,7 @@ pub(super) fn with_quiet_panics<T>(body: impl FnOnce() -> T) -> T {
     }
     QUIET.with(|q| q.set(q.get() + 1));
     let _loud = Loud;
-    body()
+    st2k_base::safety::with_debug_log_muted(body)
 }
 
 /// How deep the truncation sweep walks EVERY prefix before switching to a stride.

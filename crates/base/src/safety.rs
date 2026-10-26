@@ -34,7 +34,9 @@ use windows_registry::CURRENT_USER;
 mod logfile;
 mod workers;
 pub use logfile::log_error;
-pub use logfile::{debug_logging_on, install_panic_hook, log, log_debug, log_file, os_string};
+pub use logfile::{
+    debug_logging_on, install_panic_hook, log, log_debug, log_file, os_string, with_debug_log_muted,
+};
 #[cfg(test)]
 use workers::*;
 pub use workers::{
@@ -295,6 +297,8 @@ pub unsafe fn composite_rgba_over_bg(
 
 #[cfg(test)]
 mod dib_tests;
+#[cfg(test)]
+mod logfile_tests;
 #[cfg(test)]
 mod responsiveness_contract_tests;
 #[cfg(test)]
