@@ -222,6 +222,19 @@ if ($registrationExit -ne 0) { throw "regsvr32 registration failed ($registratio
 # unconditionally now. (See scripts\packaging\AppxManifest.xml.)
 $msixDir = Join-Path ([IO.Path]::GetTempPath()) "st2k-install-msix-$PID"
 & "$root\scripts\packaging\make-msix.ps1" -OutDir $msixDir -Architecture $spec.Name
+# The chain-signed release installer's upgrade branch removes every CN=SageThumbs2K certificate
+# from LocalMachine\TrustedPeople (its pre-3.0 cleanup), and release.ps1's self-update smoke runs
+# it on this box every release, so the next dev install failed 0x800B0109 (root certificate not
+# trusted, 3.10.0, 2026-10-25). This script runs elevated: trust the exact certificate make-msix
+# signed with, before the package that needs it.
+$devCer = Join-Path $msixDir 'SageThumbs2K.cer'
+if (Test-Path -LiteralPath $devCer) {
+    $devThumbprint = [Security.Cryptography.X509Certificates.X509Certificate2]::new($devCer).Thumbprint
+    if (-not (Test-Path -LiteralPath "Cert:\LocalMachine\TrustedPeople\$devThumbprint")) {
+        Import-Certificate -FilePath $devCer -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null
+        Write-Host "      re-trusted the dev certificate $devThumbprint in LocalMachine\TrustedPeople" -ForegroundColor Yellow
+    }
+}
 Get-AppxPackage $pkg | Remove-AppxPackage -ErrorAction SilentlyContinue
 Add-AppxPackage -Path (Join-Path $msixDir 'SageThumbs2K.msix') -ExternalLocation $prog -ForceUpdateFromAnyVersion
 Remove-Item -LiteralPath $msixDir -Recurse -Force -ErrorAction SilentlyContinue
