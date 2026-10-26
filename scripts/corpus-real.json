@@ -1924,6 +1924,7 @@
  "existing": {
   "archive-nonsolid.7z": "written by 7-Zip itself, non-solid (build-corpus.ps1)",
   "archive-sample.7z": "written by 7-Zip itself (build-corpus.ps1), which is the format's real writer",
+  "real.swf": "Adobe Flash movie from GitHub issue #70 (the reporter's own file, CWS v7, 413x404 px, pure vector, 2 frames). Written by a Flash authoring tool, not by us; no public URL, so it is kept as-is in the corpus.",
   "blob.PspBrush": "Paint Shop Pro brush, a real content file",
   "countdown.PspTube": "Paint Shop Pro picture tube, a real content file",
   "sample-1080p.aseprite": "Aseprite 1080p sprite from GitHub (2026-09-17 format batch)",
@@ -2880,6 +2881,9 @@
   ],
   "svgz": [
    "real.svgz"
+  ],
+  "swf": [
+   "real.swf"
   ],
   "tga": [
    "real.tga"

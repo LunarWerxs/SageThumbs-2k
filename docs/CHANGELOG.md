@@ -13,6 +13,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 **New**
 
+- **Adobe Flash (.swf) movies get thumbnails** (#70)
 - **Add and remove dividers in Edit menu items**
 
 **Changed**
@@ -23,6 +24,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 **Fixed**
 
+- **Store apps' icons stay as they are: no badge, no checkerboard, never blank**
 - **Dragging a row in Edit menu items keeps the list where it was scrolled**
 - **A divider dragged beside another stays until Done**
 - **Escape closes Edit menu items**
@@ -31,6 +33,12 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 **Everything in Unreleased**
 
+- **Adobe Flash (.swf) movies get thumbnails.** A Flash movie used to keep the plain file
+  icon. SageThumbs now draws the movie from its own shapes, gradients and pictures, with no
+  Flash Player and no script run. A movie that opens on a "loading" screen is shown as the
+  first frame that has something on it, so the thumbnail is the movie's picture rather than
+  an empty background. Text in a font the movie does not carry, and movies packed with LZMA,
+  are not drawn yet. Thanks to TOM-PIC for the report and the sample (#70).
 - **Add and remove dividers in Edit menu items.** Right-click a row in Settings ▸ Right-click
   menu ▸ Edit menu items for Add divider above, Add divider below and, on a divider, Remove
   divider. There was no way to add a divider before. The Check, Uncheck and Toggle selected
@@ -43,6 +51,13 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
   dividers, and like every other edit it takes effect on Done.
 - **Edit menu items explains itself above the list.** The help text was a tooltip that
   followed the mouse over every row and the scrollbar; it is now a line of text above the list.
+- **Store apps' icons stay as they are: no badge, no checkerboard, never blank.** Windows
+  draws the icons of Store apps (Calculator, Notepad, Media Player and the like) on the
+  taskbar, in Start and in Explorer, including the small file-type icon in a thumbnail's
+  corner, by asking the PNG thumbnail handler for the app's logo, and SageThumbs is that
+  handler. With the format badge or the checkerboard on, those icons got them too, and with
+  SageThumbs' thumbnails switched off they could come out blank. SageThumbs now recognises
+  an app's own icon and hands it back untouched, whatever its settings say.
 - **Dragging a row in Edit menu items keeps the list where it was scrolled.** Every drop sent
   the list back to the top. It now stays put, and dragging to the top or bottom edge scrolls
   the list a row at a time.

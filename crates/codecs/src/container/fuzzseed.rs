@@ -571,6 +571,12 @@ pub(crate) fn seeds() -> Vec<(&'static str, Vec<u8>)> {
         ("apev2-item", synthetic_apev2_item()),
         ("dsf-id3v2-apic", synthetic_id3v2_apic()),
         ("djvu", synthetic_djvu()),
+        // Adobe Flash frame-1 render (issue #70): the decode tier, not a container, but the
+        // seed set is where every format's valid-file seed goes.
+        (
+            "swf",
+            crate::decode::flash::synthetic_square_movie(400, 200),
+        ),
         ("epub", synthetic_epub()),
         ("sevenz", synthetic_sevenz()),
         ("office-ooxml", synthetic_office_ooxml()),

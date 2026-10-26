@@ -665,6 +665,7 @@ pub const FORMATS: &[(&str, &str)] = &[
     ("sun", "SUN Rasterfile"),
     ("svg", "Scalable Vector Graphics"),
     ("svgz", "Compressed Scalable Vector Graphics"),
+    ("swf", "Adobe Flash movie"),
     ("tga", "Truevision Targa image"),
     ("tif", "Tagged Image File Format"),
     ("tiff", "Tagged Image File Format"),

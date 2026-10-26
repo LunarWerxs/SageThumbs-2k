@@ -282,6 +282,7 @@ real.spx
 real.stl
 real.svg
 real.svgz
+real.swf
 real.tga
 real.tif
 real.tiff

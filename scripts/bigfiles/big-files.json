@@ -1018,6 +1018,9 @@
  "svgz": {
   "strategy": "tail"
  },
+ "swf": {
+  "strategy": "tail"
+ },
  "tga": {
   "strategy": "tail"
  },

@@ -296,6 +296,7 @@ stl
 sun
 svg
 svgz
+swf
 tga
 tif
 tiff

@@ -178,6 +178,8 @@ pub use magick::{
     encode_via_magick, encode_via_magick_png, magick_available, magick_output_extensions,
     magick_output_supported, magick_png_bytes, sweep_stale_magick_temp,
 };
+/// Adobe Flash (`.swf`) frame-1 thumbnails, rasterised from the movie's vectors (issue #70).
+pub(crate) mod flash;
 mod mesh;
 pub(crate) mod pdf_tier;
 mod readers;
@@ -656,6 +658,9 @@ fn decode_preview_with_raw_order(
     }
     if let Some(img) = try_djvu_tier(bytes, wic_thumbnail_cx) {
         return Ok(img);
+    }
+    if let Some(r) = flash::try_swf_tier(bytes) {
+        return r;
     }
     if let Some(r) = try_container_cover_tier(bytes, raw_preview, wic_thumbnail_cx) {
         return r;

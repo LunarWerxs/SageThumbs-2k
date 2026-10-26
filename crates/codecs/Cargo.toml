@@ -128,6 +128,12 @@ zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 # color-manage CMYK→sRGB via moxcms above. Re-exports `zune_core` (ColorSpace/DecoderOptions).
 zune-jpeg = "0.5"
 st2k_base = { package = "sagethumbs2k-base", path = "../base" }
+# Adobe Flash (.swf) movies: the tag parser for the frame-1 vector thumbnail (issue #70).
+# `default-features = false` keeps the crate off `lzma-rs` (ZWS needs it, and it is a new
+# dependency); `flate2` is already linked for the PNG and gzip paths, so zlib (CWS) is free.
+swf = { version = "0.3", default-features = false, features = ["flate2"] }
+# The rasteriser the SWF tier draws into. resvg already links this same version for SVG.
+tiny-skia = "0.12"
 
 [dev-dependencies]
 # Test-only 7z writer: builds non-solid/duplicate-name archives in memory for the extraction

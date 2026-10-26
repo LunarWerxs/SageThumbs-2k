@@ -76,33 +76,27 @@ impl IThumbnailProvider_Impl for ThumbnailProvider_Impl {
             // switch, size cap, thumb edge, embedded pref) instead of ~5 separate
             // opens — see `settings::thumb_settings`. Still a fresh read per request,
             // so Settings changes take effect immediately for the next thumbnail.
-            let cfg = settings::thumb_settings();
+            let mut cfg = settings::thumb_settings();
 
-            // Option: master switch. Returning a failure lets the shell fall
-            // back to the file's default icon. Checked BEFORE the failure logging
-            // below: a disabled provider fails every call by design, and that must
-            // not write an `ERROR` line per file.
-            if !cfg.enabled {
-                safety::log_debug("GetThumbnail: disabled via EnableThumbs=0");
-                return Err(Error::from(E_FAIL));
-            }
-            // The business-licence lock (`licence_state`): a Business copy whose 7-day
-            // evaluation and 3-day notice have both run out with no key redeemed, or whose
-            // seat was revoked, refuses exactly like the master switch does - Explorer
-            // falls back to the file's icon. Same placement as the switch, for the same
-            // reason: a locked provider fails every call by design and must not write an
-            // `ERROR` line per file. One HKLM read for the Personal copies that are 99% of
-            // installs; `st2k doctor` names this state so "no thumbnails" has an answer.
-            if st2k_base::licence_state::shell_locked() {
-                safety::log_debug("GetThumbnail: refused, business licence lock");
+            // A Store app's own icon (see `is_app_asset`) is drawn plain and never refused.
+            let app_icon = self.is_app_icon();
+            if app_icon {
+                safety::log_debug("GetThumbnail: a Store app's icon, drawn plain");
+                plain_for_app_icon(&mut cfg);
+            } else if let Some(why) = refusal(&cfg) {
+                safety::log_debug(why);
                 return Err(Error::from(E_FAIL));
             }
 
             // Circuit breaker: a file already known to fail is refused here, before any
             // decode work, instead of paying full cost again on every Explorer redraw.
             // `id` is `None` for a nameless stream, which has no stable identity to
-            // remember a failure against.
-            let id = self.current_identity();
+            // remember a failure against, and for an app icon, which is never refused.
+            let id = if app_icon {
+                None
+            } else {
+                self.current_identity()
+            };
             if let Some(id) = &id {
                 if failmemo::is_remembered_failure(id) {
                     safety::log_debug("GetThumbnail: skipped, remembered failure");
@@ -115,6 +109,71 @@ impl IThumbnailProvider_Impl for ThumbnailProvider_Impl {
             r
         })
     }
+}
+
+/// Why this call is refused before any decode, as its debug line, or `None` to go on.
+///
+/// Option: master switch. Returning a failure lets the shell fall back to the file's
+/// default icon. Checked BEFORE the failure logging: a disabled provider fails every call
+/// by design, and that must not write an `ERROR` line per file.
+///
+/// The business-licence lock (`licence_state`): a Business copy whose 7-day evaluation and
+/// 3-day notice have both run out with no key redeemed, or whose seat was revoked, refuses
+/// exactly like the master switch does - Explorer falls back to the file's icon. Same
+/// placement as the switch, for the same reason. One HKLM read for the Personal copies that
+/// are 99% of installs; `st2k doctor` names this state so "no thumbnails" has an answer.
+fn refusal(cfg: &settings::ThumbSettings) -> Option<&'static str> {
+    if !cfg.enabled {
+        return Some("GetThumbnail: disabled via EnableThumbs=0");
+    }
+    if st2k_base::licence_state::shell_locked() {
+        return Some("GetThumbnail: refused, business licence lock");
+    }
+    None
+}
+
+/// Whether the stream is one of a Store (packaged) app's own image assets: its logo, tile or
+/// icon. Windows draws those apps' icons (the taskbar, Start, Explorer's file-type icons and
+/// the type icon in a thumbnail's corner) by asking the `.png` thumbnail handler for the
+/// app's logo file, and SageThumbs is that handler. So whatever it does to a PNG landed on
+/// every Store app's icon: the format badge and the checkerboard drew on them, and a refusal
+/// (thumbnails switched off, the licence lock, a remembered failure) left them blank, the
+/// "file-type icons missing for system apps only" Windows users reported (measured
+/// 2026-10-25: an icon request for a Store app's file type made one call here, a 256 x 256
+/// PNG of 14,639 bytes).
+///
+/// Recognised by the stream's name: a path under `WindowsApps` or `SystemApps`, where packaged
+/// apps live, or a file name carrying a resource qualifier after its base name
+/// (`Square44x44Logo.targetsize-256_altform-unplated.png`, `StoreLogo.scale-200.png`), which is
+/// how an app package names the sizes and themes of one image.
+fn is_app_asset(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if lower.contains("\\windowsapps\\") || lower.contains("\\systemapps\\") {
+        return true;
+    }
+    let file = lower.rsplit(['\\', '/']).next().unwrap_or(&lower);
+    let stem = file.rsplit_once('.').map_or(file, |(s, _)| s);
+    let Some((_, qualifiers)) = stem.split_once('.') else {
+        return false;
+    };
+    qualifiers.split(['.', '_']).any(is_resource_qualifier)
+}
+
+/// One app-package resource qualifier, such as `scale-200`, `targetsize-48`,
+/// `altform-unplated`, `contrast-black` or `theme-dark`: a known name, a dash, a value.
+fn is_resource_qualifier(part: &str) -> bool {
+    const NAMES: [&str; 5] = ["scale", "targetsize", "altform", "contrast", "theme"];
+    part.split_once('-')
+        .is_some_and(|(name, value)| NAMES.contains(&name) && !value.is_empty())
+}
+
+/// The settings an app icon is drawn with: the picture as it is, at the size asked for.
+fn plain_for_app_icon(cfg: &mut settings::ThumbSettings) {
+    cfg.enabled = true;
+    cfg.format_badge = false;
+    cfg.thumb_checker = false;
+    cfg.max_thumb = u32::MAX;
+    cfg.max_file_bytes = u64::MAX;
 }
 
 /// The breadcrumb a failed `GetThumbnail` leaves behind: one `ERROR` line with the HRESULT, and
@@ -224,6 +283,17 @@ impl ThumbnailProvider_Impl {
             "GetThumbnail: failed hr={:#010x} ext={ext} size={size}",
             e.code().0,
         ));
+    }
+
+    /// Whether this call is for a Store app's own icon ([`is_app_asset`]). The name is in
+    /// the debug log so a report can show what the shell asked for.
+    fn is_app_icon(&self) -> bool {
+        let name = self.stream.try_borrow().ok().and_then(|b| {
+            b.as_ref()
+                .and_then(|s| unsafe { st2k_base::host::stream_name(s) })
+        });
+        safety::log_debugf!("GetThumbnail: stream {name:?}");
+        name.is_some_and(|n| is_app_asset(&n))
     }
 
     /// This call's identity for the failure memory, or `None` when the stream is
@@ -406,6 +476,67 @@ impl ThumbnailProvider_Impl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Store app's logo, tile or icon is recognised by where it lives or by the resource
+    /// qualifiers in its name; a user's own picture, even one with a dash or a dot in its
+    /// name, is not.
+    #[test]
+    fn store_app_assets_are_told_from_the_users_pictures() {
+        for name in [
+            "Square44x44Logo.targetsize-256_altform-unplated.png",
+            "StoreLogo.scale-200.png",
+            "CalculatorAppList.targetsize-48_altform-lightunplated.png",
+            "LargeTile.scale-100_contrast-black.png",
+            "AppIcon.theme-dark.png",
+            r"C:\Program Files\WindowsApps\Microsoft.WindowsCalculator_11.2405.2.0_x64__8wekyb3d8bbwe\Assets\Logo.png",
+            r"C:\Windows\SystemApps\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\Assets\Icon.png",
+        ] {
+            assert!(is_app_asset(name), "{name}");
+        }
+        for name in [
+            "holiday.png",
+            "scale-model.png",
+            "photo.final.png",
+            "screen_contrast-.png",
+            "report.scale.png",
+            r"D:\Pictures\theme-dark\wallpaper.png",
+            "",
+        ] {
+            assert!(!is_app_asset(name), "{name}");
+        }
+    }
+
+    /// An app icon is drawn as the picture it is: no badge, no checkerboard, no size cap, and
+    /// never refused, whatever the user's thumbnail settings say.
+    #[test]
+    fn an_app_icon_is_drawn_plain_whatever_the_settings() {
+        let mut cfg = settings::thumb_settings();
+        cfg.enabled = false;
+        cfg.format_badge = true;
+        cfg.thumb_checker = true;
+        cfg.max_thumb = 32;
+        cfg.max_file_bytes = 1;
+        plain_for_app_icon(&mut cfg);
+        assert!(cfg.enabled && !cfg.format_badge && !cfg.thumb_checker);
+        assert_eq!(capped_edge(256, cfg.max_thumb), 256);
+        assert_eq!(cfg.max_file_bytes, u64::MAX);
+    }
+
+    /// Switched off, the provider refuses an ordinary picture; switched on, it goes on (on a
+    /// machine with no business-licence lock, which is every test machine).
+    #[test]
+    fn the_master_switch_refuses_an_ordinary_picture() {
+        let mut cfg = settings::thumb_settings();
+        cfg.enabled = false;
+        assert_eq!(
+            refusal(&cfg),
+            Some("GetThumbnail: disabled via EnableThumbs=0")
+        );
+        cfg.enabled = true;
+        if !st2k_base::licence_state::shell_locked() {
+            assert_eq!(refusal(&cfg), None);
+        }
+    }
 
     /// The failure memory keys on one 64-bit tick count; the two `FILETIME` halves must
     /// land in their fixed positions or a file's identity changes on every call.

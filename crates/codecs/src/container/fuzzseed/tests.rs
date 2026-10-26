@@ -253,6 +253,10 @@ fn every_seed_reaches_its_parser() {
         djvu::extract(&by("djvu")).is_some(),
         "djvu bilevel page render"
     );
+    assert!(
+        crate::decode::flash::render_swf(&by("swf")).is_ok(),
+        "swf frame-1 vector render"
+    );
     {
         let bytes = by("epub");
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("valid zip seed");
