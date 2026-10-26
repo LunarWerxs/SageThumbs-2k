@@ -53,6 +53,19 @@ $expected = [ordered]@{
     ogv  = 'the frame is sought by time from the last page, hidden by the padding; a real 290 MB Theora video passes'
 }
 
+# Every ZIP-based format (an Office or OpenDocument file, an e-book, an app package, a comic, a
+# CAD or paint project) keeps its central directory at the END, as `zip` above does, so the
+# padding hides it the same way: the end-of-directory record must sit in the file's last 64 KiB,
+# and the whole-file scan that once found it behind 300 MB of zeros is past the read budget since
+# zip 9.0.5 (which scans from the front). Real big ones
+# grow INSIDE the archive, which `scripts/bigfiles/bigfiles.py` does with a ballast entry; all 42
+# ZIP-based formats in the corpus pass it at 300 MB and 2.2 GB on every surface (2026-10-25).
+function Test-ZipFamily([string]$Path) {
+    $fs = [IO.File]::OpenRead($Path)
+    try { $b = [byte[]]::new(4); $n = $fs.Read($b, 0, 4) } finally { $fs.Close() }
+    $n -eq 4 -and $b[0] -eq 0x50 -and $b[1] -eq 0x4B -and $b[2] -eq 3 -and $b[3] -eq 4
+}
+
 if (-not (Test-Path -LiteralPath $Corpus -PathType Container)) {
     Write-Host "check-big-files: no corpus at $Corpus - skipped" -ForegroundColor Yellow
     exit 0
@@ -122,10 +135,11 @@ Get-ChildItem -LiteralPath $Corpus -File |
 
 $work = Join-Path ([IO.Path]::GetTempPath()) "st2k-big-files-$PID"
 New-Item -ItemType Directory -Force -Path $work | Out-Null
-$failed = @(); $passedListed = @(); $smallFailed = @(); $ok = 0
+$failed = @(); $passedListed = @(); $smallFailed = @(); $zipFamily = @(); $ok = 0
 try {
     foreach ($e in $byExt.Keys) {
         $src = $byExt[$e]
+        $zipBased = -not $expected.Contains($e) -and (Test-ZipFamily $src.FullName)
         $small = Join-Path $work "small-$($src.Name)"
         $big = Join-Path $work "big-$($src.Name)"
         Copy-Item -LiteralPath $src.FullName -Destination $small
@@ -139,6 +153,8 @@ try {
         if ($hr -eq 0) {
             $ok++
             if ($expected.Contains($e)) { $passedListed += $e }
+        } elseif ($zipBased) {
+            $zipFamily += $e
         } elseif (-not $expected.Contains($e)) {
             $failed += ('{0} ({1}): 0x{2:X8}' -f $e, $src.Name, $hr)
         }
@@ -149,6 +165,9 @@ try {
 
 Write-Host ("check-big-files: {0} formats; {1} keep their thumbnail at {2} MB; {3} listed; {4} with no small thumbnail ({5})" -f `
         $byExt.Count, $ok, [int]($BigBytes / 1MB), $expected.Count, $smallFailed.Count, ($smallFailed -join ', '))
+if ($zipFamily.Count) {
+    Write-Host ("  ZIP-based, directory hidden by the padding as zip's is (proved by bigfiles.py instead): {0}" -f ($zipFamily -join ', '))
+}
 if ($windowsDrawn.Count) {
     Write-Host ("  drawn by Windows' own RAW codec in Explorer, checked past it: {0}" -f ($windowsDrawn -join ', '))
 }
