@@ -13,8 +13,9 @@ directory and expects to be able to swap that directory out from under the app o
 
 - The installer is an **admin Inno Setup installer**, not a portable extraction.
 - It runs `regsvr32` to register the shell-extension DLL with Explorer.
-- It trusts a **self-signed certificate** into `LocalMachine\TrustedPeople` (needed for the
-  modern Win11 context-menu's signed sparse package).
+- It adds a **signed sparse package** for the modern Win11 context menu, a machine-level
+  package operation (it is chain-signed now, so no certificate is trusted for it; an upgrade
+  removes the self-signed one older versions trusted into `LocalMachine\TrustedPeople`).
 - **Explorer locks the shell-extension DLL while it's loaded.** A Scoop-style directory swap
   (`scoop update` replaces the versioned app folder) would collide with that lock and corrupt
   the update.
