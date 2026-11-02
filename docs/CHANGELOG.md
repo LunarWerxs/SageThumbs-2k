@@ -1,0 +1,5412 @@
+# Changelog
+
+All notable user-facing changes to **SageThumbs 2K**. Newest first.
+
+> Every release since 3.0.0 is code-signed by LUNARWERX LLC, and the release pipeline refuses
+> to publish anything that is not. `Get-ReleaseChangelogSection` (used by `release.ps1` and
+> `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
+> published release notes; this note is not part of what ships.
+
+## Unreleased
+
+**TL;DR**
+
+**Changed**
+
+- **The paid plan is now a subscription: US$5 a month or US$50 a year per installation, the same for home and business use. Licences already sold keep their terms.**
+
+**Fixed**
+
+- **An update that needs Windows restarted first says so, even when other programs also have files waiting for that restart.** It used to miss our own waiting file whenever another program (a browser update, say) had queued a delete ahead of it, and then started a silent update that stalled on the installer's "restart your computer" box.
+- **A video keeps its own shape when the preview window changes size.** Full screen, a drag-resize and leaving full screen used to leave a small clip as a narrow strip or stretch it; the picture now scales to fit at its own aspect with black bars.
+
+## 3.10.0
+
+**TL;DR**
+
+**New**
+
+- **Adobe Flash (.swf) movies get thumbnails** (#70)
+- **Add and remove dividers in Edit menu items**
+
+**Changed**
+
+- **Edit menu items saves only on Done**
+- **One Reset in Edit menu items brings back the whole factory menu**
+- **Edit menu items explains itself above the list**
+
+**Fixed**
+
+- **Store apps' icons stay as they are: no badge, no checkerboard, never blank**
+- **Dragging a row in Edit menu items keeps the list where it was scrolled**
+- **A divider dragged beside another stays until Done**
+- **Escape closes Edit menu items**
+- **Settings comes back to the front when Edit menu items closes**
+- **The list in Edit menu items fills its window**
+
+**Everything in 3.10.0**
+
+- **Adobe Flash (.swf) movies get thumbnails.** A Flash movie used to keep the plain file
+  icon. SageThumbs now draws the movie from its own shapes, gradients and pictures, with no
+  Flash Player and no script run. A movie that opens on a "loading" screen is shown as the
+  first frame that has something on it, so the thumbnail is the movie's picture rather than
+  an empty background. Text in a font the movie does not carry, and movies packed with LZMA,
+  are not drawn yet. Thanks to TOM-PIC for the report and the sample (#70).
+- **Add and remove dividers in Edit menu items.** Right-click a row in Settings ▸ Right-click
+  menu ▸ Edit menu items for Add divider above, Add divider below and, on a divider, Remove
+  divider. There was no way to add a divider before. The Check, Uncheck and Toggle selected
+  entries, which did nothing a click on the tick box did not, are gone from that list's menu.
+- **Edit menu items saves only on Done.** Cancel, Escape and the window's X now throw the edit
+  away and put the list back the way it was when the window opened. In 3.9.0 the X saved
+  everything, so there was no way to back out of a change.
+- **One Reset in Edit menu items brings back the whole factory menu.** Reset order only put the
+  rows back in order and left the ticks alone. Reset now restores the order, the ticks and the
+  dividers, and like every other edit it takes effect on Done.
+- **Edit menu items explains itself above the list.** The help text was a tooltip that
+  followed the mouse over every row and the scrollbar; it is now a line of text above the list.
+- **Store apps' icons stay as they are: no badge, no checkerboard, never blank.** Windows
+  draws the icons of Store apps (Calculator, Notepad, Media Player and the like) on the
+  taskbar, in Start and in Explorer, including the small file-type icon in a thumbnail's
+  corner, by asking the PNG thumbnail handler for the app's logo, and SageThumbs is that
+  handler. With the format badge or the checkerboard on, those icons got them too, and with
+  SageThumbs' thumbnails switched off they could come out blank. SageThumbs now recognises
+  an app's own icon and hands it back untouched, whatever its settings say.
+- **Dragging a row in Edit menu items keeps the list where it was scrolled.** Every drop sent
+  the list back to the top. It now stays put, and dragging to the top or bottom edge scrolls
+  the list a row at a time.
+- **A divider dragged beside another stays until Done.** A divider dropped next to another
+  divider, or at the very top or bottom, vanished on the spot. It now stays while you edit, and
+  Done tidies doubled dividers and dividers at either end.
+- **Escape closes Edit menu items.** Escape did nothing; it now cancels like the X. During a
+  drag it drops only the drag.
+- **Settings comes back to the front when Edit menu items closes.** Closing the editor could
+  leave another program in front instead of Settings.
+- **The list in Edit menu items fills its window.** A selected row's highlight stopped well
+  short of the scrollbar.
+
+## 3.9.0
+
+**TL;DR**
+
+**New**
+
+- **Screenshots save in HDR: PNG HDR and JPEG XR HDR** (#67)
+- **Each divider in the right-click menu can be switched off**
+- **Pick the checkerboard's colours** (#69)
+
+**Changed**
+
+- **Illustrator files with several artboards show each artboard whole**
+- **Done in Edit menu items applies the menu straight away**
+- **Quick actions on the main menu leave the SageThumbs 2K submenu**
+
+**Fixed**
+
+- **Dragging rows in Edit menu items moves them**
+- **The custom action's switch shows whether its hotkey is on, and turns it off**
+- **Space and Check selected reach every selected file type**
+- **The format badge and checkerboard show on every file type** (fixes #66)
+- **The format badge shows on long extensions, tiny pictures and cloud files**
+- **A format badge picked during setup shows on thumbnails**
+- **Explorer comes back after Rebuild thumbnail cache and Repair file associations** (fixes #68)
+- **The desktop no longer flashes during setup**
+- **`st2k doctor` no longer flags .ico files by mistake**
+- **HDR screenshots keep the screen's real brightness** (#67)
+- **JPEG 2000 files with a far-off tile grid show their picture**
+
+**Everything in 3.9.0**
+
+- **Screenshots save in HDR: PNG HDR and JPEG XR HDR.** Settings ▸ Screenshot files ▸ Save
+  screenshots as now offers two HDR formats that keep an HDR monitor's full brightness and
+  colour instead of the 8-bit picture: PNG HDR (16-bit, BT.2020 colours and the PQ curve,
+  tagged as the new PNG standard describes) and JPEG XR HDR (the format Windows' Game Bar
+  saves HDR screenshots in). Arrows, text and other marks keep the look they had in the editor.
+  A capture from an ordinary screen saves in these formats too. Thanks to spider623 for the
+  idea (#67).
+- **Each divider in the right-click menu can be switched off.** Settings ▸ Right-click menu ▸
+  Edit menu items now has a tick box next to every divider line, as it has next to every item.
+  Clear one and the menu draws no line there; the row keeps its place in the list, so it can be
+  ticked again later. Thanks to justdeek on Discord for the idea.
+- **Pick the checkerboard's colours.** Settings ▸ Appearance ▸ Checkerboard colours sets the
+  two colours of the checkerboard behind see-through pictures: Automatic (the light squares,
+  as before), Dark, so a white logo or icon stands out, or Custom…, which opens the Windows
+  colour picker for each colour. The same colours draw the checkerboard in thumbnails, the
+  right-click preview and Quick preview. Thanks to Geijoh for the idea (#69).
+- **Done in Edit menu items applies the menu straight away.** Done (or closing the window)
+  saves the list and the next right-click shows it. It used to only close the window, and the
+  change waited for Settings' own Save. Thanks to justdeek on Discord.
+- **Quick actions on the main menu leave the SageThumbs 2K submenu.** With "Show quick actions
+  in the menu" on, Convert, Resize and Rotate now sit on the main right-click menu only, on both
+  the Windows 11 menu and the classic one, instead of being listed a second time inside the
+  SageThumbs 2K submenu. Thanks to justdeek on Discord for the idea.
+- **Dragging rows in Edit menu items moves them.** Dragging an item or a divider in the list did
+  nothing at all: the list sends its drag to the Settings window it was made in, and Settings
+  only listened while the list was still its own child, which it stops being once the editor
+  opens. Rows now move where they are dropped. Thanks to justdeek on Discord.
+- **The custom action's switch shows whether its hotkey is on, and turns it off.** Settings ▸
+  Quick action opened with "Enable custom action" off even while a hotkey was bound, with the
+  action and hotkey still live under it, so the hotkey kept running the action. The switch now
+  opens on when a hotkey is bound; switching it off greys both out and Save unbinds the hotkey,
+  so it stops firing. Thanks to justdeek on Discord.
+- **Space and Check selected reach every selected file type.** In Settings ▸ File types, Space
+  over several selected rows, and the right-click Check selected, Uncheck selected and Toggle
+  selected, changed only the first few dozen formats and skipped the rest.
+- **HDR screenshots keep the screen's real brightness.** On an HDR monitor, a screenshot came
+  out too bright: windows and the desktop were blown out to white and mid-tones looked faded,
+  because the capture ignored Windows' "SDR content brightness" setting. It now reads that
+  setting for each monitor, so ordinary windows come out exactly as they look, and only what is
+  brighter than them (HDR video, games) is rolled off toward the monitor's peak, keeping its
+  colour instead of turning white (#67).
+- **JPEG 2000 files with a far-off tile grid show their picture.** A JPEG 2000 file may place
+  its picture and tile grid billions of pixels from the origin. SageThumbs read such a file's
+  tile edges wrongly and drew it black. It now draws the same picture as the file without the
+  offset.
+- **Illustrator files with several artboards show each artboard whole.** The thumbnail of a
+  file with up to four artboards cut each artboard to fill its square and pushed them together,
+  so the artboards blended into one confusing picture and a mark in the middle of one could
+  stretch into a band. Each artboard is now drawn whole in its own cell, with a thin outline
+  round it, so the thumbnail reads as separate pages.
+- **The format badge and checkerboard show on every file type.** With the format badge or the
+  transparency checkerboard on, some types still showed Windows' plain thumbnail with neither
+  (PNG on some PCs, JPEG on others), because the file type's own entry named Windows' built-in
+  thumbnailer and Windows asks that entry first. While the badge or checkerboard is on,
+  SageThumbs now takes that entry over for your account only, and gives it back when you turn
+  both off or uninstall, and pictures Explorer had already cached without the badge are redrawn
+  (at your next sign-in, or straight away from the refresh offer after an update). Opening
+  Settings checks again, so a default program you pick later is covered too. `st2k doctor` says
+  when a type is still drawn by Windows and how to fix it (fixes #66).
+- **The format badge shows on long extensions, tiny pictures and cloud files.** Measured over
+  every format SageThumbs reads, three kinds of file still went without the badge. A file
+  whose extension is longer than five letters got none: it now gets a short label (`.aseprite`
+  reads ASE, `.blend12` BLEND, `.sldprt` SLDPR). A picture too small or too thin for the badge
+  (a 32 by 16 PPM, a tiny PSD, a narrow strip) got none: it now sits in the middle of its tile
+  with the badge in the tile's corner. And in OneDrive and other sync folders, a file kept only
+  online showed the cloud's thumbnail without the badge: the badge now goes on that too.
+- **A format badge picked during setup shows on thumbnails.** Choosing "A SageThumbs format
+  mark" on setup's Thumbnail corner page turned off Windows' own type icon but drew no badge,
+  so every thumbnail had an empty corner until the setting was changed in Settings.
+  Thumbnails now follow the choice made in setup.
+- **Explorer comes back after Rebuild thumbnail cache and Repair file associations.** Now and
+  then the taskbar and desktop disappeared and stayed gone: Explorer had only half closed, so it
+  was never started again. SageThumbs now gives Explorer a few seconds, finishes closing it
+  only once its taskbar is gone, and starts it again (fixes #68).
+- **The desktop no longer flashes during setup.** Setup and the welcome screen could both
+  restart Explorer at the same moment, so the screen flashed between black and an empty
+  desktop. A restart now waits for one already running to finish.
+- **`st2k doctor` no longer flags .ico files by mistake.** It reported a failure for .ico files
+  because of a leftover Windows entry that points at nothing and that Explorer ignores.
+
+## 3.8.0
+
+**TL;DR**
+
+**New**
+
+- **3MF files without a saved picture show their model**
+
+**Fixed**
+
+- **3D models no longer look see-through**
+- **Bambu Studio and OrcaSlicer 3MF files show their picture**
+- **Backup and template files name the right thumbnail source**
+- **The File types list shows every extension in full**
+- **The File types list's Category column is in your language**
+- **The File types list's How column no longer cuts off translated labels**
+
+**Everything in 3.8.0**
+
+- **3MF files without a saved picture show their model.** A 3MF from a CAD program, or a bare
+  model file, carries only the 3D model and no picture of it, so it got no thumbnail, or a
+  texture or other stray image from inside the file. The model is now drawn, the same way STL
+  files are, including the multi-part files Bambu Studio and OrcaSlicer write. When the file
+  does carry a slicer's picture, that picture is still what you see.
+- **3D models no longer look see-through.** STL, OBJ and PLY thumbnails were drawn from below
+  the model, and mirrored, so a solid print showed its underside and read as a hollow,
+  see-through shell. They are now drawn from above and in front, the way a slicer shows them,
+  with shading that follows the light, so a solid looks solid.
+- **Bambu Studio and OrcaSlicer 3MF files show their picture.** These slicers save their
+  preview as the first plate's render rather than the `thumbnail.png` other slicers use.
+  SageThumbs missed it and showed another image from the file, a nearly empty mask the slicer
+  uses for clicking on objects, so the thumbnail came out blank and see-through. The plate's
+  render is now shown.
+- **Backup and template files name the right thumbnail source.** The Settings format list and
+  `st2k formats` said Blender's auto-save backups (`.blend1` to `.blend32`), SketchUp backups
+  (`.skb`), Photoshop `.psdt` and `.pdd` files and Affinity templates (`.aftemplate`) were fully
+  decoded. Like the files they are copies of, they show the preview stored inside, and they now
+  say so. The thumbnails themselves are unchanged.
+- **The File types list shows every extension in full.** Its columns had fixed widths that did
+  not grow with Windows display scaling, so at 150% or 200% the checkbox took up most of the
+  Extension column and extensions were cut to `.ap…` or `b…`. Extensions now always show in
+  full, in every language and at every scaling, and the other columns size themselves to what
+  they hold. You can still drag the dividers, and double-clicking one fits that column to its
+  contents.
+- **The File types list's Category column is in your language.** It said Image, Ebook, Audio
+  and so on in English whatever language SageThumbs was set to. It now follows your language
+  in all 36 that SageThumbs speaks, and the search box above the list finds a format by its
+  category in your language or in English.
+- **The File types list's How column no longer cuts off translated labels.** In 24 languages
+  some How labels ran up to three times as wide as the English ones, mostly the "(OS codec)"
+  note on video rows, so they ended in "...". They now use the short forms each language's
+  own software uses (OS, SO, ОС, 系统解码器 and so on), and every one fits.
+
+## 3.7.4
+
+**TL;DR**
+
+**Fixed**
+
+- **No "PNG" mark on Store apps' icons**
+- **A crafted zstd archive can't exhaust memory**
+- **Right-click Upload asks first**
+- **Online-only cloud files are never downloaded for a thumbnail**
+
+**Everything in 3.7.4**
+
+- **No "PNG" mark on Store apps' icons.** With the corner set to the SageThumbs format mark, a
+  file with no picture of its own showed its program's icon stamped "PNG" when that program
+  came from the Microsoft Store: text and `.ini` files opened by Notepad, `.7z` archives
+  opened by NanaZip, songs without cover art opened by Media Player. Windows draws those
+  icons from a PNG inside the app, and SageThumbs marked that picture as if it were your
+  file. Those icons now stay unmarked. Use Settings, Rebuild thumbnail cache once after
+  updating to clear marks Windows already saved.
+
+- **A crafted zstd archive can't exhaust memory.** A tiny zstd-compressed entry inside an archive
+  could make the built-in zstd decoder ask for several gigabytes at once (RUSTSEC-2026-0344). The
+  decoder is now 0.9.1, which caps each block's output, so such a file fails cleanly instead.
+
+- **Right-click Upload asks first.** "Upload (copy link)" puts your files on a free public
+  website, and it sits just under the Copy items, so one misread click shared a file. It now
+  names the file (or says how many) and asks, with Cancel as the default, the way the Quick
+  preview's Upload button already does. The extra hotkey set to Upload asks the same way;
+  `st2k upload` on the command line does not.
+
+- **Online-only cloud files are never downloaded for a thumbnail.** In a OneDrive, Synology
+  Drive or other sync folder, a file marked to download when opened could be read, and so
+  pulled down, just to draw its thumbnail. It is now left to the cloud app like every other
+  online-only file.
+
+- **Licence page in the installer.** It now says who needs a work licence (charities, schools and
+  government offices stay free) and names one buy link. The app's Buy, Renew and
+  move-licence links open the same public go.lunarwerx.com address the site uses.
+
+## 3.7.3
+
+**TL;DR**
+
+**Fixed**
+
+- **Big Affinity files get thumbnails**
+- **Big DjVu books get thumbnails**
+
+**Everything in 3.7.3**
+
+- **Big Affinity files get thumbnails.** An Affinity document (`.af`, `.afphoto`, `.afdesign`,
+  `.afpub`) over 256 MB showed no thumbnail, which is common for layered work brought over
+  from Photoshop. Affinity stores its preview at the end of the file, so SageThumbs now reads
+  just that part, however big the file is. The Quick preview of such a file works too.
+- **Big DjVu books get thumbnails.** A multi-page DjVu file over 256 MB, such as a book
+  scanned at high resolution, showed no thumbnail. SageThumbs now reads the book's page list
+  and draws the first page alone, however long the book is. The Quick preview works too.
+
+## 3.7.2
+
+**TL;DR**
+
+**New**
+
+- **Quick preview has a taskbar button**
+
+**Fixed**
+
+- **Comic thumbnails no longer pick the back cover or a variant cover**
+
+**Everything in 3.7.2**
+
+- **Quick preview has a taskbar button.** The Space-bar preview now shows on the taskbar and in
+  Alt+Tab, so a preview that ends up behind another window, a playing video included, can be
+  brought back with one click. Pressing Space in Explorer while the preview is hidden behind
+  it, or minimized, brings the preview back instead of closing it unseen.
+- **Comic covers: the back cover and variant covers no longer win.** With "Prefer a cover
+  image" on (the default), a CBZ, CBR or CB7 whose pages included a back cover, a variant
+  cover, a covers gallery or even a page named "Discovery" could show that page as its
+  thumbnail, because any name containing "cover" won. Only a page named as the front cover
+  leads now, and other covers go to the back, so the setting no longer has to be turned off
+  for those books (which lost the cover on books whose cover is named `cover.jpg`).
+
+## 3.7.1
+
+**TL;DR**
+
+**Changed**
+
+- **Less for antivirus to flag while installing** (#14)
+- **The background helper starts from a scheduled task, not the Windows Run list**
+- **Restarting File Explorer brings your folder windows back**
+
+**Fixed**
+
+- **Every Windows account gets its own scheduled tasks**
+
+**Everything in 3.7.1**
+
+- **Less for antivirus to flag while installing** (#14). Setup no longer does the things
+  behaviour scanners, Kaspersky's among them, watch for: it registers its scheduled tasks
+  directly instead of through `schtasks.exe` and a file in the temp folder, it no longer writes
+  itself into the Windows Run list, and restarting Explorer no longer ends it with `taskkill`
+  and deletes the thumbnail cache through `cmd`.
+- **The background helper starts at sign-in from a scheduled task.** The small helper behind
+  the screenshot hotkey and Space to preview used to start from the Windows Run list, which
+  some security programs treat as suspicious and empty (Kaspersky did, #14). It now starts
+  from your own task in Task Scheduler, so it no longer shows under Task Manager's Startup
+  apps; switch it off in Settings or with **Quit** on its tray icon. Updating moves it over by
+  itself.
+- **Restarting File Explorer brings your folder windows back.** Setup's "Restart File
+  Explorer" box and the **Rebuild thumbnail cache** button now ask Explorer to close and start
+  again, the way installers do, instead of ending it, then reopen the folders you had open. No
+  other program is closed.
+- **Every Windows account gets its own scheduled tasks**, so on a shared PC a second account no
+  longer misses out, and uninstalling removes them for every account, signed in or not.
+
+## 3.7.0
+
+**TL;DR**
+
+**New**
+
+- **The screenshot editor can blur and crop**
+- **Screenshots save as PNG, JPEG or WebP, under a name you choose**
+
+**Changed**
+
+- **H.264 videos in 4:2:2 or 4:4:4 colour are skipped at once**
+- **Files past size limits show what fits, instead of nothing**
+
+**Fixed**
+
+- **The right-click menu is in groups again, most-used first**
+- **The right-click preview fits its box on a scaled display** (fixes #61)
+- **Copy text (OCR) reads a slashed zero as 0**
+- **Updates install even while other programs use SageThumbs files** (fixes #60)
+- **Updating from inside the app is fixed in more places**
+- **Big scanned-book PDFs get their covers** (fixes #59)
+- **Photoshop files saved without a preview image get thumbnails** (fixes #55)
+- **Quick preview's Upload button no longer closes the preview**
+- **3D models in OBJ files with many points get thumbnails**
+- **CMYK and grayscale Photoshop files show their true colours**
+- **See-through edges of CMYK Photoshop pictures keep their colour**
+- **CMYK JPEGs saved by Photoshop show their true colours**
+- **Big 3D scans draw solid, and huge ones get thumbnails**
+- **3D models with many thin triangles draw whole**
+- **32-bit float TIFFs with HDR profiles no longer come out dark**
+
+**Everything in 3.7.0**
+
+- **The right-click menu is in groups again, most-used first.** Since 2.0.0 the SageThumbs
+  submenu had lost every divider and read as one long list. Its groups show again, in a new
+  order:
+  - Convert, Resize and Rotate.
+  - Making a picture smaller to send.
+  - Copying and sharing.
+  - Combining files.
+  - Organizing them.
+  - Looking at a picture.
+  - Setting it as a wallpaper, lock screen or folder icon.
+  - **If you never rearranged the menu, you get the new order**, even if you pressed OK in
+    Settings before. Older versions saved the order on every OK, so it never changed again and
+    each new entry landed at the bottom. If you did rearrange it, your order stays, and new
+    entries join their own group.
+  - **Compress to size** and **Save frame as image** can now be hidden and moved in Settings >
+    Right-click menu > Edit menu items, like every other entry.
+  - **Save frame as image** shows only when the selection holds a video.
+- **The screenshot editor can blur and crop.**
+  - **Blur** (`G`, beside Pixelate) softens a region. Its strength is a setting (Settings >
+    Screenshots > *Blur strength*, 2 to 40 px, 12 by default). To hide text, Pixelate is still
+    the safe choice, and the tooltip says so: a light blur can leave words readable.
+  - **Crop** (`X`) keeps the part you drag: the rest is shaded, Enter crops, Esc cancels, and
+    Ctrl+Z brings the rest back. Copy, Save, Upload and Copy text (OCR) all use the cropped
+    picture.
+- **Screenshots save as PNG, JPEG or WebP, under a name you choose.** A new Settings page,
+  **Screenshot files**, holds everything about the saved file: the format, its quality, the
+  name, and the Ctrl+S folder (moved there from Screenshots). *Save screenshots as* picks the
+  format: PNG stays the default, JPEG has its own quality
+  setting and lays a transparent picture on white, and WebP keeps every pixel. *Screenshot file
+  name* takes a template: `{yyyy}` `{MM}` `{dd}` `{HH}` `{mm}` `{ss}` `{ms}` for the capture's
+  date and time, `{app}` for the program that was in front (or `Desktop`), and `/` or `\` for
+  subfolders, which are created when needed. The default gives the same names as before.
+  Characters Windows does not allow in a file name are left out, and a name Windows reserves
+  (`CON`, `NUL`, …) gets a `_` in front. The editor's Save, Ctrl+S and the quick-save hotkey all
+  follow both settings; Copy still puts a plain picture on the clipboard.
+- **The right-click preview is drawn once on a scaled display** (fixes #61). At a display scale
+  above 100%, Windows drew the preview tile a second time over the first, so its captions
+  overlapped or were cut off and the size read "3 KB KB". SageThumbs now draws the tile itself,
+  sized for the display's scale. As on PCs with a menu skin, the menu that holds the preview
+  then uses the light classic style; Settings > Right-click menu > *Menu preview* can turn the
+  preview off.
+- **Copy text (OCR) reads a slashed zero as 0.** Windows' text recognizer reads the slashed zero
+  some fonts draw as `ø` or `Ø`. Inside a word that also has a digit in it (`1ø24`, `ID-4Ø7`),
+  it now comes out as `0`; a word with no digit (`Søren`) keeps its letter.
+- **Updating from inside the app installs, even while other programs are using SageThumbs
+  files** (fixes #60). If any program SageThumbs could not close (an antivirus, a service, a
+  program in another Windows session) had one of its files open, the update gave up without a
+  word: the setup window appeared, vanished, and you were still on the old version. Setup now
+  moves files that are in use aside instead of closing anything, finishes any it cannot move on
+  the next restart, and never closes your programs. If an update ever does fail, the next time
+  you open Settings it tells you, with setup's own reason and its log, and offers the download
+  page.
+- **Updating from inside the app, fixed in more places:**
+  - When an update leaves a file for the next restart (because a program was using it),
+    updating again before that restart now tells you to restart Windows first. It used to start
+    setup, which stopped on a "previous installation was not completed" message, out of sight
+    of a silent update, and never finished. Removing SageThumbs before that restart no longer
+    lets the restart put the file back.
+  - On a PC once set up for business use and later for personal use, an update could stop to
+    ask "Continue with Personal use?", and an unattended install (winget, an administrator's
+    silent deployment) waited on that question for ever. Setup now asks it only when you run
+    setup yourself.
+  - The notice after an update says when a restart is still needed to finish it, instead of
+    only "you're now on" the new version.
+  - Cancelling setup while it copied files could leave SageThumbs without its ImageMagick
+    engine. Setup no longer offers Cancel once it has started copying.
+  - The "update available" notification opens Settings where you install it (the portable
+    copy: the download page). Clicking it used to do nothing.
+  - The download no longer gives up after eight minutes on a slow connection.
+  - When GitHub is limiting requests from your network, the updater says so and to try again
+    later, instead of reporting that there is no installer for your PC.
+  - A standard Windows account that cannot approve the administrator prompt is told that an
+    administrator has to install the update. It used to be told nothing.
+  - A PC whose clock was once set ahead no longer stops checking for updates until that date
+    comes round.
+  - The portable copy no longer offers to install an update it cannot install, and no longer
+    leaves a scheduled update check on the PC it ran on.
+  - Closing Settings during an update download no longer stops the update without a word.
+  - The updater's messages, its progress window and its notices are in your language.
+- **Big scanned-book PDFs get their covers** (fixes #59). A PDF over 256 MB with more than about
+  190 pages, each page its own scan (most scanned books), never got a thumbnail: Windows' PDF
+  engine looks at every page when it opens a document, and SageThumbs ran out of its read
+  allowance before the engine had seen them all. The same books now draw their first page,
+  reading less than a tenth as much of the file to do it. `st2k doctor` on a file this big now
+  checks it the way Explorer reads it, instead of reporting it unreadable.
+- **Photoshop files saved without a preview image get thumbnails** (fixes #55). A PSD written
+  by another program, or by Photoshop with image previews turned off, was handed whole to
+  ImageMagick, which decoded every layer and ran out of time on a big layered file, while Space
+  showed it fine. SageThumbs now draws these with its own Photoshop reader, as Space does, and
+  asks ImageMagick only for the finished picture when it has to: a 24 MB layered test file went
+  from no thumbnail to one in a fraction of a second. The `._` files a Mac leaves beside your
+  pictures are no longer logged as errors.
+- **The Quick preview's Upload button asks its question instead of closing the preview.** In
+  3.6.0 a click showed a busy cursor for a few seconds and then the preview window was gone,
+  with uploading switched off or on: the question it opens crashed before it could appear. It
+  now says uploading is off and offers the setting, or, once you have turned it on, asks before
+  uploading. The same fault closed the About window when it offered to renew an update licence;
+  that offer now appears too.
+- **3D models in OBJ files of more than a few thousand points get thumbnails.** Blender, Maya,
+  MeshLab and ZBrush write every point of a model before its first face, and SageThumbs only
+  recognised an OBJ file when a face appeared in its first 64 KB, so nearly every real model
+  stayed a blank icon. It now recognises a file whose opening is OBJ through and through.
+- **CMYK and grayscale Photoshop files show their true colours in the Quick preview**, and in the
+  thumbnail when the file has no preview image of its own. SageThumbs ignored the colour profile
+  saved in the document, so a CMYK red came out a harsher, brighter red than Photoshop shows and
+  a grayscale picture came out darker. Photoshop files in a wide colour space such as Adobe RGB
+  were over-saturated the same way. All three now go through the document's own profile.
+- **The see-through edges of a CMYK Photoshop picture keep their colour.** Where a CMYK picture
+  with transparency fades out, its half-covered edge pixels came out darker and off-colour. They
+  now match the picture they fade from.
+- **CMYK JPEGs saved by Photoshop show their true colours.** A CMYK JPEG carries its own colour
+  profile, but Photoshop (and most print tools) save its inks in a form SageThumbs did not take
+  apart, so the profile was skipped and the picture came out with the same harsh colours as the
+  Photoshop files above. It now goes through its profile too, on an ordinary (not progressive)
+  JPEG of up to about 100 megapixels, more than twice the size any CMYK JPEG got before.
+- **Big 3D scans draw solid.** A model of more than two million triangles (a photogrammetry scan,
+  a ZBrush sculpt) was drawn from a sample of them, and where its triangles are smaller than a
+  pixel most of the surface came out see-through. Every triangle is now drawn. A model with more
+  than 16 million points, which got no thumbnail at all, now gets one.
+- **3D models built from many long, thin triangles draw whole.** A pipe, rod or turned shape
+  divided into thousands of slim sides could come out with whole sides missing: SageThumbs
+  charged each triangle for the box around it, not the pixels it covers, and ran out of drawing
+  time early. It now charges each triangle only for what it covers.
+- **A 32-bit floating-point TIFF with an HDR colour profile is no longer darkened twice.** Its
+  brightness was squeezed into the screen's range once by the profile and again afterwards, so
+  it came out dull and dark. It is now squeezed once.
+- **H.264 videos in 4:2:2 or 4:4:4 colour are passed over at once.** Neither Windows nor
+  SageThumbs' own video decoder can draw them, yet SageThumbs started that decoder for each one,
+  which on a busy PC held up a thumbnail for seconds. It now reads the colour format from the
+  file first.
+- **Files past one of SageThumbs' size limits show what fits, instead of nothing.** Each limit is
+  still there, to keep Explorer fast, but going over it no longer throws the whole picture away:
+  - Android app bundles (`.xapk`, `.apks`, `.apkm`) whose `base.apk` is over 256 MB, and apps
+    with very large resource tables, show their icon.
+  - Affinity documents over 64 MB that store their thumbnail near the end get it.
+  - Photoshop EPS files saved with a colour profile (most CMYK ones) get their thumbnail.
+  - Comic book RARs whose first pages are big lossless scans get a cover from the pages that fit.
+  - SpriteLoop rigs with very large parts draw the parts that fit, instead of one stray part.
+  - The Quick preview lists the contents of ZIP, APK, JAR and IPA files over 64 MB; a 7z or RAR
+    that big says why it has no listing.
+  - SQLite previews list a row that holds a big stored file, showing the file's size, instead of
+    silently skipping it, and a table the preview had no time left to read says so instead of
+    "(no rows)".
+  - Markdown documents with broken image links no longer hide the good images after them; up to
+    64 images show (it was 24), and one left out over the limit says so. A Jupyter notebook with
+    more than 64 pasted images says how many were left out.
+  - Converting or resizing a big EMF or WMF picture gets a full minute instead of failing after 3
+    seconds.
+
+## 3.6.0
+
+**TL;DR**
+
+**New**
+
+- **You choose what double-clicking the tray icon does** (#58)
+
+**Changed**
+
+- **Send feedback asks you to promise you are not being a jerk**
+- **Press Space to preview works straight after installing**
+- **The Quick preview's Upload button no longer uploads on one click**
+- **Theme setting moved to the Appearance page in Settings**
+
+**Fixed**
+
+- **Photoshop thumbnails no longer fill your temp folder** (fixes #56)
+- **Big Photoshop files get their thumbnails** (fixes #55)
+- **PDFs with a few bytes before their header get thumbnails** (fixes #59)
+- **Preview's own dialogs no longer close it when it loses focus**
+- **Buttons on the "Keep these settings everywhere" banner have clean corners**
+- **Settings text cut off in other languages now fits**
+- **Another damaged JPEG XL file no longer crashes thumbnails**
+
+**Everything in 3.6.0**
+
+- **Photoshop thumbnails no longer fill your temp folder** (fixes #56). Every PSD thumbnail
+  could leave a copy of the file in `%TEMP%`, sometimes with hundreds of MB more beside it;
+  one user's reached 100 GB. Each ImageMagick run now gets its own temp folder, deleted the
+  moment the run ends. The files earlier versions left behind (ImageMagick's `magick-...`
+  files over an hour old that nothing has open) are cleaned up after you install this
+  version, and again whenever a thumbnail next needs ImageMagick.
+- **Big Photoshop files get their thumbnails** (fixes #55). A thumbnail asked for the whole
+  document at full size, so a large layered file could run out of time and show nothing,
+  while Space, which allows longer, previewed it fine. A thumbnail now reads the picture at
+  the size it shows.
+- **PDFs with a few bytes before their header get thumbnails** (fixes #59). Some systems put
+  bytes in front of a PDF's `%PDF-` header; every PDF reader opens such a file, Windows' own
+  included, but SageThumbs looked for the header only at the very first byte.
+- **You choose what double-clicking the tray icon does** (fixes #58): Settings > Advanced >
+  **Double-click tray icon** takes a screenshot (still the default), opens Settings, or does
+  nothing.
+- **Send feedback asks you to promise you are not being a jerk.** Send stays greyed out until
+  you tick the box. The email field is labelled just "Email (optional)" now.
+- **Press Space to preview now works straight after installing.** Quick preview used to start
+  off, so most people never found it. A new install turns it on, unless another Space-bar
+  previewer (QuickLook or Seer) is already there, since two would fight over every press of
+  Space. The welcome window still lets you switch it off, and an upgrade keeps your setting.
+- **The Quick preview's Upload button no longer uploads on one click.** It is off until you
+  turn on **Allow uploading from the preview** (Settings ▸ Quick preview); until then a click
+  says why nothing happened and offers to open that page. Once it is on, it names the file and
+  asks before every upload, with Cancel as the default answer.
+- **With "Close when the preview loses focus" on, the preview's own dialogs no longer close
+  it.** Saving a page, printing, or answering the Upload question used to count as clicking
+  away, which closed the window and its dialog together.
+- **The buttons on the "Keep these settings everywhere" banner have clean corners.** Each one
+  showed a notch of the page colour at its corners against the banner's tint.
+- **Settings text that was cut off in other languages now fits.** The screenshot hotkey's
+  "Stopped" status on the Screenshots page was cut short in 12 languages, and a label too long
+  for a 220-pixel box dropped onto its own line even with room to spare beside its field.
+- **One more damaged JPEG XL file that could crash the thumbnail host no longer does.** A
+  `.jxl` whose progressive passes leave part of the picture for no pass to decode stopped the
+  JPEG XL decoder dead; it is now an ordinary decode error, so the file shows the normal icon
+  and the files around it keep their thumbnails.
+- **The Theme setting moved to Settings > Appearance**, under "SageThumbs windows". It was on
+  the Quick preview page, which had grown past the bottom of the window.
+
+## 3.5.0
+
+**TL;DR**
+
+**Changed**
+
+- **Very tall JPEG XL images thumbnail about three times faster**
+- **Quick preview says why a video has no sound or picture** (#49)
+
+**Fixed**
+
+- **10-bit H.264 videos, common for anime, now get thumbnails** (fixes #52)
+- **DVD rips and non-square videos show at their proper shape**
+- **Format marks are one size on every thumbnail, with sharp letters** (fixes #50)
+- **The format mark no longer hides under a widescreen video's film strip** (fixes #51)
+- **Format mark stays visible after changing a file type's default program** (fixes #54)
+- **7-Zip and RAR archives with a big first picture get thumbnails** (fixes #53)
+- **JPEG XL thumbnails keep their text**
+- **CMYK JPEG XL images get thumbnails**
+- **Welcome window descriptions no longer lose their last line at 500% scaling**
+
+**Everything in 3.5.0**
+
+- **10-bit H.264 videos ("Hi10p", common for anime) now get thumbnails** (#52). Windows has no
+  decoder for them, so SageThumbs decodes them itself.
+- **Videos stored with non-square pixels show at their proper shape.** DVD rips and recordings
+  stored at 720×480 or 720×576 are shown at 4:3 or 16:9, as players show them, instead of
+  squeezed or stretched. Video thumbnails also no longer carry the thin band of padding some
+  codecs store past the edge of the picture.
+- **Format marks are the same size on every thumbnail, with smooth, sharp letters** (#50). The
+  mark followed each picture's shape, so a square picture got twice the mark of a widescreen
+  video frame or a book cover, and its letters turned jagged and blurry once Explorer resized
+  the thumbnail.
+- **On widescreen videos the format mark no longer hides under Explorer's film-strip border**
+  (#51).
+- **The format mark stays visible after you pick a new default program for a file type** (#54).
+  A program such as Readest puts its own icon in that corner, and choosing it after SageThumbs
+  was set up let the icon cover the mark.
+- **7-Zip and RAR archives whose first picture is larger than 8 MB now get thumbnails** (#53),
+  as zip and tar archives already did. That includes `.cb7` and `.cbr` comics with big scans.
+- **JPEG XL thumbnails keep their text.** The reference encoder saves repeated letters in a
+  screenshot or a lettered comic page once and stamps them into place, and the thumbnail
+  skipped that step, so pages came out with most of their text missing and speech bubbles
+  empty. It now draws them.
+- **CMYK JPEG XL images get thumbnails.** They failed to open at all before.
+- **Very tall JPEG XL images, such as webtoon strips, usually thumbnail about three times
+  faster.**
+- **The Quick preview now says why a video has no sound or no picture** (#49). Windows has no
+  decoder for DTS sound at all, and HEVC, AV1 and VP9 video need extensions from the Microsoft
+  Store, so such a video used to play in silence or show a still frame with no explanation.
+  Codec packs such as K-Lite cannot fill the gap, because they plug into a different part of
+  Windows than the one the preview plays through. The title bar now names what is missing, for
+  example "No sound: DTS isn't supported by Windows".
+- **At very high display scaling (500%), the welcome window's descriptions no longer lose
+  their last line.**
+
+## 3.4.1
+
+**TL;DR**
+
+**New**
+
+- **Double-click the Quick preview to go full screen**
+
+**Changed**
+
+- **The wrong installer now says which one to get**
+
+**Fixed**
+
+- **AVIF thumbnails can no longer freeze Explorer or taskbar icons**
+- **Rename with pattern shows its Rename and Cancel buttons again** (fixes #48)
+- **Buttons and labels no longer cut off in other languages**
+- **EXR and other HDR pictures no longer look dim**
+- **Olympus and Panasonic portrait photos show upright**
+- **A damaged JPEG XL file can no longer crash the thumbnail host**
+
+**Everything in 3.4.1**
+
+- **AVIF thumbnails can no longer freeze Explorer.** Asking for several AVIF thumbnails at once
+  (opening a folder of them, or scrolling quickly) could hang Windows' thumbnail host for good,
+  and with it every thumbnail and taskbar icon until you signed out. SageThumbs now reads AVIF
+  with its own decoder instead of Windows' AV1 extension, in a separate helper process, so a
+  damaged file cannot take Explorer down either. AVIF no longer needs the AV1 Video Extension
+  from the Microsoft Store, its colours no longer change when that extension updates itself, and
+  a 12-megapixel AVIF thumbnails in about a fifth of a second.
+- **Rename with pattern shows its Rename and Cancel buttons again** (fixes #48). The dialog was
+  laid out for more room than its window left once the title bar was taken out, so the button
+  row sat below the bottom edge with only a sliver showing. Every SageThumbs dialog now grows to
+  fit its own buttons and fields, so none of them can cut a control off, at any display scaling
+  or text size.
+- **Buttons and labels no longer cut off in other languages.** A check that opens every
+  window in all 36 languages at 100, 150 and 200% scaling found translated text clipped in a
+  dozen places: the Screenshots and Right-click menu buttons in Settings, a Quick preview
+  label, Sort into folders by tag, Files to folder, the Rename button, the Convert report's
+  Open folder, Convert's watermark Opacity label, the Send feedback dialog and the About box.
+  Those controls now size themselves to their text, and a long label moves above its field
+  instead of being cut.
+- **EXR and other HDR pictures no longer look dim.** A picture with nothing brighter than
+  normal white (most EXR renders and conversions, and HDR photos without highlights) now shows
+  at its true brightness instead of about three quarters of it, and in an HDR photo with
+  bright highlights the brightest one is now pure white. HDR JPEG XL, AVIF, HEIC and TIFF files
+  of an ordinary scene now look the same as their standard versions.
+- **Olympus and Panasonic photos taken in portrait now show upright.** Their `.orf` and
+  `.rw2` files mark the rotation the same way every other camera does, under a slightly
+  different file header that SageThumbs did not recognise, so the rotation was ignored.
+- **Double-click the Quick preview to go full screen.** Double-click a picture, a PDF page or a
+  video to fill the screen, and double-click again (or press Esc) to go back. F11 still works
+  once the preview has focus. Fit/100% zoom, which used to share the double-click, is on
+  **Ctrl+0**.
+- **The wrong installer now says which one to get.** Running the regular (x64) installer on a
+  Windows on ARM PC, or the ARM64 one on a regular PC, already stopped before installing, but only
+  named a processor type. It now tells you to download the other installer and where to find it.
+- **A damaged JPEG XL file can no longer crash the thumbnail host.** The ways a broken `.jxl`
+  could stop the JPEG XL decoder dead (a colour setting with no profile equivalent, an LF frame
+  at the deepest level, smoothing asked for on subsampled colour) are now ordinary decode
+  errors: the file shows the normal icon and the files around it keep their thumbnails.
+
+## 3.4.0
+
+**TL;DR**
+
+**New**
+
+- **FreeCAD backup files get thumbnails**
+- **Combine scans into a PDF you can search and copy**
+
+**Changed**
+
+- **Quick preview stays above the taskbar and remembers where you put it**
+- **The doctor names the thumbnail handler Windows actually uses** (#47)
+- **Image resizing and rotation are tested far more thoroughly**
+
+**Fixed**
+
+- **Thumbnails in OneDrive, Synology Drive and other cloud folders** (fixes #16)
+- **Thumbnails no longer stop after a busy session**
+
+**Everything in 3.4.0**
+
+- **Thumbnails in OneDrive, Synology Drive and other cloud folders.** Windows asks only the
+  cloud app for a thumbnail of a file in a synced folder, even a fully downloaded one, so
+  Paint.NET, Affinity, PSD and every other SageThumbs format showed a plain icon there
+  (fixes #16). SageThumbs now takes its turn first for files that are on your PC and hands
+  everything else, including online-only files, back to the cloud app; nothing is ever
+  downloaded just to draw a thumbnail. On by default, with a switch in Settings > General,
+  and `st2k doctor` now reports each cloud folder and whether it is linked.
+- **Thumbnails no longer stop after a busy session.** When Explorer gave up on a slow file
+  mid-decode, SageThumbs could lose one of its four ImageMagick slots for good; after a few
+  of those every exotic-format thumbnail stalled, Explorer kept giving up, and only a restart
+  brought them back. A slot whose owner is gone is now taken over at once.
+- **Quick preview stays above the taskbar and remembers where you put it.** A tall picture
+  no longer opens or grows underneath the taskbar, and the window opens where you last
+  dragged it (double-click its title bar to go back to centred).
+- **FreeCAD backups** (`.FCBak`, `.FCStd1`) get the same thumbnail as the `.FCStd` they were
+  saved from (363 file types in all).
+- **`st2k doctor` names the thumbnail handler Windows actually uses** for a file, and says
+  when that handler belongs to another program or is built for a different processor than
+  this PC (an x64-only DLL on an ARM64 PC, #47).
+- **Searchable PDFs:** the new right-click **Combine into searchable PDF (OCR)**, `st2k pdf
+  --searchable` and the MCP `pdf` tool's `searchable` option read every page with Windows'
+  own OCR and add an invisible text layer, so scans and photos turned into a PDF can be
+  searched, and their text selected and copied, in any PDF viewer. Pages OCR could not read
+  still go in without text, and the CLI (`no text:` line) and JSON (`pages_without_text`)
+  say how many.
+- **Hardening.** The step every decoded picture goes through before it becomes a thumbnail or
+  a preview (shrinking, enlarging, rotating, and the contact sheet for archives) is now fuzzed
+  with images that are always valid, in every pixel format and shape, and checked for the right
+  size and colour rather than only for crashes. The deep fuzz sessions now run every night
+  instead of only before a release.
+
+## 3.3.0
+
+**TL;DR**
+
+**New**
+
+- **Twelve more file types get thumbnails (361 in all)**
+- **Upload links show when they expire**
+
+**Changed**
+
+- **Bundled ImageMagick updated with the latest security fixes**
+- **Large DjVu pages need less memory to thumbnail**
+- **Uninstall removes its leftover files from your profile**
+
+**Fixed**
+
+- **Big Photoshop files get a sharp picture everywhere** (fixes #46)
+- **Very big files of many other types get their picture too**
+- **WMA album covers show in Explorer and the preview pane**
+- **FITS astronomy images show their stars instead of near-black**
+- **TIFF files with a colour profile keep their colours**
+- **Smaller fixes for e-book covers, JPEG thumbnails and long paths**
+- **Closing Check for problems no longer closes Settings**
+- **3D scans in PLY format thumbnail correctly**
+- **Damaged or booby-trapped files can no longer crash or stall thumbnails**
+- **Screenshot editor: Delete, then Undo, brings the shape back**
+- **Shortcuts imported from another PC or by settings sync survive Save**
+- **Quick preview fixes for email, touchpad zoom and Find**
+- **Odd-sized DDS textures take their smaller levels from the right place**
+- **JPEG 2000 images offset from the canvas corner draw correctly**
+- **Preview pane shows six older image formats**
+- **Recordings still being written get a thumbnail**
+- **Older Excel files show their preview in the preview pane**
+- **Settings closes at once, and Get started no longer freezes**
+
+**Everything in 3.3.0**
+
+- **Twelve more file types get thumbnails (361 in all):** Valve game textures (`.vtf`) and
+  Khronos KTX textures (`.ktx`), animated cursors (`.ani`), SIXEL terminal graphics
+  (`.six`/`.sixel`), AVIF image sequences (`.avifs`), the preview AutoCAD and BricsCAD save
+  inside a `.dxf`, XMind mind maps (`.xmind`), Visio templates and stencils (`.vstx`/`.vssx`),
+  and the icon inside NuGet (`.nupkg`) and Visual Studio / VS Code (`.vsix`) packages. A DXF,
+  stencil or package that carries no picture keeps its usual icon.
+- **Big Photoshop files get a sharp picture everywhere.** A `.psd` or `.psb` over about 256 MB
+  showed the small, blurry preview Photoshop saves inside it, in Explorer, the preview pane and
+  Quick preview alike. SageThumbs now reads the full picture straight off the disk, only the
+  parts it needs, so a document of any size is sharp; one saved with "Maximize compatibility"
+  off is drawn from its layers. Reported in #46.
+- **Very big files of many other types get their picture too.** Past about 256 MB, PDF and
+  Illustrator files, EPS, older Word, Excel, PowerPoint, Visio and Publisher files, 3ds Max and
+  SolidWorks files, RAR and 7-Zip archives and comics, 3D models (STL, OBJ, PLY), FITS images,
+  JPEG 2000, and huge TIFF (BigTIFF included), PPM, PGM and TGA scans showed the plain icon, an
+  empty preview pane or nothing in Quick preview. They are now read straight off the disk, only
+  as far as the picture needs.
+- **Windows Media Audio (`.wma`) files show their album cover in Explorer and the preview
+  pane.** They share their container with Windows Media video and were taken for a video
+  with no picture, so the cover never showed there, at any size.
+- **FITS astronomy images show their stars.** SageThumbs reads them itself now, with the
+  contrast stretch astronomy software uses, instead of drawing most of them nearly black, and a
+  file that keeps its picture in a later section shows it too.
+- **TIFF files with a colour profile keep their colours** when Windows' own decoder reads
+  them, which it does for every TIFF past 256 MB; they came out slightly off.
+- **Bundled ImageMagick updated to 7.1.2-31**, picking up fixes for the security issues
+  published since 7.1.2-29, among them heap over-writes that crashed it on crafted files and
+  several ways around its safety policy. It only ever runs as a separate, time-limited process.
+- **Large DjVu pages need less memory** to thumbnail, from the updated DjVu decoder.
+- **Smaller fixes:** an e-book whose cover image carries a lazy-loading placeholder shows the
+  real cover; JPEGs with padding bytes before their camera data get their embedded thumbnail
+  again; an empty `.ts` file opens as text in Quick preview instead of as a broken video; Redo
+  with nothing to redo no longer stops Undo from bringing back a deleted annotation; and a file
+  picked in Everything with a very long path is used whole instead of cut short.
+- **Uploaded links now say when they expire.** Each free host deletes files on its own
+  schedule, from 3 hours (uguu.se) to 3-100 days (x0.at), and a link never said which. The
+  upload window now shows each link's expiry, and a new **Recent uploads** list (upload window,
+  Settings > Screenshots, or the tray menu) keeps every link with the time it has left.
+  `st2k upload` prints the expiry too, and `st2k upload-history` lists every link. Suggested
+  by a user.
+- **Closing the "Check for problems" window no longer closes Settings with it**, along with any
+  change you had not saved yet.
+- **3D scans in PLY format thumbnail correctly.** Binary PLY files that store a colour or a
+  normal beside each point, which is what most 3D scanners and photogrammetry tools write, drew
+  as a jumble of triangles; they now draw as the model. A binary PLY with a face of more than 64
+  corners (a cylinder's cap saved as one polygon) no longer loses every face after it.
+- **Damaged or deliberately malformed files can no longer crash or stall the thumbnail
+  process.** A handful of crafted JPEG XL, 7-Zip, RAR, TIFF, Photoshop, STL and TGA files could
+  make it run out of memory or keep it busy for minutes; each is now refused or cut off, and a
+  normal file draws exactly as before.
+- **Screenshot editor: Delete, then Undo, brings the shape back.** Undo after deleting an
+  annotation used to remove a second, different annotation instead. The toolbar's Undo and
+  Ctrl+Z now do exactly the same thing, and the editor stays open if handing the capture to
+  Upload or text recognition fails, so the annotated capture is not lost.
+- **Shortcuts imported from another PC, or brought in by settings sync, survive Save.** A
+  shortcut that is not in the built-in list was replaced by the first one in the list the next
+  time you pressed Save.
+- **Quick preview fixes.** An email whose HTML contains a `<header>` no longer loses everything
+  after it. An HTML file with `%` in its name opens that file. A folder with a huge number of
+  files no longer stalls its info card. A precision touchpad zooms an image one step per notch
+  instead of racing through the zoom levels. Find no longer keeps the previous file's results
+  when you type while the next file loads. A database table that is both long and wide now
+  says both. A very tall PDF page no longer asks for a gigantic picture.
+- **DDS textures whose sides are not powers of two** now take their smaller mip levels from
+  the right place in the file.
+- **JPEG 2000 images that do not start at the corner of their canvas** (an image offset, which
+  some scanners and mapping tools write) drew as noise; they now draw the picture.
+- **The preview pane shows Dr Halo (`.cut`), MacPaint (`.mac`), Wavefront (`.rla`), ZX
+  Spectrum (`.scr`), Scitex CT (`.sct`) and PlayStation (`.tim`) images.** Their thumbnails
+  worked, but the pane stayed empty: these formats carry nothing to recognise them by, and only
+  the thumbnail told the decoder which format it was reading.
+- **A video recording that is still being written, or was preallocated on disk,** gets its
+  thumbnail: a transport stream (`.ts`, `.m2ts`, `.mts`) with empty space after its last frame
+  used to get none.
+- **Older Excel workbooks (`.xls`) show their preview in the preview pane** instead of an empty
+  pane, and no longer come up empty now and then in Quick preview on a busy PC. **HEIF and
+  AVIF image sequences** read only their first picture for a thumbnail
+  instead of every frame, which took long enough to leave the preview pane blank.
+- **Closing Settings while a sync upload is finishing** hides the window at once instead of
+  leaving it frozen for a few seconds, and the welcome window's "Get started" no longer freezes
+  while Explorer restarts to show file-type badges.
+- **Uninstalling also removes the log and the update-check file** from your own profile, and
+  no longer leaves a re-register entry behind when it runs before a pending restart.
+- For the few installations on a business licence: the reminder before the evaluation ends
+  shows again (it opened Quick preview instead).
+
+## 3.2.0
+
+**TL;DR**
+
+**New**
+
+- **Illustrator files with several artboards show up to four** (#44)
+- **Scitex SCT files can now be converted and copied**
+
+**Changed**
+
+- **Uninstalling keeps Windows' thumbnail cache unless you ask**
+- **Sign-in and settings sync move to a new permanent address**
+
+**Fixed**
+
+- **Illustrator files saved without PDF data no longer show blank pages** (fixes #45)
+- **Photoshop EPS files with no preview now get thumbnails**
+- **Settings no longer looks patchy in light mode**
+- **Greyed-out Settings text boxes and drop-downs look right**
+- **The hotkey status on the Screenshots page is now translated**
+- **Strip metadata no longer damages some SVG and photo files**
+- **Convert, Resize and Strip can no longer overwrite other files**
+- **Screenshot Save as can no longer wipe the file it replaces**
+- **Quick Convert and Resize from right-click now keep metadata**
+- **Saving after signing in no longer overwrites synced settings**
+- **Reset all settings now matches a fresh install**
+- **Portable copies keep folder names with #, ;, brackets or =**
+- **Set as folder icon no longer replaces details it could not read**
+- **Set as lock screen no longer replaces the desktop wallpaper**
+- **Custom screenshot upload host mistakes stop with an explanation**
+- **The batch command counts a missing input as a failure**
+- **The doctor no longer wrongly flags HEIC photos on Full installs**
+- **Two animation formats no longer make Explorer hold huge memory**
+
+**Everything in 3.2.0**
+
+- **Uninstalling keeps Windows' thumbnail cache unless you ask.** Since 3.0.5 the uninstaller
+  cleared the whole cache at the next restart - every thumbnail on the machine, not only the
+  ones SageThumbs drew - and did so without asking, on unattended removals too. It now asks: a
+  box on the uninstall dialog, unticked by default, resets the cache; leaving it unticked keeps
+  everything as it is (thumbnails SageThumbs drew stay until those files change, and Windows'
+  Disk Cleanup can clear them any time). Unattended uninstalls never touch the cache; add
+  `/RESETTHUMBCACHE` to the uninstall command to opt in.
+- **Adobe Illustrator files saved without "Create PDF Compatible File" no longer show a blank
+  page.** Such a file's PDF half is only a page of small print saying it was saved without PDF
+  content, and that page is what showed as a white tile with unreadable text. Files from
+  Illustrator CS4 and earlier carry a small picture of the artwork inside, and that is shown
+  now. Files from Illustrator 2020 and later carry no picture at all, so they get the
+  Illustrator icon instead, and `st2k doctor` says exactly why and how to re-save. Files saved
+  with the option ticked are unchanged. Reported in #45.
+- **Photoshop EPS files saved with "Preview: None" now thumbnail.** Photoshop writes its
+  embedded thumbnail with a marker spelled one way and SageThumbs looked for another; the
+  first real such file showed the mismatch.
+- **An Illustrator file with several artboards shows them all.** Up to four artboards are laid
+  out in one tile, the way a comic archive shows its first pages, instead of the first
+  artboard alone. Ordinary PDFs still show their first page. Requested in #44.
+- **Settings, and every other SageThumbs window, no longer looks patchy in light mode.** The
+  window behind the controls was painted a slightly different grey from the controls
+  themselves, so each row, each label and the sidebar showed as a faint lighter block: obvious
+  on some displays and Windows themes, nearly invisible on others. Every window now uses one
+  background colour. Dark mode was not affected.
+- **A greyed-out text box or drop-down in Settings now looks like one greyed-out field**, not a
+  grey slab inside a white outline, and the "Never preview these extensions:" caption greys
+  with its box while Quick preview is off.
+- **The licence-key box on the Licence page gets the same rounded frame as every other field.**
+  It was a bare white strip beside a rounded button.
+- **The hotkey service's status line on the Screenshots page ("Running", "Stopped") is now
+  translated** in all 36 languages; it was English everywhere.
+- **Strip metadata no longer damages two kinds of file.** An SVG whose metadata quoted a
+  closing tag inside a CDATA block or a comment was cut short and saved malformed; it is now
+  handled correctly, and a rewrite that would not be valid XML is refused instead of saved. A
+  photo that relied on its EXIF rotation came out sideways after stripping; the rotation tag,
+  and nothing else, is now kept.
+- **Convert, Resize and Strip can no longer overwrite another file through their temporary
+  file.** The temporary name was predictable; it is now unique and never reuses a file that
+  already exists.
+- **Screenshot "Save as" can no longer wipe the file it was saving over.** Choosing a name
+  ending in `.jpg` emptied an existing picture and then reported a failure; the save now
+  writes a PNG to a temporary file first and only then replaces the destination, and the
+  dialog keeps the `.png` extension.
+- **Quick Convert and Resize from the right-click menu now honour "Keep metadata"**, as the
+  Convert dialog always did. Shrink for email still produces a clean file.
+- **Scitex `.sct` files convert and copy**, not only thumbnail.
+- **Signing in to settings sync and then pressing Save no longer overwrites the settings that
+  were just pulled from your account** with what was on screen before.
+- **Reset all settings now matches a fresh install** (comic-cover credit skipping stays on).
+- **Portable copies keep folder names containing ` #`, ` ;`, brackets or `=`.** A screenshot
+  folder like `D:\Screenshots #2026` was silently shortened to `D:\Screenshots`, and exporting
+  then importing settings dropped such values entirely.
+- **Set as folder icon keeps the folder's existing `desktop.ini` details** when that file
+  cannot be read at that moment, instead of replacing them.
+- **Set as lock screen no longer replaces the picture your desktop wallpaper uses.**
+- **A mistake in a custom screenshot upload host now stops the upload with an explanation**
+  instead of quietly sending the file to the public default hosts.
+- **`st2k batch` reports an input that does not exist as a failure** instead of leaving it out
+  of the totals.
+- **`st2k doctor` no longer says HEIC/HEIF keep their default icon when the HEVC extension is
+  missing on a Full install**: the bundled decoder handles them, more slowly.
+- **Stability:** two animation/sprite formats (SPLA, Aseprite) can no longer make Explorer
+  hold hundreds of megabytes for one tile, and the preview pane cleans up after itself when
+  its DLL unloads.
+- **Sign-in and settings sync moved to Connections' new permanent address**
+  (`accounts.connectionsapi.com` / `studio.connectionsapi.com`); the previous domain was
+  suspended by its registry on 18 September. Existing sign-ins carry over. The "Move my
+  licence" and sign-in links now go through a LunarWerx redirect, like Buy already did, so a
+  future address change never needs an update.
+
+## 3.1.1
+
+Recorded TV and camcorder files that hold MPEG-2 get thumbnails without a paid Windows add-on,
+and the Appearance page of Settings stops showing things that did not belong on it.
+
+**TL;DR**
+
+**New**
+
+- **Recorded TV and camcorder MPEG-2 video now thumbnails without an add-on**
+
+**Fixed**
+
+- **Settings' Appearance page no longer looks half-rendered**
+
+**Everything in 3.1.1**
+
+- **Recorded TV, set-top-box and camcorder video (`.ts`, `.m2ts`, `.mts`) no longer needs a
+  paid Windows add-on to show a thumbnail.** Those files usually hold H.264, which Windows
+  decodes on its own; when they hold MPEG-2 instead (most DVB and cable recordings, older
+  camcorders, anything captured from broadcast) Windows shows nothing unless Microsoft's
+  MPEG-2 Video Extension is installed from the Store. SageThumbs now reads those itself, the
+  same way it already read VideoCD `.mpg` and DVD `.vob`. Interlaced recordings, where each
+  frame is stored as two half-pictures, are the one kind still left to Windows.
+- **Settings ▸ Appearance no longer looks half-rendered.** The muted price line that belongs at
+  the bottom of the Licence page was showing at the bottom of every Settings page, and the
+  greyed-out "Format mark size:" label drew with a struck-through look in dark mode. Both were
+  cosmetic; no setting was affected.
+
+## 3.1.0
+
+The JPEG XL crash behind issue #43 is fixed, sixteen more file types get thumbnails, and three
+formats that were listed but never worked on a real file now do.
+
+**TL;DR**
+
+**New**
+
+- **Twelve more file types get thumbnails, including Aseprite and SolidWorks**
+- **Old MPEG videos get thumbnails with nothing to install**
+
+**Fixed**
+
+- **JPEG XL files made from JPEGs thumbnail again, no Explorer crash** (fixes #43)
+- **Three formats that never worked on real files now do**
+- **Brother embroidery files no longer claim thumbnails they never got**
+
+**Everything in 3.1.0**
+
+- **JPEG XL files made from JPEGs get their thumbnails back, and a right-click on one no
+  longer takes Explorer down.** A `.jxl` that `cjxl` made from a JPEG keeps the JPEG's colour
+  layout, and the fast thumbnail path mishandled that layout: no thumbnail in the folder, and
+  Explorer restarting when you right-clicked the file. Every phone photo converted with `cjxl`
+  has that layout, so this was most `.jxl` files people actually have. Reported in issue #43.
+- **Twelve more file types get thumbnails**, including the two asked for through the feedback
+  form. Pixel art and sprites: **Aseprite** (`.aseprite`, `.ase`) is drawn by SageThumbs itself
+  from the layers inside it, the way the editor shows it on open (layer blending is drawn
+  plainly and tile-based layers are left out), and **Pixelorama** (`.pxo`)
+  shows the preview the app saves inside the file. **SpriteLoop** animation packages (`.spla`)
+  are drawn too, since the package holds only the separate body parts: you get the first frame
+  of its first animation, every piece in its place. 3D printing: **PrusaSlicer's new binary
+  G-code** (`.bgcode`) shows the same sliced preview the ordinary `.gcode` files already did.
+  CAD: **SolidWorks** parts, assemblies and drawings (`.sldprt`, `.sldasm`, `.slddrw`) show the
+  preview stored in the file, for the older save format that keeps one; files written by
+  SolidWorks 2015 and newer store no preview any other program can read, so those keep their
+  usual icon. And **Minecraft** worlds, packs and add-ons (`.mcworld`,
+  `.mctemplate`, `.mcpack`, `.mcaddon`) show the world photo or pack icon inside them.
+- **Three formats that were listed but never worked on a real file now do.** Seattle FilmWorks
+  photos (`.sfw`, the 1990s "Pictures on Disk" floppies) and Alias/Wavefront `.pix` images are
+  decoded by SageThumbs itself now, and Scitex `.sct` files reach the right reader. Found by
+  feeding the test corpus real files from other programs for every format it lists.
+- **Old MPEG videos get thumbnails, with nothing to install.** The `.mpg` and `.mpeg` files a
+  VideoCD or a late-1990s camera wrote, raw MPEG video files (`.m1v`, `.m2v`) and DVD `.vob`
+  files are all drawn by SageThumbs itself now, in a separate short-lived process like its
+  Flash and HDR video decoders. Windows cannot open the first three at all, and asks for a
+  Store add-on before it will open a `.vob`; neither is needed any more. `.m1v` is a new file
+  type, and so are `.mpv`, `.mp2v` and `.m2p`, three more names the same old MPEG files are
+  saved under by DVD and capture tools. Recordings that hold MPEG-2 video inside a transport
+  stream or a Matroska file still use Windows' own decoder, so that add-on still matters there.
+- **Brother embroidery files (`.pes`) no longer claim a thumbnail they never produced.** The
+  listing promised one, but drawing those stitches needs a graphics library this app
+  deliberately does not ship, so every install has always shown the ordinary file icon for
+  them. The claim is gone; nothing that used to draw stopped drawing.
+- For the few installations that need a business licence: the Licence page has been tidied
+  up, and there is now a monthly plan, US$2.99 per computer, alongside the one-time US$49.
+  Personal use is unaffected and stays free.
+
+## 3.0.5
+
+Two fixes for what people saw on their own desktop, and one better default: small pictures
+are no longer blown up to fill their tile, uninstalling no longer leaves SageThumbs'
+thumbnails behind, and comic covers skip scanlation credit pages without being asked.
+
+**TL;DR**
+
+**Changed**
+
+- **Small pictures are shown at their real size, as Windows does**
+- **Uninstalling now clears Windows' thumbnail cache at the next restart**
+- **Comic covers skip scanlation credit pages by default**
+
+**Everything in 3.0.5**
+
+- **Small pictures are shown at their real size, as Windows shows them.** A picture smaller
+  than its thumbnail tile used to be enlarged to fill the tile, so a folder or a desktop of
+  small PNGs, GIFs and BMPs looked blocky or soft next to the way Windows had drawn them. It
+  now sits at its own size in the middle of the tile, exactly like Windows' own thumbnails.
+  A file that only carries a small preview of a much larger picture (a Photoshop document, a
+  book's cover) still fills the tile, and icon files still scale to it.
+- **Uninstalling now clears Windows' thumbnail cache at the next restart.** Windows keeps every
+  thumbnail SageThumbs drew for as long as the file is unchanged, so after an uninstall the
+  desktop and every folder kept showing them. They are removed at the next sign-in and Windows
+  draws its own again.
+- **Comic covers skip scanlation credit pages by default.** A comic archive whose first page
+  is a scanlation group's credits or logo now shows its real cover without anyone having to
+  find the switch first. It was one of the offers on the welcome window's second page; that
+  page is down to the two that genuinely are a matter of taste (film cover art, the file-type
+  badge), and the switch itself stays in Settings, Ebook/comic, for anyone who wants the
+  first page as stored.
+
+## 3.0.4
+
+Two fixes for bugs people reported: iPhone ProRAW photos thumbnail in colour again, and
+Convert no longer quietly writes a tiny file when it is given a very large picture.
+
+**TL;DR**
+
+**Fixed**
+
+- **iPhone ProRAW photos thumbnail in colour again, not grey** (fixes #42)
+- **Converting a very large picture no longer writes a tiny one** (fixes #41)
+
+**Everything in 3.0.4**
+
+- **iPhone ProRAW photos thumbnail in colour again instead of a grey wash**
+  ([#42](https://github.com/LunarWerxs/SageThumbs-2k/issues/42)). A ProRAW `.DNG` stores two
+  pictures one after the other: the colour preview, and Apple's HDR gain map, which is a
+  black-and-white helper image. Whichever of the two was larger used to win, so most of a
+  folder of photographs could come out as bright grey pictures while the rest looked fine.
+  The colour picture is now always preferred, and a camera that really does shoot in black
+  and white still thumbnails from its own preview.
+- **Converting a very large picture no longer writes a tiny one**
+  ([#41](https://github.com/LunarWerxs/SageThumbs-2k/issues/41)). Above a size that depended
+  on how fast the computer was, Convert and Resize gave up on the picture after 20 seconds and
+  quietly used the small preview stored inside the file instead, so a 45-megapixel photo asked
+  to fit 1920x1080 was written out at 107x160 and reported as done. A conversion you asked for
+  now gets the time a file that size needs, and if only a small stand-in preview can be read,
+  the file is listed as failed with both sizes named rather than written out.
+- For the few installations set up for business use: a copy with no licence key now evaluates
+  for 7 days and then asks for one. Personal use is unaffected.
+
+## 3.0.3
+
+The HDR fix from 3.0.2 now covers every format that can carry an HDR picture, the doctor
+explains two more reasons a thumbnail can go missing, and the right-click preview tile is back
+on its strict size guard.
+
+**TL;DR**
+
+**Changed**
+
+- **AVIF files without a colour box now use the fast path**
+- **The doctor names two more causes of missing thumbnails**
+
+**Fixed**
+
+- **HDR HEIC, JPEG XR and TIFF thumbnails show the right brightness**
+- **Right-click preview tile is back on its strict size guard**
+
+**Everything in 3.0.3**
+
+- **HDR HEIC, JPEG XR and TIFF thumbnails render at the right brightness.** The 3.0.2 fix for
+  HDR AVIF now has a proven twin for every container that can carry an HDR picture: an HDR
+  HEIC (PQ or HLG) takes the same path as AVIF, a linear-float JPEG XR (what Windows writes
+  for an HDR screenshot) is tone-mapped instead of clipped to white, and a 16-bit TIFF tagged
+  with a PQ profile is converted through the profile's own HDR signal rather than
+  colour-managed into near-black. The TIFF fix also reads a profile the decoder used to drop.
+- **AVIF files with no colour box take the fast path when the codec measures right**, instead
+  of always going through the bundled ImageMagick, and an AVIF with a gain map or an alpha
+  plane is read by its main picture rather than by whichever colour box came first.
+- **The right-click menu's preview tile keeps the strict size guard.** The tile that is
+  drawn inside Explorer itself had, since a refactor, been allowed the wider ceiling meant
+  for the isolated thumbnail host; it is back on the strict one, and the test that guards it
+  now actually reaches the codec.
+- **The doctor names two more causes of a missing thumbnail.** A folder added to This PC by a
+  tweaker is reported, machine-wide and for the probed file (files browsed through such an
+  entry may never show a picture; open the real folder instead), and the per-file section now
+  says whether Explorer ever asked SageThumbs for that file at all, read off the diagnostics
+  log, so "it never reached us" no longer needs a developer to read the log by hand.
+
+## 3.0.2
+
+**TL;DR**
+
+**Fixed**
+
+- **HDR AVIF thumbnails no longer come out blown out** (fixes #39)
+
+**Everything in 3.0.2**
+
+- **HDR AVIF thumbnails no longer come out blown out**
+  ([#39](https://github.com/LunarWerxs/SageThumbs-2k/issues/39)). An AVIF whose base image is
+  HDR (PQ transfer, BT.2020 primaries, the same shape as the JPEG XL fixed in 3.0.1) rendered
+  as a bleached picture with every bright area clipped to white: Windows' own AV1 decoder hands
+  an HDR picture back as linear light, and everything brighter than 80 nits was being cut off
+  on the way to 8 bits. Where the bundled ImageMagick decoded the file instead, the raw PQ
+  signal was shown as if it were sRGB, so the same picture came out dark and flat. Both now go
+  through the conversion and tone map an HDR PNG, JPEG XL or EXR does, HDR HEIC included. The
+  SDR twin of the same picture is unchanged.
+
+- For the few installations on a business licence: the Licence page now says which licence you
+  hold, a revoked seat shows as revoked straight away, and it shows when your updates window
+  ends. Personal use is unaffected.
+
+## 3.0.1
+
+The first update after 3.0. Three things, all from user reports in the days after the release,
+plus a tighter signing gate. If you are still on 2.x, the "What 3.0 brought" list at the end of
+these notes is the reason to update.
+
+**TL;DR**
+
+**New**
+
+- **A size setting for the format mark in thumbnail corners**
+
+**Changed**
+
+- **Every program and library is signed, and releases verify it**
+
+**Fixed**
+
+- **The doctor warns when Explorer's thumbnail icons are switched off**
+- **The per-file doctor report names the drive and its type**
+- **HDR JPEG XL files no longer thumbnail almost black** (fixes #38)
+
+**Everything in 3.0.1**
+
+### New
+
+- **A size for the format mark in a thumbnail's corner.** Settings > Appearance > "Format mark
+  size": Small (the original), Medium or Large. A designer with folders of near-identical
+  previews asked for it, because the mark is how you tell a PSD from its JPG at a glance and
+  the original was too small to read. The mark scales with the tile, so Large stays readable
+  in every Explorer view.
+
+### Fixed
+
+- **The doctor says whether Explorer draws program icons on thumbnails at all.** A new
+  "ShowTypeOverlay" line under Windows thumbnail settings reads Explorer's "Display file icon
+  on thumbnails" switch and warns when it is off, because with it off no thumbnail gets a
+  corner icon, ours or Windows' own, and the corner setting "Windows' file-type icon" reads as
+  broken while every other line is green.
+
+- **The per-file doctor report names the drive.** `st2k doctor <file>` now prints a "Volume"
+  line: whether the drive is fixed, removable, network, optical or a RAM disk, its file system,
+  and the device behind the letter, so a substituted (`subst`) or per-session drive, which
+  Explorer's thumbnail helper may not see at all, is called out instead of leaving a green
+  report next to a folder full of icons.
+
+- **HDR JPEG XL files thumbnailed almost black**
+  ([#38](https://github.com/LunarWerxs/SageThumbs-2k/issues/38)). A `.jxl` whose base image is
+  HDR (PQ transfer, BT.2020 primaries, the shape Google's Ultra HDR samples and Adobe's gain-map
+  exports use) decoded to samples that still carried the PQ curve, and colour management then
+  treated 10,000 nits as white, so a picture whose real white sits at 203 nits came out at a
+  fiftieth of its brightness. An HDR `.jxl` now goes through the same conversion and tone map
+  an HDR PNG or an EXR does. The SDR twin of the same picture was always fine and is unchanged.
+
+### Changed
+
+- **Nothing ships unsigned, and the pipeline now proves it.** Every executable and library we
+  build, including the three ImageMagick shim libraries the bundle carries, is signed by
+  LUNARWERX LLC before the installer, the portable zip and the Windows 11 menu package pick them
+  up, and the release run refuses to publish if any shipped binary or installer fails
+  signature verification.
+
+### What 3.0 brought
+
+For anyone updating from 2.x, the headlines of 3.0.0 (the full list is in that section below):
+
+- **Code-signed installers and packages** from LUNARWERX LLC, so SmartScreen and antivirus
+  warnings on a fresh download fade with the file's age instead of never.
+- **Rename with pattern**, **Set as lock screen**, **Copy as data URI**, **Sort into folders by
+  date taken**, and Fill / Fit / Span wallpaper placements in the right-click menu.
+- **Watermarks in the Convert dialog**, and conversions to AVIF, JPEG XL and the other
+  ImageMagick-encoded formats keep their metadata.
+- **Quick preview gains**: a hex view for files nothing else can render, folder sizes, printing
+  (Ctrl+P), a Save button for the current PDF page, animation frame or video frame, a
+  per-extension blocklist, keyboard-reachable toolbars, and script-file highlighting.
+- **HDR PNGs render correctly**, AVIF colours are back after September's Windows codec change,
+  and Canon CRW thumbnails are fast again.
+- **The program's icon is back in the corner of Photoshop, Illustrator and other editor
+  files** when the corner is set to Windows' file-type icon.
+- **A per-file doctor** (`st2k doctor <file>`) that names the program, policy or sync client
+  standing between a file and its thumbnail, and a diagnostics bundle safe to hand to anyone.
+- **A Licence page** for business seat keys, an installer question about personal or business
+  use, settings export and import from the command line, and signature-checked self-updates.
+- **Portable copies keep their state in their own folder**, and the `st2k` command line and
+  MCP tools gained `cbz`, folder recursion and richer batch reporting.
+- **Dozens of robustness fixes** in the shell extension: hostile or malformed files can no
+  longer hang, crash or pile up work inside Explorer.
+
+## 3.0.0
+
+**TL;DR**
+
+**New**
+
+- **A Join our Discord button on the sign-in banner**
+- **Save the current video frame from Quick preview**
+- **Screen readers can use the Settings window**
+- **A hex view for files nothing can render**
+- **Folders show their total size in Quick preview**
+- **A per-extension Quick preview blocklist**
+- **Pressing Space on non-file items now gives a message**
+- **HDR PNG files now render correctly**
+- **Rename files with a pattern and live preview**
+- **Set as lock screen, beside Set as wallpaper**
+- **Command-line upload that prints the image URL**
+- **Quick preview toolbars work with the keyboard**
+- **Print images and PDF pages from Quick preview**
+- **Watermark option in the Convert dialog**
+- **Three more wallpaper placements: Fill, Fit and Span**
+- **Sort images into folders by date taken**
+- **Copy an image as a data URI to the clipboard**
+- **Retry only the failed files from a batch**
+- **A tester's checklist for installed, portable and multi-user setups**
+- **Format list now shows how each thumbnail is made**
+- **Comic-book archive command, subfolder recursion and batch info**
+- **Diagnostics flag rival thumbnail handlers and export reports**
+- **A Save button in the preview window**
+- **Syntax colouring for batch, PowerShell and Perl scripts**
+- **Ctrl+U now runs Upload & copy in the screenshot overlay**
+- **Eyedropper notes when HDR colour readings are approximate**
+- **Update notification can refresh thumbnails right away**
+- **Command-line flags export and import settings for scripted installs**
+- **Downloaded updates are checked for a valid signature before running**
+
+**Changed**
+
+- **Importing settings now fully replaces your settings instead of merging**
+- **Portable copies keep their settings and data inside their own folder**
+- **Keyboard zoom in preview window now matches the mouse wheel**
+
+**Fixed**
+
+- **Installer no longer adds a certificate to your PC**
+- **The doctor names Windows' no-thumbnails policy for network folders**
+- **Program icon is back in the corner of Photoshop and Illustrator files**
+- **AVIF thumbnails have their colours back**
+- **Black-and-white AVIF images are no longer washed out**
+- **Windows 11 right-click menu no longer ties up Explorer on big selections**
+- **Broken images no longer crash Explorer from four right-click actions**
+- **Archive listings no longer garble Japanese or DOS-era file names**
+- **Short text files like Straße no longer misread as Chinese**
+- **Conversions to AVIF and JPEG XL keep photo metadata and colour profile**
+- **Portable copies no longer write their upload-host settings to the host PC**
+- **Failed thumbnails are no longer re-decoded on every Explorer redraw**
+- **Debug logging costs nothing when the Debug switch is off**
+- **The "stretched" wallpaper item reads right in Italian and Brazilian Portuguese**
+- **Diagnostics bundle is safe to share and includes your settings**
+- **Quick preview loads are held to time budgets and tracked when slow**
+- **Canon CRW thumbnails are fast again**
+- **Size sorting no longer deletes a folder another program just made**
+- **Screenshot editor and outline sidebar now follow your chosen language**
+- **Signing in to settings sync no longer looks like it failed**
+- **Command line tools can no longer overwrite their own input files**
+- **Combine commands now report which files they left out, and why**
+- **Compress now fails instead of quietly missing its target size**
+- **Single-file commands refuse extra file names instead of ignoring them**
+- **Colour picker no longer freezes on its first mouse move**
+- **Importing an empty settings file no longer wipes your settings**
+- **Settings backups no longer include your sign-in details**
+- **Failed settings sync no longer retries forever**
+- **Slow or malicious files can no longer clog background work**
+- **Uninstalling no longer erases your customised Details-pane layouts**
+- **Settings warns when two screenshot hotkeys clash**
+- **Settings now shows an error when a setting fails to save**
+- **Settings categories and search box fully usable from the keyboard**
+- **One undecodable video no longer freezes every thumbnail on the PC**
+- **Preview Previous and Next buttons now include mail and internet shortcuts**
+- **Right-click menu opens faster and stops slowly leaking memory**
+- **Thumbnails decode a little faster, and some image types more accurately**
+- **3D model previews cope better with cut-off or damaged files**
+- **Damaged JPEG 2000 and JPEG files can no longer hang or crash**
+- **Cover art from archives, comics and ebooks is more reliable**
+- **Oversized compressed parts of images are refused, not half-shown**
+- **Matroska and WebM video thumbnails find a real keyframe more often**
+- **Crafted or damaged video files can no longer hang or crash thumbnails**
+- **Max file size setting now applies to more preview paths**
+- **Previews of many files in quick succession are more stable**
+- **Installer and repair tool now report failed thumbnail registration**
+- **Rotating or flipping an already-rotated JPEG now turns correctly**
+- **Editing multi-picture JPEGs no longer corrupts the second picture**
+- **HEIC and AVIF conversions now keep camera and location details**
+- **WebP output now keeps camera, location and colour profile data**
+- **Editing a file in place now keeps its attributes**
+- **Settings are harder to corrupt or lose on export and import**
+- **JPEG quality can no longer be saved as 0**
+- **Dark title bars and High Contrast mode work in more cases**
+- **Update Install button no longer freezes the About window**
+- **Installing, first-run setup and uninstalling are more thorough**
+- **Sign-in no longer fails when the browser request arrives in pieces**
+- **Large text previews no longer show the wrong encoding**
+- **The preview window is more reliable when you move quickly**
+- **Markdown and HTML previews block remote and out-of-folder images**
+- **Document previews handle very large content without freezing**
+- **HTML preview is more locked down and opens links in your browser**
+- **Batch tools show progress and report when part of a job fails**
+- **Screenshot hotkey no longer lags typing across your whole PC**
+- **Screenshot tool is more reliable and faster on multiple monitors**
+- **Internal communication channels are more tightly locked down**
+- **Videos rotated without re-encoding now thumbnail the right way up** (fixes #32)
+- **Photoshop files no longer stay blurry in the Explorer preview pane** (fixes #33)
+- **Quick preview sharpens very large Photoshop files too**
+- **Converting very large Photoshop files works instead of doing nothing** (fixes #34)
+- **Batch conversion summary now names the files that failed**
+- **Settings export and import work on network and OneDrive folders**
+- **Failed settings export no longer destroys your previous backup**
+- **Windows 11 menu now registers for the account using the PC**
+- **Quick preview no longer freezes on slow network or removable drives**
+- **Convert and welcome windows no longer cut off translated text**
+
+**Everything in 3.0.0**
+
+### New
+
+- **A "Join our Discord" button on the sign-in banner.** Questions, ideas, or a hello: the
+  LunarWerx Discord is where we are. The button opens a LunarWerx page that forwards to the
+  current invite, so the link in the app never goes stale.
+- **Save the video frame you are looking at.** The Quick preview's Save button now works on a
+  video and writes the frame at the current position, and a right-click on a video-only selection
+  offers "Save frame as image" instead of the picture verbs that never applied to it.
+- **Screen readers can use the Settings window.** Every category in the left-hand rail now
+  reports its name and which one is selected, so Narrator and NVDA announce where you are.
+- **A hex view for files nothing can render.** An unknown binary shows a classic hex dump
+  instead of a bare info card, truncated with a note rather than trying to read the whole file.
+- **Folders show their total size** in the Quick preview, and say "more than" instead of a wrong
+  number when the folder is too large or too deep to finish counting quickly.
+- **A per-extension Quick preview blocklist** on the Quick preview settings page: list the
+  extensions you never want previewed. Empty by default, and separate from the File types page.
+- **Pressing Space on something that is not a file now says so.** Recycle Bin, This PC and other
+  virtual items used to do nothing at all.
+- **HDR PNGs render correctly.** A PNG carrying the `cICP` colour chunk with a PQ or
+  HLG transfer (what recent HDR tools write) is now converted to linear light and
+  tone-mapped the way EXR and Radiance files already are, instead of being shown as a
+  washed-out picture with the wrong curve. Ordinary PNGs are untouched.
+- **Rename with pattern.** A new entry in the Rename submenu opens a small dialog: type a
+  pattern such as `{name}_{n:3}` (placeholders for the name, extension, a padded counter,
+  the capture date and the pixel size), optionally find and replace text, watch the live
+  preview, and rename the selection in one go. Nothing is ever overwritten.
+- **Set as lock screen**, beside "Set as wallpaper", for any format SageThumbs can decode.
+- **`st2k upload <file>`** uploads through the same hosts the screenshot editor uses and prints
+  the URL (`--copy` also puts it on the clipboard).
+- **The Quick preview's toolbars are keyboard-reachable.** Tab moves into the caption
+  toolbar and the video controls, arrows move along them, Enter or Space presses, Escape
+  returns to the content; the focused button shows a ring.
+- **Print from the Quick preview.** A print button on the caption toolbar (or **Ctrl+P**)
+  sends the image, the PDF page or the animation frame you are looking at to the standard
+  Windows print dialog, fitted to the page.
+- **Watermark in the Convert dialog.** Tick "Watermark", choose an image, and pick a corner
+  (or the centre), a size as a percentage of the picture and an opacity; it is applied after
+  the resize and before the encode, for every output format including the ImageMagick ones.
+- **Three more wallpaper placements: Fill, Fit and Span**, alongside the existing Stretch,
+  Tile and Center, in the "Set as wallpaper" menu.
+- **Sort by date taken.** A new "Sort into folders ▸ By date taken" verb moves each selected
+  image into a `YYYY-MM-DD` folder named from its EXIF capture date; a file with no capture
+  date is left where it is.
+- **Copy as data URI.** A new "Copy as data URI" verb base64-encodes the selected image and
+  copies a `data:<mime>;base64,...` URI to the clipboard as text, ready to paste into CSS,
+  HTML or JSON.
+- **Retry only the files that failed, from the command line or from the failure report.** After
+  a batch that only partly succeeded, `st2k batch --retry-from report.json` re-runs exactly the
+  files a saved `--json` report lists as failed, with whatever options you give it, and reports
+  the retry the same way so a second retry can follow on. In the app, the Convert dialog's
+  failure report now has a "Retry failed" button that runs those same files again with the same
+  settings and shows the result the same way.
+- **A tester's checklist for installed, portable, admin and multi-user setups ships with the
+  source.** A documented scenario matrix and a one-command script now cover storage mode
+  (installed or portable), running as standard or as an administrator, who installs versus who
+  runs the app, and multiple sessions on the same machine (including Remote Desktop), so that
+  ground can be checked the same way every time instead of being re-worked out from scratch.
+- **The format list now explains HOW each file type's thumbnail is made, not just that it's
+  supported.** The Settings file-types list has a new "How" column (full decode, embedded
+  preview, cover art, cover or first page, video frame, or contents of the archive), the
+  `st2k formats --json` output carries the same detail for scripts and the website, and
+  `st2k doctor` reports which formats depend on an optional Windows codec and whether it's
+  actually installed on your machine.
+- **The sync and licence status lines are more honest about what is actually happening.**
+  Settings ▸ Data & Backup now shows a plain "Offline" state when a sync attempt could not
+  reach the server at all, instead of describing it the same way as a save that reached the
+  server and was rejected. Disconnecting an account now tells you if the copy stored in your
+  account could not be deleted, rather than always saying it was. On the Licence page, a
+  machine running on an offline certificate now gets an early warning as that certificate's
+  own expiry approaches, separate from the ordinary "Licensed" line.
+
+- **The command line and MCP tools gained a `cbz` command, folder recursion, and richer batch
+  info.** You can now combine a folder of images straight into a comic-book archive (`.cbz`)
+  from the command line or through the MCP tool used by AI assistants and scripts, matching
+  the existing PDF command. Batch jobs can now recurse into subfolders with a `--recurse` flag,
+  and a new batch "info" option returns details for every file in one call, including proper
+  tag data (artist, album, title, and more) for audio files.
+
+- **The built-in diagnostics tool can now spot when another program has taken over your
+  thumbnails, and export its findings as a file you can share.** Running SageThumbs 2K's
+  doctor/diagnostics check now detects when a different program's icon handler has silently
+  replaced SageThumbs' own for a file type, and shows which handler took over. Its report can also be
+  exported as a single zip file, including the relevant tail of the error log, handy when
+  asking for help.
+
+- **A Save button in the preview window.** Viewing a PDF page or an animated image and want to
+  keep just that page or frame? A new Save button (and the Ctrl+S shortcut) saves the page or
+  frame you're currently looking at as a PNG image.
+
+- **Batch, PowerShell, and Perl script files are now colour-highlighted in the text preview.**
+  Previewing a `.bat`, `.ps1`, or Perl script now shows proper syntax colouring, including files
+  that only identify their type through a `#!` line at the top rather than their extension.
+
+- **Ctrl+U now triggers "Upload & copy" in the screenshot overlay.** Uploading a screenshot and
+  copying its link no longer requires reaching for the mouse.
+
+- **The eyedropper tool now tells you when a colour reading is approximate.** Picking a colour
+  from an HDR display now shows a small note explaining that the value is sampled from the
+  tone-mapped (SDR) picture, since a true HDR value can't be read this way.
+
+- **After SageThumbs updates itself, a notification offers to refresh your thumbnails right
+  away.** Previously you'd only see the new thumbnails once Explorer's cache naturally expired;
+  a click on the notification now refreshes them immediately.
+
+- **The installer now asks how you will use SageThumbs 2K: personal (free) or business.**
+  Personal, non-commercial use stays free with every feature, exactly as before. Business and
+  other commercial use requires a commercial licence under the PolyForm Noncommercial license
+  the app has always shipped with; the installer now says so plainly instead of leaving it in
+  the licence text nobody reads. Your answer is remembered across updates, and changing it
+  means reinstalling. Nothing about thumbnails, previews, or any feature changes either way.
+
+- **A Licence page in Settings for redeeming a business seat key, with a background check
+  that keeps it current.** Enter the seat key you were given (`esk_...`) under Settings ▸
+  Licence and the copy is on record as licensed; personal use needs nothing and stays exactly
+  as it was. A business copy has every feature from the moment it's installed, key or not, it
+  just reminds you to add one: a notice when you launch it, and a strip on the Settings page
+  that stays until you do. The check that keeps a redeemed key valid rides the background check
+  the update feature already runs, at most once every six hours, and tolerates about a week
+  offline before it starts reminding again.
+
+- **New `--export-settings <file>` / `--import-settings <file>` command-line flags for
+  scripted deployment.** Save or apply the entire settings tree to a JSON file straight from
+  the command line, no window needed, the same round trip Settings ▸ Data & Backup's Export
+  and Import Settings buttons already do. Handy for rolling one configuration out to a fleet
+  of installs.
+
+- **Downloaded updates are now checked for a valid signature before they run.** The one-click
+  updater already verified a downloaded installer's size and checksum; it now also confirms
+  the installer was signed by us before installing it, and refuses to run one that wasn't.
+
+### Changed
+
+- **Importing a settings file now fully replaces your settings instead of merging with them.**
+  Previously, an imported settings file only added or updated values, leaving anything not
+  present in the file untouched, so an old setting could survive an import that was meant to
+  reset it. Importing now removes anything the imported file doesn't include, matching what
+  most people expect "import" to do. Your sign-in stays intact either way.
+
+- **Portable copies of SageThumbs 2K keep more of what they touch inside their own folder.** A
+  portable copy's sign-in details, its custom screenshot-upload host list, its HTML-preview
+  browser data, and its update-check cache now all live beside the portable copy instead of
+  leaking into the host PC's own storage. Signing in on a portable copy also now shows a
+  reminder that anyone using that same copy can see your synced settings, and a portable copy
+  now consistently refuses to install an update on its own, as intended.
+
+- **Zooming the preview window with the keyboard now matches the mouse wheel.** Ctrl+= and
+  Ctrl+- now zoom in one step at a time, centred on the image, the same way the mouse wheel
+  does, and can now reach true 100% even in a small window showing a very large image,
+  previously only double-clicking could get you there.
+
+### Fixed
+
+- **The installer no longer adds a certificate to your PC.** The Windows 11 context-menu
+  package is now signed with the same publisher certificate as everything else, so nothing has
+  to be trusted into the machine's certificate store any more, and upgrading from 2.5 removes
+  the self-signed certificate the old installer put there.
+- **`st2k doctor` now names Windows' own "no thumbnails on network folders" policy**, and says
+  when the file you point it at is on a network drive. That policy leaves every local file
+  working and every file on a mapped drive as a plain icon, with nothing else reporting a
+  problem, which read as a bug in the extension.
+- **The program's icon is back in the corner of Photoshop, Illustrator and other editor
+  files.** With the corner set to "Windows' file-type icon", Explorer never draws one on a type
+  it treats as a photo, which is exactly the set of editor formats SageThumbs exists for, and
+  it draws nothing at all when a program update leaves the file type pointing at last year's
+  registration. SageThumbs now tells Windows which icon to draw in both cases, so a folder of
+  PSD and JPEG covers is tellable apart again. It also restores the corner icon on camera RAW
+  files, which installing SageThumbs used to remove as a side effect of registering them. The
+  rule is deliberately narrow: it never adds an icon Windows would not have drawn before
+  SageThumbs was installed, it leaves a program that turns its own icon off alone, and
+  `st2k doctor` names both cases plus any icon that has since moved.
+- **AVIF thumbnails have their colours back.** A Windows codec update in early September changed
+  how it reads the colour information inside an AVIF, and ordinary AVIF files started coming out
+  with shifted colours: skies and skin visibly off, greys unaffected. SageThumbs now checks what
+  the codec on your machine actually does, using a handful of tiny reference images built into
+  the app, and works around it wherever it is wrong. The check repeats itself on every machine
+  and after every codec update, so this cannot come back quietly the next time Windows changes.
+- **Black-and-white AVIF images are no longer washed out.** A correction meant for colour files
+  was being applied to them as well.
+- **The Windows 11 right-click menu no longer reads a large selection's file names on
+  Explorer's own thread.** That walk happened before the action's worker even started;
+  the worker does it now, so a thousand-file selection costs Explorer only the click.
+- **A broken image can no longer take Explorer down through Copy to clipboard, Set as
+  wallpaper, Set folder icon or Compress to size.** Those four now decode in the helper
+  process the other verbs already use, and fall back to the old path only when the helper is
+  not installed.
+- **Archive listings no longer show garbled names for Japanese or DOS-era zips, rars and
+  tars.** Entry names that are not UTF-8 now fall back to Shift-JIS and then to the DOS code
+  page, the way the archivers that wrote them meant.
+- **A short Windows-1252 text file such as one containing "Straße" no longer opens as a stray
+  Chinese reading.** The legacy-encoding scorer now prefers the system code page on short
+  buffers when the alternative is a single accidental double-byte match.
+- **Converting to AVIF, JPEG XL and the other ImageMagick-encoded formats now keeps the
+  picture's EXIF, XMP and colour profile**, the same way Resize and Rotate already did.
+- **A portable copy no longer writes its upload-hosts config into the host PC's profile;** it
+  lives beside the portable settings file like everything else.
+- **A file that fails to thumbnail is no longer re-decoded at full cost on every Explorer
+  redraw.** The thumbnail host remembers the failure for two minutes (keyed on the file's
+  name, size and modified time, so an edited file is retried at once).
+- **Debug logging costs nothing when it is off.** Log lines are only formatted when the Debug
+  switch is on, instead of being built and then dropped.
+- **Italian and Brazilian Portuguese "Set as wallpaper (stretched)" no longer used the word
+  for "spanned".**
+
+- **The diagnostics bundle is safe to hand to a stranger, and complete enough to be useful.**
+  The zip that `st2k doctor --bundle` writes now carries a snapshot of your stored settings, which
+  a bug report about a format toggle, a menu item or a convert default previously needed as a
+  separate export. That snapshot leaves out your sign-in (the refresh token, the licence
+  certificate and the account identity) by the same rule the settings export already uses, so
+  anything stored alongside them later stays out as well.
+- **Quick preview loading is now held to a stated time budget, and slow or stuck work is
+  tracked instead of running unseen.** Each stage of opening a file has a time budget written
+  down in the code; a stage that runs past it, and any load that gets abandoned (for example
+  by switching to a different file, or closing the window while a slow network share or
+  removable drive is still being read), is now logged with the current count of abandoned
+  work against its cap, and a decode that hangs is counted against that same cap instead of
+  being invisible to it. Closing the window while something is still loading now cancels
+  that load's own bookkeeping right away.
+
+- **Canon CRW thumbnails are fast again.** Older Canon RAW files in the `.crw` format (as
+  opposed to the newer `.cr2`/`.cr3`) were not recognised as a camera RAW container, so their
+  thumbnail always fell back to the slow full demosaic path instead of using the fast preview
+  already embedded in the file.
+
+- **Sorting images into folders by size no longer deletes a folder someone else just made.**
+  "Sort into folders by image size" used to check whether a `WIDTHxHEIGHT` folder existed and
+  create it a moment later; if another program (or another SageThumbs action) created that same
+  folder in between and this run's own move then failed, it removed that other folder as if it
+  were its own leftover junk. Creating the folder is now a single atomic step, so only a folder
+  this run actually created can ever be removed on a failed move, and only while still empty.
+
+- **Licence records are safe when two people use the same PC.** A background check that
+  keeps track of licence status on shared computers could, in rare timing, have one
+  person's update quietly overwrite another's. It now waits its turn properly, and gives
+  up cleanly rather than overwriting newer information if it ever can't.
+
+- **The screenshot editor and the Quick preview's outline sidebar now follow your chosen
+  language.** Every tool name, toolbar tooltip, on-screen hint, and the text-formatting flyout
+  in the screenshot editor, plus the Markdown outline sidebar's "Contents" header, used to show
+  fixed English text no matter which language you picked. All of it is translated now, in every
+  shipped language.
+
+- **Signing in to Settings Sync no longer looks like it failed when only the first cloud sync
+  did.** Signing in saves your account right away, but if the very first sync to the cloud
+  couldn't finish, the status line and the "Stop syncing" button used to say you were fully
+  synced while a message box, from that same sign-in, said it had failed. That case now shows
+  its own "first sync didn't finish" status with a "Retry sync" button that tries again using
+  the sign-in you already have, no second browser window needed. Disconnecting also now says
+  plainly that removing the copy stored in your account is a best-effort request, not a promise
+  it always succeeds.
+
+- **The `st2k` command line and the MCP tools can no longer overwrite a source file with their
+  own output.** `st2k pdf same.png same.png` (and `cbz`, `thumbnail`, `convert`) used to read the
+  file and then replace it. An output that is one of the inputs is now refused before anything is
+  written, under any spelling of the path (a different case, a relative path, a hard link), and
+  `pdf`/`cbz` insist on a `.pdf`/`.cbz` destination. Thumbnails are also written through a
+  temporary file, so a failed write leaves an existing output untouched.
+
+- **`st2k pdf` and `st2k cbz` say which inputs they left out, and why.** A combine with one
+  unreadable or corrupt input used to print only the output path and exit 0. It now prints a
+  `partial` line with the counts and one `omitted` line per left-out file (unreadable, undecodable
+  or unencodable); `--json` returns the same as JSON, and `--strict` fails instead of writing a
+  partial file. The MCP `pdf`/`cbz` tools return that JSON and accept `strict`.
+
+- **`st2k compress` no longer reports success when it missed the target.** Asking for a size
+  below what a JPEG can reach used to quietly write the smallest file it could and exit 0. It now
+  fails, writes nothing, and tells you the smallest size it can make; the MCP `compress` tool and
+  the right-click verb follow the same rule.
+
+- **Single-file `st2k` commands reject extra file names instead of ignoring them.** `st2k strip
+  a.jpg b.jpg` used to strip only the first file and say nothing about the second. Every
+  single-file command now refuses a surplus argument before doing anything; `pdf`, `cbz`, `batch`
+  and `prebuild` still take a list.
+
+- **The colour picker froze on its first mouse move.** Since 2.5.0 the eyedropper locked up the
+  moment its magnifier tried to draw, so it never showed a colour and had to be killed. It
+  paints again, and a test now runs the picker's paint path end to end so it cannot silently
+  come back.
+
+- **Importing an empty or unusable settings file no longer wipes your settings first.** Import
+  used to clear the existing configuration and only then discover the file carried nothing,
+  reporting "No settings were found" over settings that were already gone. A file with nothing
+  usable in it is now refused before anything is touched, and on a portable copy a real import
+  replaces the settings file in one step instead of value by value.
+
+- **Settings backups from a portable copy no longer carry your sign-in.** The exported file
+  included the (encrypted) sign-in token, licence certificate and account name, and importing
+  someone else's backup replaced or removed the current sign-in. Those are left out of exports
+  and left alone by imports, on portable and installed copies alike.
+
+- **A failed settings sync retried forever.** After one push to the cloud failed, the "retry
+  later" marker could never be cleared, so every later Settings open pushed again before
+  pulling. It clears on success now, and a portable copy keeps the marker beside its own
+  settings instead of in the host PC's registry.
+
+- **Slow or hostile files cannot pile up background work inside Explorer.** SVG rendering and
+  the right-click preview thumbnail now use the same time-limit bookkeeping as every other
+  background decode, a bookkeeping race that could permanently refuse new work after enough
+  timeouts is fixed, and a file that grows while it is being read is stopped at the size limit
+  instead of read in full.
+- **Uninstalling, or switching a file type off, no longer wipes out Details-pane and tooltip
+  layouts you customised yourself.** When SageThumbs 2K provides a file type's properties, it also
+  writes the lists that tell Explorer which properties to show in the hover tooltip, the Details
+  pane and tab, and the column picker. Removing it used to delete all four of those lists
+  outright, even where you or another program had since changed one. It now removes only the
+  lists it wrote itself (including the ones written by much older versions of SageThumbs 2K) and
+  leaves anything that was changed or added afterwards exactly as it was.
+
+- **Settings now catches it when you assign the same hotkey to two different screenshot
+  actions.** Give the capture hotkey, the quick-save hotkey, or the custom action the same key
+  combination and Settings now tells you which two collide and refuses to save until you pick
+  a different combination for one of them, instead of silently saving both and leaving one of
+  them unreachable.
+
+- **Settings now tells you when a save actually fails to write to the registry.**
+  Previously, if a setting couldn't be saved (for example a permissions problem or a locked
+  key), the dialog closed as though it had worked, with no error and nothing in the log. It
+  now shows a message naming what failed to save and where.
+
+- **The Settings nav rail and the settings search box are now fully usable from the
+  keyboard.** Pressing the arrow keys to move between categories now switches the page right
+  away, matching a mouse click, instead of only moving focus until you pressed Enter or Space
+  again; screen readers are also told when the selected category changes. The search box's
+  results dropdown can now be driven with the arrow keys too.
+
+- **One video Windows cannot decode can no longer take every thumbnail on the PC down with
+  it.** A reporter found an MP4 whose H.264 stream uses the 4:4:4 colour format, which the
+  Windows decoder does not support; on Windows 10 the decoder hung instead of declining, our
+  thumbnail code waited on it forever, and Explorer's whole thumbnail system stopped for every
+  file type until a reboot. Three things changed. SageThumbs 2K now reads the video's codec
+  profile itself and skips the Windows decoder entirely for the H.264 profiles it cannot handle
+  (4:4:4, 4:2:2 and 10-bit), so such a file just keeps its icon, instantly. Every video decode
+  the shell asks for now runs on a worker with a hard time limit, so a decoder that hangs can
+  never hold Explorer's thumbnail thread again. And if a decoder does wedge, the thumbnail host
+  turns video off for itself and, once idle, quietly restarts, which is what a reboot used to
+  buy. The built-in doctor now names this profile problem when you point it at such a file.
+
+- **The preview window's Previous and Next buttons no longer skip over mail files and internet
+  shortcuts.** Stepping through a folder now lands on `.eml` and `.msg` messages, and on `.url`
+  and `.webloc` shortcuts where the optional web-preview feature is built in, instead of jumping
+  past them to the next image.
+
+- **The right-click menu opens faster and no longer slowly leaks memory the longer Explorer
+  stays open.** Building the menu used to re-check the same file information and re-read the
+  same settings on every single right-click; it's now reused instead, which is especially
+  noticeable on network drives, videos, and RAW photos. A couple of small drawing resources that
+  used to leak a little on every menu open are now properly freed, and, for anyone running a
+  Start-menu or Explorer skin such as StartAllBack, DarkMagic, or ExplorerPatcher on an ARM64
+  PC, the menu's logo now recognises those tools correctly there too.
+
+- **Thumbnails and previews decode a little faster, and some special image types are more
+  accurate.** A JPEG carrying a large embedded colour profile now shows the correct colours in
+  its thumbnail and preview, instead of an approximation. DDS texture files, including 3D
+  "volume" textures, thumbnail more accurately and pre-size correctly for the right-click menu
+  preview instead of decoding at full size first. Downsizing an extremely large image, or
+  compositing a transparent image over the checkerboard background, can no longer silently
+  overflow and produce a corrupted thumbnail.
+
+- **3D model previews are more robust against malformed or truncated files.** An `.obj`,
+  `.ply`, or `.stl` file that's been cut short, has an unusual property type, or contains an
+  invalid vertex no longer fails outright or misaligns the whole model; SageThumbs now renders
+  as much of it as it validly can, the same way it already handled a few other kinds of damage.
+
+- **Malformed JPEG2000 and JPEG files can no longer hang or crash SageThumbs while decoding.**
+  A `.jp2` file crafted with an extreme number of layers or an implausible internal structure
+  is now refused quickly instead of being processed, and JPEG2000 images decode with the
+  correct brightness in more cases than before. A JPEG with a corrupted internal compression
+  table is now refused instead of risking a crash or a hang.
+
+- **Cover art from archives, comics, and ebooks is more reliable.** APK/XAPK/APKM Android
+  package files no longer mistake an unrelated, similarly-named entry for the real package;
+  7-Zip solid archives now prefer a file actually named "cover" when choosing one; and a ZIP
+  file whose declared size doesn't match its real contents can no longer make cover-art
+  extraction spend far more effort than it should. An EPUB book cover written with single
+  quotes in its metadata now shows correctly too, previously it depended on which program
+  made the file.
+
+- **A malformed or oversized entry inside a compressed image or ZIP-packaged file could
+  quietly come back as an incomplete picture instead of being refused.** An SVG or EMZ
+  image's gzip data, a Paint Shop Pro file's zlib data, and a compressed entry inside any
+  ZIP-based file such as an EPUB, an Office document, an APK, or a Krita/OpenRaster/Fusion
+  360/3MF/CorelDRAW project preview could all decompress past an internal size limit and
+  still be accepted as a complete, valid read. Such an entry is now refused outright and
+  falls back to the default icon or next tier, the same way a truncated ZIP entry already
+  does.
+
+- **Matroska (.mkv/.webm) video thumbnails find a real keyframe more often.** Some Matroska
+  files previously produced a black or blank thumbnail because the frame SageThumbs tried first
+  wasn't actually a keyframe; it now checks and falls back to a real one, including for a less
+  common file structure where the last section doesn't declare its own size up front.
+
+- **Opening a malformed or crafted video file for a thumbnail can no longer hang, crash, or use
+  excessive memory.** A handful of size and time limits are now enforced while reading MP4 and
+  other container files, so a damaged or deliberately unusual file is refused cleanly instead
+  of stalling the thumbnail process.
+
+- **The "Max file size" setting is now honoured by a couple of preview paths that used to
+  ignore it.** Some in-process video preview tiers, and RAR archive cover-art extraction,
+  previously read past the size you'd set in Settings; both now respect it.
+
+- **SageThumbs is more stable when previewing many files in quick succession.** It no longer
+  risks running out of background worker slots during a burst of preview activity, and Windows
+  Explorer no longer occasionally stalls while waiting on a busy file-properties read.
+
+- **The installer and repair tool now tell you when thumbnail registration genuinely failed.**
+  Previously a registration failure during install or repair could be reported as a success;
+  it's now surfaced properly so you know to try again or ask for help.
+
+- **Rotating or flipping a JPEG that already had a rotation tag now turns out correctly.**
+  Applying a rotate or flip to a photo that a camera or another app had already marked as
+  rotated could previously end up rotated the wrong way; the two are now combined correctly.
+
+- **Editing a "multi-picture" JPEG from a dual-camera or 3D-photo app no longer corrupts the
+  second picture inside it.** Stripping metadata or otherwise editing such a file used to risk
+  damaging the second embedded image; SageThumbs now recognises this format and avoids it.
+
+- **Converting a HEIC or AVIF photo now carries its camera and location metadata across, and
+  compressing to a target file size is more consistent across formats.** Converting from HEIC
+  or AVIF previously dropped EXIF details (like camera model) and XMP data (like GPS location)
+  entirely; both are now preserved, the same way they already were for other source formats.
+  Compressing an image to a specific file size used to go through a more limited decoding path
+  than the rest of SageThumbs's editing tools, which could make it fail on formats everything
+  else handles fine; it now uses the same path as everything else.
+
+- **Converting or saving to WebP now carries its camera and location metadata across too.**
+  WebP previously dropped EXIF details (like camera model), XMP data (like GPS location) and
+  the embedded colour profile when it was the output format; all three are now preserved, the
+  same way they already were for JPEG and PNG.
+
+- **Saving an edited file back to itself now preserves its other attributes.** Rotating,
+  resizing, or converting a file in place could previously lose attributes like Hidden,
+  alternate NTFS data streams, or permissions; those now survive the save. A save that fails
+  partway through also no longer leaves a stray temporary file behind.
+
+- **Your settings are more resistant to corruption and to being lost on export/import.** If the
+  settings file becomes briefly unreadable (for example, a security tool has it locked for a
+  moment), SageThumbs no longer overwrites it with a blank file, wiping everything you'd
+  configured. A value that could have corrupted the settings file the next time it was read is
+  now refused instead of being written. Exporting and re-importing your settings also no longer
+  loses your sign-in, which could previously happen due to a capitalisation mismatch in an
+  internal key.
+
+- **JPEG quality can no longer be saved as 0.** A quality setting of 0 produced a nearly blank
+  image; quality is now kept between 1 and 100 wherever it can be set, whether from Settings,
+  the command line, or a batch conversion.
+
+- **Dark title bars and High Contrast mode both render correctly in more situations.** Older
+  Windows 10 builds use a different, unofficial way of requesting a dark title bar than modern
+  Windows does; SageThumbs now picks the right one for your version instead of always assuming
+  the modern one. Settings and the preview window previously ignored Windows' High Contrast
+  mode entirely; both now switch to your system's high-contrast colours like the rest of
+  Windows does.
+
+- **Clicking Install in the About window's update checker no longer freezes the window.** The
+  window used to lock up while the update downloaded in the background; it now stays responsive
+  and you can still see it progress.
+
+- **Installing, first-run setup, and uninstalling all work more thoroughly.** A fresh install
+  now properly sets up the right-click folder-icon menu entry and format-overlay icons for your
+  account right away, instead of only after you'd opened Settings once; choosing a corner-mark
+  style during first-run setup also now takes effect immediately rather than waiting for
+  something else to trigger a refresh. Uninstalling now removes those same pieces, plus the
+  screenshot tool's start-at-logon entry, across every account on the PC instead of sometimes
+  leaving them behind. A rare timing issue that could leave thumbnails broken right after an
+  update now heals itself automatically the next time you sign in, and says so, and installing
+  to a folder whose path contains an apostrophe no longer breaks the modern right-click menu
+  setup step.
+
+- **Signing in no longer intermittently fails when your browser's request arrives in more than
+  one piece.** The local sign-in helper previously only read the first chunk of the browser's
+  request; it now waits for and reassembles the whole thing.
+
+- **Large text file previews no longer occasionally show in the wrong character encoding.** If
+  the first chunk SageThumbs read happened to end in the middle of a multi-byte character, it
+  could misjudge the whole file's encoding; that edge case is now handled correctly.
+
+- **The preview window is more reliable when you're moving quickly or it's had trouble.** Its
+  Open button no longer closes the preview if the app it tried to hand the file to actually
+  failed to launch. Pressing Ctrl+C to copy the currently previewed image, then switching files
+  right away, no longer occasionally copies the previous file's picture instead of the one you
+  just switched to. And commanding the preview window to open, close, or toggle from the tray
+  icon or a hotkey now times out instead of hanging the whole app if the window has stopped
+  responding.
+
+- **A privacy gap in the Markdown and HTML preview is closed, and a referenced image can no
+  longer point outside the document's own folder.** Turning off "load remote images" didn't
+  consistently stop one particular kind of image reference from loading anyway; it's now
+  blocked the same way as every other case. An image referenced by a Markdown file also can no
+  longer use a traversal trick, a drive letter, or a network path to load and display a file
+  from elsewhere on your PC.
+
+- **Document previews handle very large or unusual content more gracefully, and Find jumps
+  straight to a distant match.** A table with tens of thousands of rows, an extreme number of
+  columns, or a link followed by an unusual run of punctuation could previously make a document
+  preview slow to the point of appearing frozen; each is now capped, with a small note
+  explaining what was left out. Using Find to jump to a match far down a Markdown document now
+  jumps straight there instead of slowly stepping down the page. Mail previews also now decode
+  HTML entities correctly and cap a very long attachment list with a note about how many more
+  there are.
+
+- **The HTML preview (for `.html` files, where the optional web-preview feature is available)
+  is more locked down.** It now only ever loads the local file itself, opens any link in your
+  regular browser instead of a popup inside the preview, and never triggers a file download.
+  Each preview also now uses its own temporary browser profile that's deleted afterward, instead
+  of one shared between previews.
+
+- **Several batch tools now show progress and correctly report when part of the job didn't
+  finish.** The "Files to Folder" and "Tags to Folder" tools used to freeze their dialog for the
+  whole batch; both now show a progress bar and stay responsive while working. The Convert
+  dialog now skips OneDrive "cloud-only" files that haven't actually downloaded, and tells you
+  how many it skipped. Moving files into a folder, combining images into a PDF or CBZ, launching
+  an external app on a selection, and converting to several preset sizes at once could all
+  previously report success even when part of the job silently failed; each of these now tells
+  you when that happens.
+
+- **The screenshot tool's hotkey and preview toggle no longer lag your keyboard system-wide.**
+  Both used to run directly on the low-level keyboard hook, so a busy moment, launching an app
+  or opening the preview, could make typing anywhere on your PC feel briefly sluggish. That work
+  now happens off the hook entirely.
+
+- **The screenshot tool is more reliable overall.** Capturing an HDR screen is more stable, and
+  across multiple monitors it's faster, since it no longer sets up a fresh rendering device for
+  every monitor. Quitting the screenshot helper from its tray icon now actually keeps it
+  stopped instead of occasionally restarting itself, and the tray tooltip now warns you if it
+  couldn't set itself to start automatically at logon. If copying a screenshot to the clipboard
+  fails, the overlay now stays open instead of closing as though it worked, and dragging a
+  selection, moving text, or drawing a shape in the overlay is smoother, with less flicker.
+  Uploading a screenshot whose filename contains quote marks or line breaks no longer risks
+  corrupting the upload request either.
+
+- **A few internal communication channels are more tightly locked down.** Communication used to
+  detect the current file selection, and a message used to signal update checks, are now
+  scoped to your own account and verified with a one-time code, so another program on the same
+  PC can't read or interfere with them. The preview window and the command-line/AI tool also
+  now refuse a raw network-share path, accepting only a properly resolved local one.
+
+- **A video you rotated without re-encoding now thumbnails the right way up.** Turning a
+  clip with `ffmpeg -display_rotation 90 -i in.mp4 -c copy out.mp4` is instant and keeps
+  the original quality, because it writes a note in the file rather than touching a single
+  pixel. Windows' own thumbnails and practically every player honour that note; SageThumbs
+  did not, so a rotated clip looked identical to the original in Explorer and you had to
+  open videos one at a time to tell which way up they were. It now reads the note and turns
+  the picture to match. Both the MP4 family (`.mp4`, `.mov`, `.m4v`, `.3gp`) and Matroska
+  (`.mkv`, `.webm`), which record it in two different ways. Upright videos are unaffected
+  and cost nothing extra. (issue #32)
+
+- **Photoshop files stayed blurry in the Explorer preview pane, however long you waited.**
+  A `.psd` carries a small ready-made thumbnail near the front of the file, usually about
+  160 pixels, whatever the size of the artwork, and SageThumbs was answering every request
+  with it, including the preview pane's, which asks for something nearer 2048. You got a soft,
+  undersized picture that never improved. It now uses that built-in thumbnail only when it is
+  genuinely big enough for the size being asked for, and renders the real full-resolution
+  artwork when it is not. Explorer's ordinary icon views are unchanged and exactly as fast as
+  before, because for those the built-in thumbnail really is big enough; the large views take
+  a moment the first time and are then cached like any other thumbnail. The Space-bar Quick
+  preview, which was already showing the full picture, is untouched. (issue #33)
+
+- **The Space-bar Quick preview now sharpens very large Photoshop files too.** Opening a
+  PSD or PSB over about 256 MB in the Quick preview showed Photoshop's small built-in
+  thumbnail and never replaced it with the real picture, with nothing in the log to say why:
+  the second pass that fetches the full composite was reading the file through the limit
+  meant for Explorer thumbnails, and the preview's own worker was missing the setup the
+  Windows imaging codecs need, so its fast path for oversized files silently failed. Both are
+  fixed, and when a composite genuinely cannot be produced the verbose log now says which
+  step stopped and why.
+
+- **Converting very large Photoshop files did nothing at all.** Converting a folder of PSDs
+  quietly skipped every file over about 270 MB, no error, no output, just a smaller number in
+  the "converted N of M" summary. Those files were being turned away by a size limit meant for
+  something else entirely: a safety budget for files that arrive unasked-for, such as whatever
+  folder Explorer happens to be drawing thumbnails of. A file you picked and asked to convert
+  is not that, and it now gets a limit sized for the job, comfortably past the 2 GB ceiling
+  Photoshop's own `.psd` format has. The "Max file size (MB)" setting was never involved, which
+  is why changing it did not help. (issue #34)
+
+- **A conversion that fails now says which files it was.** The summary at the end of a batch
+  reported how many succeeded and nothing else, so a run that skipped nine files out of sixty
+  gave you no way to tell which nine. It now names them.
+
+- **Exporting or importing settings can no longer fail outright on a network share or a
+  cloud-sync folder like OneDrive.** Some such destinations report the write itself as
+  successful but refuse the extra step of flushing it fully to disk. SageThumbs 2K now
+  treats that flush as best-effort instead of required, so Settings ▸ Data & Backup's
+  Export and Import, and the `--export-settings`/`--import-settings` command-line flags,
+  still complete on those destinations instead of reporting a failure.
+
+- **Exporting settings can no longer destroy your previous backup if the export fails
+  partway through.** Overwriting an existing settings backup and then hitting a disk-full,
+  removed-drive, or permissions error used to leave the old backup truncated even though
+  SageThumbs reported the export as failed. The export is now written safely to a temporary
+  file first and only swapped in once it's complete, so a failed export leaves your previous
+  backup exactly as it was.
+
+- **The modern Windows 11 context menu now registers for the account actually using the
+  PC, even when a different administrator's credentials were used to approve the install.**
+  Installing as a standard user and supplying another admin's password at the prompt used
+  to register the modern menu for that admin's own account instead of yours. Uninstalling now
+  removes it regardless of which account is signed in, instead of only for whoever happened
+  to answer the prompt. Uninstalling also no longer removes a certificate someone else
+  trusted just because it shares the same name; it removes only the exact one this installer
+  added, and an upgrade from an older version now correctly picks up that it was the one that
+  trusted it in the first place.
+
+- **Opening the Quick preview on a file from a slow or unresponsive network share or removable
+  drive no longer freezes the preview window before it can even appear.** The window now shows
+  right away with its usual loading spinner while the file is read in the background, so it can
+  still be closed or switched to another file immediately; if you flip through several files in
+  a row, only the newest one you selected is ever shown, even if an older, slower read finishes
+  later.
+
+- **Text in the Convert and welcome windows no longer gets cut off in languages that need
+  more room than English.** Both windows were built out of boxes just wide (or tall) enough
+  for the English wording, and Windows silently trims anything that does not fit, so several
+  translations lost the end of a label or a whole line of an explanation. Every row in both
+  windows is now sized from the translated text that actually goes in it.
+
+  In Convert that covers the "Resize", "Pad to the exact size" and "Write every preset size"
+  checkboxes, which now sit in their own full-width rows, and also the "Output format:" and
+  "Output folder:" labels, the "Settings…" and "Convert" buttons and the "px" suffix, which
+  are measured and given the width their own translation needs. Filipino showed "Format ng"
+  where the label reads "Format ng output:", and Russian's "Преобразовать" filled its button
+  edge to edge.
+
+  In the welcome window it covers the opening paragraph, every switch label, and the muted
+  explanation under each switch. The portable copy's thumbnails explanation was the worst
+  case: in 26 of the 36 languages it stopped mid-sentence after two lines, so the German
+  copy said what the option does but never that Settings can turn it back off. The window
+  grows if a translation genuinely needs the room. English is laid out exactly as before.
+
+## 2.5.0
+
+**TL;DR**
+
+**New**
+
+- **A sign-in suggestion in Settings**
+
+**Changed**
+
+- **Choose what goes in a thumbnail's corner**
+
+**Fixed**
+
+- **More EPS files show a thumbnail**
+- **Quick preview tooltips now match their buttons**
+- **Plain-text email lines no longer become headings**
+
+**Everything in 2.5.0**
+
+### Added
+
+- **A sign-in suggestion in Settings.** If you have had SageThumbs a week and used it a few times,
+  opening Settings may show a small card explaining that signing in with a Connections account
+  carries your settings to your other machines. Dismissing it with **"Not now"** hides it for the
+  rest of the day; from the fourth time you see it, a **"Remind me in a month"** button appears
+  beside that, and you can pick it as often as you like. It never appears more than once a day, it
+  only ever appears as Settings opens rather than interrupting what you are doing, closing the
+  window counts the same as "Not now", and it is translated into all 36 languages SageThumbs
+  speaks. Nothing about it changes how thumbnails work, and signing in remains entirely optional:
+  every feature works exactly the same without an account.
+
+### Changed
+
+- **You now choose what goes in the corner of a thumbnail, and setup asks you once.** Only one
+  thing fits in a thumbnail's bottom-right corner, and until now two separate tick boxes were
+  quietly fighting over it: turning on the format badge without also finding the second box let
+  Windows stamp the associated program's icon straight on top of it. Those two boxes are gone,
+  replaced by a single choice on the Appearance page, and the installer asks it on a first
+  install: **Windows' file-type icon** (what Explorer does on its own, and still the default),
+  **a SageThumbs format mark** (PSD, JXL, AVIF... so you can tell formats apart at a glance), or
+  **nothing at all**. Upgrading keeps whatever your old tick boxes were set to, and you can
+  change it any time in Settings.
+
+### Fixed
+
+- **More EPS files show a thumbnail.** An EPS can carry a small built-in preview picture, and
+  SageThumbs reads that rather than running the PostScript. It was being thrown away whenever the
+  file had a blank line just after it, which some programs write and others don't, so whether your
+  EPS files worked came down to which program made them. Note that an EPS saved with **no**
+  preview at all still cannot be shown: drawing one would mean running the PostScript, which
+  SageThumbs deliberately never does. If your EPS files show nothing, re-save them with the
+  "include preview" option ticked.
+
+- **Quick preview button tooltips no longer describe the state you just left.** The light/dark
+  button showed a moon while its tooltip still read "Light background", and it stayed wrong for
+  as long as the window was open, because a tooltip's text was only ever set once when the window
+  opened. Every tooltip now updates with the button it belongs to. Four more that had the same
+  problem were fixed at the same time: the pin now offers to stop keeping the window on top once
+  it is pinned, view-source offers the rendered view once you are looking at source, and mute and
+  repeat both say what clicking them will actually do.
+
+- **A plain-text email no longer writes itself into the preview's contents list.** A line in a
+  message starting with `#` was being read as a document heading, so it showed up huge and added
+  itself to the outline down the side of the window. That line now shows as the text it is.
+  Quoted reply text and numbered lists still render properly, because there they really are what
+  they look like.
+
+## 2.4.1
+
+**TL;DR**
+
+**Fixed**
+
+- **Emails copied by other tools still preview as emails**
+
+**Everything in 2.4.1**
+
+### Fixed
+
+- **An email that has been copied around now still previews as an email.** Some tools rewrite
+  line endings when they copy a file, which doubles the invisible marker that separates an
+  email's headers from its message. SageThumbs was strict about that marker, so a mail that had
+  been through such a tool opened as raw source text instead of as a message. It now reads
+  either form.
+
+## 2.4.0
+
+**TL;DR**
+
+**New**
+
+- **Email files (EML and Outlook MSG) now preview**
+- **3D-print model thumbnails and preview (STL, OBJ, PLY)**
+- **Click a window to capture it**
+- **Add a delay before a screenshot is captured**
+- **The colour picker learned formats and memory**
+- **Screenshot OCR keeps table columns**
+- **Quick preview gains a light/dark toggle**
+- **A settings button on the Quick preview window**
+
+**Fixed**
+
+- **Quick preview tooltips no longer point at the wrong button**
+- **Quick preview toolbar icons are now a consistent size**
+- **Toolbar icons no longer have soft colour fringes**
+
+**Everything in 2.4.0**
+
+### Added
+
+- **Email files preview.** Press Space on an exported email, an `.eml` from almost any mail
+  program or an Outlook `.msg`, and it opens like a message: subject, from, to, date, the
+  list of attachment names, and the text of the mail. Attachments are listed, never opened,
+  and nothing in the message is fetched from the internet. Web addresses in a message show
+  exactly as written, so a link can't pretend to be something it isn't.
+
+- **3D-print model thumbnails and preview (STL, OBJ, PLY).** These files carry no picture
+  inside them, so SageThumbs draws one: the model, shaded, from a consistent three-quarter
+  angle, with a transparent background in Explorer like any other thumbnail. A folder of
+  models becomes scannable at a glance instead of a wall of identical icons. Works in the
+  Space-bar preview too, at full window size.
+
+- **Click a window to capture it.** In the screenshot tool, hovering now highlights the
+  window under the cursor; a single click captures exactly that window, cleanly at its
+  visible edges. Dragging a region works exactly as before. Works in the one-key OCR mode
+  too: click a dialog to read the text out of it.
+
+- **A capture delay.** Settings ▸ Screenshots gains "Delay before capture" (off, 1, 2, 3 or
+  5 seconds): press the hotkey, and a small countdown ticks beside the cursor before the
+  screen freezes: long enough to open the menu or summon the tooltip you actually wanted
+  in the picture. Esc during the countdown cancels.
+
+- **The colour picker learned formats and memory.** Tab switches what a pick copies:
+  #RRGGBB, rgb(), hsl() or hsv(), shown live on the loupe, and the choice is remembered.
+  Your last ten picks appear as a swatch row; pressing 1–9 copies one of them again, so
+  yesterday's brand colour is a keypress, not a hunt for a pixel that still shows it.
+
+- **Screenshot OCR keeps table columns.** When the text in a capture lines up as a table,
+  a price list, a bank statement, an Explorer details view, the copied text now uses tabs
+  between the columns, so pasting into Excel puts every cell where it belongs. Ordinary
+  text is completely unaffected; the detection only trusts a column it sees on three or
+  more lines.
+
+- **A light/dark button on the Quick preview window itself.** The Theme setting decides what
+  every preview opens as; this switches the one you are looking at, without changing that
+  setting or any other window. A dark photograph often reads better on a dark background even
+  when you keep the rest of the app light, and the reverse is true of a scanned page. The button
+  shows the background it will give you: a sun while you are dark, a moon while you are light.
+  The choice lasts until you close the window, so the next preview opens the way you
+  configured it. Requested by a user, who is the reason it exists.
+
+- **A settings button on the Quick preview window.** The gear opens Settings directly on its
+  Quick preview page, instead of leaving you to find the window and then the right page in it.
+  If Settings is already open on another page, it comes to the front on the right one.
+
+### Fixed
+
+- **The Quick preview toolbar's tooltips could describe the button next door.** On any picture,
+  the tooltips sat one button to the right of where they belonged: hovering "Copy file path"
+  said "Keep on top", and the pin at the far left had no tooltip at all. The toolbar gains its
+  text-recognition button only once the picture has finished loading, and the tooltips were
+  positioned before that happened and never moved afterwards. They are now placed from the same
+  layout the toolbar is drawn from, so they cannot describe a different button than the one
+  under the pointer.
+
+- **The Quick preview toolbar icons were noticeably different sizes.** They came from a set that
+  draws each icon to its own proportions, so a circle filled its space while a cross sat well
+  inside its own, a 50% difference across one row. The bundled icons are now sized to match
+  each other. The text-recognition icon was the worst of them, drawn half again as large as
+  everything beside it because it was sized from the button rather than from the other icons;
+  it now matches them at every display scale, in the screenshot editor too.
+
+- **The toolbar icons looked soft, with faint orange and blue edges.** They were being drawn
+  the way Windows draws text, which sharpens letters by using the red, green and blue stripes
+  inside each pixel. That trick does nothing for a picture of a gear and leaves colour on its
+  edges instead: three quarters of the pixels in every icon carried a colour tint. They are
+  drawn as plain shapes now, which removes the tint completely and roughly doubles how many
+  pixels land solid. Same change in the screenshot editor's toolbar. Text is unaffected.
+
+## 2.3.2
+
+**TL;DR**
+
+**New**
+
+- **Ctrl+F searches inside multi-page PDFs in Quick preview**
+- **A page-thumbnail strip beside multi-page PDFs**
+- **SageThumbs now has its own light or dark Theme setting**
+
+**Changed**
+
+- **Faster install at the modern context menu step**
+
+**Fixed**
+
+- **Mouse wheel now scrolls PDFs in the Quick preview**
+- **Zoomed PDFs are redrawn sharp instead of stretched**
+- **RAW convert and resize now use the full-size photo**
+
+**Everything in 2.3.2**
+
+### Added
+
+- **Ctrl+F now searches inside a multi-page PDF in the Quick preview.** Type a word and the
+  viewer jumps to the page it is on; Enter or F3 walks through the rest, and the bar counts them
+  the way it already does for text files. Windows' PDF engine hands us pictures of pages and no
+  text at all, so SageThumbs reads the words off the rendered pages itself, using the text
+  recognition Windows already ships. Nothing new is downloaded or installed for it.
+
+  Reading a long document takes a moment, so the bar says how far it has got: matches appear as
+  their pages are read rather than after a silent wait, and a document longer than 200 pages
+  keeps showing how many of its pages were actually searched instead of pretending it read all
+  of them. If the machine has no text recognition available at all, it says so rather than
+  reporting an empty result. Matches are shown by jumping to the page, not by highlighting the
+  word on it.
+
+- **A page-thumbnail strip beside multi-page PDFs in the Quick preview.** Small pictures of
+  every page run down the right-hand side, numbered, with the page you are reading outlined.
+  Click one to jump straight to it. It appears only for documents with more than one page, hides
+  itself on a narrow window where the room is better spent on the page itself, and can be turned
+  off. Thumbnails are drawn as they come into view and kept small, so a long document does not
+  pay for pages you never look at.
+
+### Fixed
+
+- **The mouse wheel did nothing on a PDF in the Quick preview.** Continuous scrolling shipped in
+  2.3.1 with the keyboard working and the wheel not: rolling it over a PDF was silently ignored,
+  even though the 2.3.1 notes said it scrolled. It scrolls now. Ctrl and the wheel magnifies,
+  and Shift and the wheel slides a magnified page sideways.
+
+- **Zooming a PDF now redraws it sharply instead of blowing up the picture.** Magnifying used to
+  stretch the page image it had already drawn, so text went soft exactly when you were zooming
+  in to read it. Pages are now redrawn at the size you are viewing them at, so they stay crisp.
+
+- **Converting or resizing some camera RAW files gave you the camera's small preview instead of
+  the photograph.** A Mamiya `.mef` came out **192x144** and a Phase One `.iiq` **304x220**,
+  when the real pictures are 4016x5344 and 3658x2740. These formats hide the real photo where
+  the usual decoder cannot see it without knowing the file's name, so SageThumbs was silently
+  handing you the thumbnail. Convert and Resize now re-read those files at their full native
+  resolution - the `.mef` really does come out 4016x5344. Thumbnails were always correct and
+  are unchanged, pixel for pixel, and still just as fast. Formats that were already converting
+  correctly keep their quick path, so nothing else got slower.
+
+### Added
+
+- **Light or dark is now SageThumbs' own setting, on the Quick preview page.** Until now the
+  preview and the Settings window followed Windows' app colour setting, so wanting a dark
+  preview on an otherwise light desktop meant changing the whole system. There is now a
+  "Theme" choice with Follow Windows, Light and Dark. Follow Windows is the default and is
+  exactly what every earlier version did, so nothing changes unless you pick something. The
+  Explorer right-click menu and the preview pane still follow Windows on purpose: those are
+  drawn inside Explorer's own window, and disagreeing with the shell around them would look
+  broken rather than themed. Suggested by a user.
+
+### Changed
+
+- **Installing is quicker at the "Registering the modern context menu" step.** That step
+  unregistered the existing Windows 11 menu package and registered it again from scratch every
+  single time, which is two deployments where one will do, and it is the step people saw the
+  installer appear to hang on. It now registers directly and only falls back to the remove and
+  retry when that fails, and it skips re-importing the signing certificate when the same one is
+  already trusted. Measured at **1,162 ms before and 552 ms after** on a warm machine. It is
+  also safer: the old order tore down the working menu before anything else, so any later
+  failure left you with no modern menu at all.
+
+## 2.3.1
+
+**TL;DR**
+
+**New**
+
+- **Quick preview scrolls continuously through multi-page PDFs**
+
+**Fixed**
+
+- **Wide CSV files are readable and much faster in preview**
+- **Large CSV or database files no longer hang the preview**
+- **Hasselblad RAW photos now thumbnail much faster**
+- **Arrow keys always move between files in Quick preview**
+- **Scanned DjVu pages no longer lose their photographs**
+- **Tiny built-in DjVu previews no longer stretch to big tiles**
+- **Large layered GIMP files thumbnail faster and reliably**
+- **Music files now show their real album art**
+- **Some camera RAW files no longer thumbnail black or tiny**
+- **InDesign documents no longer thumbnail as a torn strip**
+
+**Everything in 2.3.1**
+
+### Added
+
+- **The Space-bar Quick preview now scrolls continuously through a PDF, instead of showing one
+  page at a time.** Roll the wheel, or use the up and down arrows, and the document flows past
+  the way it does in a real reader: the end of one page, the gap, then the start of the next.
+  Page Up and Page Down jump a screenful, Home and End go to the ends of the document, and the
+  page counter in the title bar follows whichever page you are actually looking at. Ctrl and the
+  wheel still zooms, and left and right still move to the next and previous FILE. Pages are drawn
+  as they come into view, so a long document opens as fast as it always did rather than making
+  you wait for all of it, and the scroll bar is the right length from the very first frame
+  because the page sizes are read before anything is drawn.
+
+### Fixed
+
+- **Wide CSV files were unreadable in the Quick preview, and painfully slow with it.** A
+  spreadsheet export with a lot of columns was squeezed into the window however many columns it
+  had, so a 201-column file got about six pixels per column and every value came out as a
+  vertical stack of single letters: the header literally read "c/o/l/0" downwards. That is also
+  why it was slow, because the preview then had to lay out every character of every cell to work
+  out how tall each row was. Columns now have a readable minimum width, and any that do not fit
+  are reported under the table ("+29 more columns not shown") instead of being crushed. Arrowing
+  through a folder of CSVs is between **11 and 27 times faster**: a 5 MB, 6,666-row, 80-column
+  file went from **49 seconds to 1.8**, and nothing in a folder of fifteen now takes more than
+  two seconds. Narrow tables, and Markdown tables generally, look exactly as they did.
+
+- **The Quick preview could stop responding on a large CSV or database file, so that Windows
+  called it "not responding" and you had to end the task.** It was not crashing: the table was
+  being laid out on the same thread that answers Windows, and on a big enough file that took
+  longer than the few seconds Windows waits before declaring a window hung. The table work above
+  is far quicker now, so it stays responsive. Database files (`.db`, `.sqlite` and friends) are
+  drawn by the same code and were affected the same way; a 7 MB one went from over five seconds
+  to well under one.
+
+- **Hasselblad RAW photos took well over a second each to thumbnail.** A `.fff` or `.3fr` file
+  carries a ready-made preview picture, but SageThumbs was ignoring it and decoding the entire
+  raw sensor image instead, every time. It now uses the camera's own preview whenever that
+  preview is genuinely large enough for the size being asked for, and decodes properly when it
+  is not. A `.3fr` thumbnail went from **1191 ms to 22 ms** at Explorer's medium icon size and
+  from 1218 ms to 28 ms at large; a `.fff` went from **1635 ms to 44 ms**, and even the biggest
+  view from 1663 ms to 175 ms. The picture is the same one earlier versions showed, and it is
+  slightly sharper, because it is the camera's preview at its own size rather than a shrunken
+  full decode.
+
+  This does NOT bring back the black-square bug fixed earlier in this release. Some cameras,
+  Kodak among them, store a blank placeholder in that slot rather than a real preview, and being
+  large is not the same as having a picture in it. The preview is now checked for actual content
+  before it is used, and a blank one is ignored exactly as it is today.
+
+- **In the Space-bar Quick preview, a PDF with more than one page trapped the arrow keys.**
+  The left and right arrows turned pages instead of moving to the next file, and because
+  paging stops at the first and last page, there was then no key at all that would take you
+  to another document. The only way out was to close the preview and open it again on
+  something else. Left and right now always move between files, on every kind of content,
+  and pages are turned with up and down or Page Up and Page Down, the same as Quick Look on
+  a Mac. Single-page PDFs were never affected, which is why this went unnoticed for so long.
+
+- **Scanned DjVu documents could thumbnail as a plain grey rectangle, or lose every
+  photograph on the page.** DjVu stores a page as two layers: the text and line art on top,
+  and a compressed photographic background underneath. When a page was larger than roughly
+  4200 pixels on its long edge, which is any ordinary letter or A4 page scanned at 400 dpi or
+  better, the background layer was dropped and never drawn. On a photo-only DjVu, which has
+  nothing but that layer, the result was a tile of flat grey with nothing in it at all. On a
+  normal scanned page the text still appeared, so it looked fine at a glance while every
+  photograph on it had quietly vanished. Both are fixed, at every page size.
+
+- **DjVu files that carry a built-in thumbnail showed that thumbnail even when it was far too
+  small.** Some DjVu files store a small preview picture inside them, and every program that
+  writes one caps it at 128 pixels. SageThumbs used it whatever size had been asked for, so
+  Explorer's large-icon view got a 128-pixel picture stretched up to fill a 768-pixel tile,
+  and opening the file in Convert or Resize gave you 128 pixels of a page that might be five
+  thousand. It is now used only when it is genuinely big enough for what was asked, which
+  keeps it nearly free for the small icon and list views and draws the real page for anything
+  larger.
+
+- **Large layered GIMP files took up to ten seconds to show a thumbnail, and very large ones
+  showed nothing at all.** SageThumbs was building the whole picture at full size before
+  shrinking it down to a tile: a 12000x12000 file needed half a gigabyte of memory to produce
+  a 256-pixel thumbnail, and a 15-layer file spent ten seconds on work that was then thrown
+  away. It now builds the picture at the size actually being asked for, which is **ten to
+  seventeen times faster** on those files, and reads each piece of the file at its real length
+  rather than a worst-case guess. The thumbnail itself is unchanged, pixel for pixel. Opening
+  a GIMP file in Convert or Resize still gives you the full-size image.
+
+- **Music files could show a blank or tiny thumbnail instead of their album art.** A tagged
+  audio file is allowed to carry more than one picture, and plenty do - the sleeve plus a
+  small "file icon" some tagging programs add, or a leftover from whatever wrote the file
+  first. SageThumbs took whichever picture came first in the tag, so the sleeve lost to
+  anything sitting in front of it. It now looks for the one actually marked as the front
+  cover, and picks the largest when a file has several. Applies to every audio format we
+  read art from: MP3, FLAC, WAV, M4A, OGG, Opus, WMA, APE, WavPack, DSD and the rest.
+
+- **Some camera RAW photos thumbnailed as a black square, and others from a postage stamp.**
+  Several RAW formats are TIFF files underneath, and they keep a small preview at the front
+  with the real photo further in. The fastest of our decoders reads only that front section,
+  so it was answering with the preview and nothing better ever got a turn. A Kodak .dcr came
+  out solid black, because the front section of those files is a blank placeholder, and
+  .3fr, .erf, .fff and .kdc were being blown up from previews as small as 96 pixels wide.
+  These files now say plainly when their opening section is only a stand-in, and we skip
+  straight to a decoder that reads the real photo. Nothing that produced a thumbnail before
+  has stopped: the small preview is still there as a last resort if no other decoder can
+  read the file at all.
+
+  **Converting, resizing or reading the details of one of these now gives you the real
+  photo** rather than the small preview, which for .3fr means 7247x5444 instead of 320x240,
+  and for .kdc means 768x512 instead of 96x64. Also affects .nef, whose thumbnail already
+  looked right because its preview happened to be big enough for a tile.
+
+- **Adobe InDesign documents and templates thumbnailed as a thin strip of the page over a
+  blank grey panel.** InDesign keeps the page preview as a picture tucked inside the
+  document's metadata, but an `.indd` file is a database rather than a straight run of
+  bytes: every save writes a fresh copy of that metadata and leaves the older copies behind
+  in the file, torn up and partly overwritten by whatever else got saved on top of them.
+  SageThumbs was reading straight through those leftovers, so unrelated pieces of the
+  document ended up glued into the middle of the picture. The result still looked like a
+  valid image from the outside, and it was the biggest one in the file, so it was the one
+  that got picked - and it drew as the first few rows of the real page followed by nothing.
+  It now stops reading a preview the moment the file stops being metadata, and it only
+  accepts a picture that is genuinely complete from beginning to end. Documents saved
+  without a preview (InDesign's "Save Preview Images with Documents" setting turned off)
+  show the normal Adobe icon, which is the correct outcome and was already the case.
+
+## 2.3.0
+
+**TL;DR**
+
+**Changed**
+
+- **Large JPEG XL images thumbnail about 70x faster**
+- **DDS and DXT game textures thumbnail about 5x faster**
+- **Command line, AI tools and right-click preview match thumbnail quality**
+- **AVIF thumbnails are dramatically faster across every variant**
+- **Large AVIF and BMP images thumbnail much faster**
+- **JPEG photos thumbnail up to 20x faster**
+- **Every large image thumbnails several times faster**
+- **HDR images thumbnail about 4x faster**
+- **Big GIFs thumbnail several times faster**
+- **WebP thumbnails are about 4x faster with the Windows codec**
+
+**Fixed**
+
+- **Wide-gamut JPEG photos no longer thumbnail in wrong colours**
+
+**Everything in 2.3.0**
+
+### Fixed
+
+- **Wide-gamut JPEG photos could thumbnail in the wrong colours.** A photo saved in AdobeRGB or
+  Display P3 carries a colour profile describing how its numbers should be read. On the faster
+  decoding path Windows does not hand that profile over, so the numbers were used as-is and the
+  thumbnail came out visibly off - most likely on camera photos, which are exactly the files
+  that tend to be wide-gamut. SageThumbs now reads the profile out of the file itself. Every
+  other viewer already showed these correctly, so only the thumbnail was wrong.
+
+### Improved
+
+- **Large JPEG XL images thumbnail about 70x faster.** A 12-megapixel .jxl took over a second
+  and a half; it now takes about a fortieth of that. JPEG XL stores a small version of the
+  picture inside the file, ahead of all the fine detail, and the decoder was building the whole
+  full-size image anyway before shrinking it down. It now stops at the small one when a
+  thumbnail is all that was asked for. Nothing about the picture changes that you could see -
+  it matches a full decode to within about four levels out of 255 - and small images, or ones
+  where the small version would be too coarse, still decode in full. Lossless .jxl files are
+  unaffected, as they do not carry that small version.
+
+- **DDS / DXT game textures thumbnail about 5x faster.** A large compressed texture used to be
+  unpacked in full, pixel by pixel, just to work out the average colour of each little block.
+  Two changes removed that work: the thumbnail is now built a block at a time instead of
+  assembling the whole surface first, and each block's average is worked out directly from the
+  block's own endpoints rather than by expanding its sixteen texels. Together they take a
+  12-megapixel texture from about 180 ms to about 33 ms. The picture is not merely similar but
+  identical, which is checked automatically against the old method on tens of thousands of
+  blocks.
+
+- **The command line tool, the AI tools and the right-click preview now produce the same
+  quality picture as Explorer's thumbnails.** They had been using a cheaper, slightly softer
+  way of shrinking images than the thumbnails themselves. They all share the better one now, so
+  a preview looks the same wherever you see it. Image sizes are unchanged.
+
+- **AVIF thumbnails are dramatically faster - now across every common variant.** A user told us (fairly) that our AVIF was much
+  slower than Windows' own thumbnails. Two causes, both fixed. First, the AVIF path was
+  rendering a full-size image and then shrinking it, throwing nearly all the work away; it now
+  renders straight to the size the thumbnail needs. Second, 10- and 12-bit AVIF (most HDR and
+  camera output) was taking an expensive detour to keep its colours correct; the colour error
+  it was avoiding turns out to be exactly reversible, so those files now decode on the fast
+  path and get corrected in place. The net effect on a 6-megapixel 10-bit AVIF: about fifty
+  times faster than 2.2.0, with slightly MORE accurate colour.
+
+  The last slow case fell too: 8-bit AVIF carrying the colour signalling that `avifenc` and
+  `ffmpeg` write by default (which Windows' own decoder pipeline misreads, and which we
+  therefore used to hand to a slower external decoder to keep colours right). Those files now
+  decode through Windows' AV1 decoder directly while SageThumbs applies the correct colour
+  conversion itself: same accurate colour, roughly 10-40x faster depending on size. Only an
+  AVIF with no colour information at all still takes the careful slow path.
+
+- **Large images thumbnail much faster.** Two formats were doing far more work than the picture
+  needed: a 12-megapixel AVIF took about 180 ms and a 12-megapixel BMP about 259 ms, against
+  Windows' own 65 ms and 22 ms. Both now do only the work the thumbnail size actually requires -
+  **AVIF is down to ~39 ms and BMP to ~20 ms**, which makes both faster than or equal to Windows.
+  Colours are unchanged.
+
+- **JPEG photos thumbnail up to 20x faster.** SageThumbs can ask the JPEG decoder for a small
+  version directly instead of decoding every pixel and shrinking afterwards, but it was only
+  doing that for files over 512 KB. A JPEG's size depends on its quality, not its megapixels, so
+  a 6-megapixel photo saved at ordinary quality missed out while a smaller one at high quality
+  did not. That limit is gone: a typical photo now goes from about 75 ms to about 5 ms, and the
+  thumbnails come out identical.
+
+- **Every large image thumbnails several times faster, in any format.** Shrinking a big picture
+  down to a 256-pixel tile was costing more than decoding it in the first place - about 800 ms
+  for a 12-megapixel image. It now does the bulk of the shrinking in one cheap pass and leaves
+  only the last step to the high-quality filter, which is about **5x to 16x faster** with no
+  visible difference (measured at under one part in 255 on deliberately difficult content).
+
+- **HDR images (.hdr) thumbnail about 4x faster.** A high-dynamic-range photo was having its
+  brightness curve applied to all twelve million pixels before anything was shrunk down to a
+  thumbnail. It now shrinks first, which is both quicker (about 600 ms to about 160 ms) and
+  slightly more accurate, since averaging brightness before compressing it is the correct
+  order. OpenEXR files have always worked this way; .hdr now matches them.
+
+- **Big GIFs thumbnail several times faster.** A large GIF was decoded at full size and then
+  shrunk, doing the full amount of work for a picture nobody ever sees at that size. A
+  12-megapixel GIF took about 306 ms against Windows' 50 ms; it now takes about 47 ms, which is
+  fractionally faster than Windows. Animated GIFs are untouched, so which frame you see never
+  changes.
+
+- **WebP thumbnails are ~4x faster when the Windows WebP codec is installed** (it ships with
+  Windows 11). Still images now use the system codec, which is much quicker than our built-in
+  decoder; animated WebP and machines without the codec keep the previous behaviour, so
+  nothing is lost either way.
+
+## 2.2.0
+
+**TL;DR**
+
+**Fixed**
+
+- **Seven obscure image formats finally show thumbnails**
+- **Large layered GIMP files no longer lose their top layers**
+- **GIMP files over 256 MB now get a thumbnail**
+
+**Everything in 2.2.0**
+
+### Fixed
+
+- **A handful of registered formats could never show a thumbnail, on any version.**
+  Wavefront RLA, PlayStation TIM, MacPaint, Dr Halo CUT, Alias PIX, Garmin JNX and ZX Spectrum
+  SCREEN$ were all listed as supported and none of them ever worked.
+
+  The reason is the same for all of them. Most image formats begin with a few bytes that
+  identify them, so a decoder handed anonymous bytes can work out what it is looking at. These
+  formats do not. The only thing that says what they are is the file name, and the stage of our
+  pipeline that handles the obscure long tail was being given the bytes without the name, so it
+  always answered "I do not recognise this". Camera RAW files were caught by the same wall
+  whenever the camera had not stored a preview picture inside the file, which is why the
+  Minolta test file produced nothing at all.
+
+  When every other stage has already given up, that stage is now told the file's name too. All
+  seven formats decode, and a Minolta RAW with no built-in preview now gets a thumbnail
+  developed from the sensor data instead of nothing.
+
+  Formats that identify themselves are deliberately left alone, so nothing that worked before
+  can be pushed down a different path by a misleading file name.
+
+- **Layered GIMP files lost their upper layers, and some stopped showing a thumbnail at all.**
+  Reported on 2026-08-17 as "xcf don't work anymore with new versions for big files", and that
+  is exactly what was happening.
+
+  2.0.0 added a limit on how much layer data a `.xcf` may be worth decoding, so that a
+  deliberately malformed file cannot claim thousands of full-size layers and tie up your
+  machine drawing them. The limit was sound. The order it was spent in was not: layers were
+  paid for from the bottom of the stack upward, so a file with more layers than the allowance
+  covers spent everything on the layers underneath and then quietly skipped the ones on top,
+  the only ones you can actually see. The thumbnail that came out looked completely normal and
+  was a picture of a half-finished image.
+
+  How big is "big"? Any file whose layers add up to more than a 16384 x 16384 image: twelve
+  full-canvas layers of a 6000 x 4000 picture, twenty-three of a 4000 x 3000 one, or just two
+  layers of a 12000 x 12000 canvas. Where the lower layers happened to be transparent (an
+  erased background, an empty base), everything drawn was invisible, the result was a blank
+  image, and the file fell back to the plain document icon. That is the "no thumbnail" half of
+  the report.
+
+  Layers are now paid for from the top down, so a file too big for the allowance gives up the
+  layers underneath whatever is covering them instead of the ones on top. Hidden layers, fully
+  transparent ones and layers parked off the edge of the canvas are no longer charged at all.
+  They cannot change the picture, so they now cost nothing, which leaves the whole allowance
+  for layers that are actually visible. Large layered files are also faster as a result: a
+  12000 x 12000 two-layer file went from 11.8 to 5.4 seconds, and now shows the right image.
+
+- **GIMP files over 256 MB now get a thumbnail. They never have before, on any version.**
+
+  There was a ceiling on how much of a file we will read into memory at once, and a `.xcf`
+  past it was simply refused. Most formats have a way around that: a photo has a small preview
+  baked into its header, and Windows can open a huge PNG or TIFF itself and shrink it while it
+  reads. A GIMP file has neither. It stores no preview at all, and Windows has no idea what an
+  `.xcf` is, so every one of those escape routes declined and the file kept the plain document
+  icon. Layered artwork is exactly the kind of file that gets that big, so this hit the people
+  most likely to have installed SageThumbs for GIMP support in the first place.
+
+  It now reads a `.xcf` the way the format is actually built: as a map of positions, jumping
+  to the layers it needs and pulling one 64-pixel tile at a time, so nothing is ever held in
+  memory but the piece being looked at. A 305 MB file that produced nothing now thumbnails in
+  3.2 seconds. Files under the old ceiling take the same route and produce the identical
+  picture, verified across the whole test corpus.
+
+## 2.1.2
+
+**TL;DR**
+
+**Fixed**
+
+- **Build thumbnails here now pre-builds the right icon size**
+
+**Everything in 2.1.2**
+
+### Fixed
+
+- **"Build thumbnails here" only ever pre-built the smallest icon size.** It prepares three
+  sizes, one for each of Explorer's Medium, Large and Extra-large views. It turns out Windows
+  renders only the **first** size it is asked for and fills the other two in from that one, and
+  we asked for the smallest first. So the two larger views were being filled from a 96-pixel
+  picture, which Windows then threw away and rebuilt from scratch the first time you actually
+  opened the folder in one of them. The run reported success, and for those two views it had
+  genuinely done nothing.
+
+  It now builds the largest size first, so the smaller ones come from it for free. In a 25-file
+  test, opening the folder at Extra-large afterwards dropped from 2.8 seconds to 0.1. Pre-building
+  still renders each file exactly once; it takes a little longer per file now, because that one
+  render is finally happening at the size that was actually needed.
+
+  **If you reported this as a PDF problem, this is your fix.** The bug was never specific to
+  PDFs; it affected every format equally. PDFs are just the slowest thing to render, so the
+  wasted work was obvious on them and invisible on a photo. Nothing about PDF handling itself
+  needed to change.
+
+  This also corrects something the 2.1.1 notes said: the sizes were never each re-rendering the
+  file. There was only ever one render per file. It was just happening at the wrong size.
+
+## 2.1.1
+
+**TL;DR**
+
+**Fixed**
+
+- **Some AVI videos no longer get a black thumbnail**
+- **Build thumbnails here no longer finishes with thumbnails missing**
+- **About no longer checks for updates when automatic checking is off**
+- **Settings headings no longer cut off the bottom of letters**
+
+**Everything in 2.1.1**
+
+### Fixed
+
+- **Some AVI videos had a completely black thumbnail.** The affected files store empty filler
+  frames that carry no picture, and we were taking the first frame we could decode without ever
+  looking at it, so if one of those landed where the thumbnail is taken from, you got black,
+  even though your thumbnail-position setting was working perfectly. We now check whether a frame
+  actually has a picture in it and move on to the next one if it does not. A genuinely black
+  video still gets its black thumbnail, and dark scenes are unaffected: a frame only counts as
+  empty when EVERY pixel in it is black.
+
+- **"Build thumbnails here" could report 100% while some thumbnails were still missing.** A file
+  is built at several sizes, one per Explorer view, and the run marked a file done if ANY of them
+  worked. So a size that quietly failed left you with a finished-looking run and a folder that
+  still built its tiles on first open. PDFs showed this most, because each size re-renders the
+  page and several files render at once, so one could run out of time while the others succeeded.
+  A size that misses now gets one more attempt once the rest of that file is done, and anything
+  still missing is reported as **partly built** instead of counted as finished.
+
+- **Opening About started an update check even with automatic checking turned off.** The setting
+  correctly governed the check that happens when the app starts, but the About page ignored it
+  and checked every time it opened. It now respects the setting, and shows "Check for updates"
+  so you can still check whenever you want with one click. The button itself is unchanged: press
+  it and it checks, setting or no setting.
+
+- **Settings headings cut off the bottom of letters like "g".** The heading's height was a fixed
+  number rather than measured from the font, so it was always a few pixels short, and the taller
+  everything gets the more it takes off: at 300% display scaling it was losing around ten pixels.
+  It now measures the font. A heading too long for the space ends in an ellipsis rather than
+  running under the search box.
+
+## 2.1.0
+
+**TL;DR**
+
+**New**
+
+- **Press Space to preview works in Everything 1.4 too**
+- **A hotkey now previews files in administrator windows**
+- **SageThumbs now tells you when Space cannot work**
+- **The doctor report also flags when Space cannot work**
+
+**Everything in 2.1.0**
+
+### Added
+
+- **Press Space to preview now works in [Everything](https://www.voidtools.com/) 1.4 as well as
+  1.5.** 1.4 never told anyone which result was selected, which is why it was unsupported: there
+  was nothing to read. It turns out its result list will answer if you ask it directly, so now we
+  ask. Click a result in 1.4 and tap Space and you get the same preview 1.5 users have had,
+  following you as you arrow down the hits. Installed or portable, under any instance name, and
+  whichever columns you have showing.
+
+- **Preview now works over a window running as administrator, using a hotkey.** Space cannot work
+  there and never could: Windows withholds keystrokes typed into an administrator window from
+  ordinary programs, so the keypress never reaches us. A **global hotkey is not affected** by
+  that, and reading which file you have selected was never affected either, so the only thing
+  that was ever missing was a way to ask. Now there is one. Bind a key to the new **"Quick preview
+  the selected file"** action in Settings, Quick action, and it previews the selected file
+  anywhere, including inside an Everything or Explorer window running as administrator.
+
+  Your hotkey has to include **Ctrl, Alt or Shift**, which is a Windows rule rather than ours: a
+  plain one-key shortcut is delivered like ordinary typing and gets blocked over an administrator
+  window exactly as Space does, while a combination comes through. **Ctrl+Space** is the natural
+  pick. This is also why Space itself can never be made to work there, however we ask for it.
+
+  This matters most for Everything 1.4, which asks for administrator the first time it indexes
+  your drives, so people end up there by accident and had no way forward at all.
+
+- **SageThumbs now TELLS you when Space cannot work, instead of doing nothing.** This used to be
+  the one failure that was completely silent: when the window in front runs as administrator,
+  Windows never delivers the keypress to us at all, so there is no swallowed key for us to notice
+  and complain about. So we stopped waiting for the key. The moment an Everything or Explorer
+  window running as administrator becomes active, you get a tray notification, **before you press
+  anything**, explaining why Space is doing nothing and what to use instead. **Click it and
+  Settings opens** so you can bind the hotkey right there. It repeats on a widening interval for
+  as long as the situation lasts, rather than telling you once and then leaving you to it.
+
+  **Space is still the default and has not changed.** Nothing needs configuring for the normal
+  case; the hotkey is only for people who choose to run as administrator.
+
+- **`st2k doctor` reports the same thing**, for when the notification was missed or the tray icon
+  is hidden: with the window open it names which program is running as administrator and the fix,
+  and it also tells you when Quick preview is simply switched off, which is its default.
+
+## 2.0.0
+
+**TL;DR**
+
+**New**
+
+- **Flash video files now get thumbnails** (#26)
+- **HDR 10-bit and 12-bit VP9 videos now get thumbnails** (#26)
+- **Android app packages show their real launcher icon** (#24)
+- **Choose which video frame the thumbnail is taken from** (#26)
+- **Thumbnails can now be sized up to 2560 pixels** (#26)
+- **Very large images now get thumbnails**
+
+**Changed**
+
+- **Settings no longer freezes defaults when you press Save**
+
+**Fixed**
+
+- **Some transparent AVIF images now get thumbnails**
+- **Canon raw photos thumbnail about thirteen times faster**
+- **Large photographs thumbnail much faster**
+- **Build thumbnails here now works on drive roots** (fixes #26)
+- **Build thumbnails here menu label no longer shows a question mark** (fixes #26)
+- **File Types columns can be resized again** (fixes #26)
+- **Quick preview no longer closes when selecting in an empty pane**
+- **Thumbnails no longer draw smaller than their neighbours** (fixes #25)
+- **Malformed MP4 files can no longer read past their end**
+- **Rotated photos no longer thumbnail sideways**
+- **264 issues found by nine code reviews are fixed**
+
+**Everything in 2.0.0**
+
+### Added
+
+- **Flash video (`.flv`) files now get thumbnails.** Windows has no way to open an FLV at
+  all, so these have always shown a blank icon, whatever was inside them. All three of the
+  codecs people actually have now work:
+  - **H.264** is handed to Windows as a single frame in a form it already understands.
+  - **VP6** and **Sorenson Spark**, the older Flash codecs, are decoded by SageThumbs
+    itself, using the same pure-Rust decoders the Ruffle Flash emulator ships.
+
+  Nothing is unpacked to disk, and the rest of the file is never read. The two older
+  decoders run in a separate, short-lived helper process, so even a corrupt or deliberately
+  malformed video can only lose you that one thumbnail; it cannot disturb File Explorer.
+  Raised by @taylor-p-mason (#26).
+- **HDR video thumbnails (VP9 Profile 2 and 3).** 10-bit and 12-bit VP9, the kind used for
+  HDR and 4K streaming, never produced a thumbnail: Windows decodes only the ordinary 8-bit
+  kind, and that is still true even with Microsoft's free VP9 extension installed and a
+  graphics card that can do it in hardware. SageThumbs now decodes those itself.
+
+  Ordinary 8-bit VP9 is untouched and still goes to Windows, which is faster and uses your
+  graphics card. The built-in decoder only runs when Windows has already declined, and it
+  runs in a separate short-lived process, so a corrupt file costs you one thumbnail rather
+  than disturbing File Explorer. Raised by @taylor-p-mason (#26).
+- **Android app packages now show their real icon.** `.apk` files, and the split-bundle
+  wrappers `.xapk`, `.apks` and `.apkm`, get the launcher icon the app actually declares
+  rather than a generic file icon. An APK is a zip, so simply picking an image out of it
+  would have grabbed an arbitrary graphic from somewhere inside the app; instead the app
+  manifest is read to find which icon it nominates, and the highest resolution version of
+  that icon is used. Apps that only ship an adaptive icon (one Android assembles from
+  separate layers at runtime) fall back to the best plain image in the package.
+  Requested by @SamRohod (#24).
+- **A setting for which frame a video thumbnail comes from.** Settings, Appearance, "Video
+  frame at (% in)". Films that open on a black distributor card or a slow fade used to
+  thumbnail as a black rectangle, which looks exactly like SageThumbs failing. The default
+  is 30% of the way in, unchanged from before, so nothing moves unless you move it.
+  Raised by @taylor-p-mason (#26).
+- **Bigger thumbnails are now allowed.** The maximum in Settings, General goes up to 2560
+  pixels instead of 1024. The old limit was historical rather than technical. The default
+  stays at 1024 deliberately: larger thumbnails cost memory, generation time and cache
+  space, so this is a ceiling you opt into rather than one everybody pays for. Note that it
+  controls the size SageThumbs generates, not how large Explorer chooses to draw a tile.
+  Raised by @taylor-p-mason (#26).
+- **Very large images get thumbnails now.** Pictures too big to load into memory, such as
+  AI-upscaled wallpapers running to hundreds of megabytes and tens of thousands of pixels
+  across, previously showed a plain file icon. They are now read straight off the disk a
+  strip at a time and shrunk as they are read, so a 340-megapixel photograph produces a
+  thumbnail in about two seconds without ever being held in memory whole. The default size
+  limit in Settings, General has been raised to match; if you had lowered it yourself, your
+  choice is still respected.
+
+### Changed
+
+- **Settings no longer freezes the defaults when you press Save.** Previously, opening
+  Settings and saving wrote down every value on the page, whether or not you had touched
+  it. That quietly pinned each one forever, so any later improvement to a default could
+  never reach you. Values you have not changed are now left alone and continue to follow
+  the default; values you deliberately set are stored and honoured exactly as before.
+
+### Fixed
+
+- **Some transparent AVIF images showed no thumbnail at all.** An AVIF and a video can share
+  the same underlying file structure, and they are told apart by a short code near the start
+  of the file. One of the codes that image editors write was missing from the list, so those
+  pictures were treated as videos, produced no frame, and were given up on rather than being
+  handed to the picture decoders. They now thumbnail correctly, and the check reads every
+  format marker the file declares rather than only the first, so an unusual encoder cannot
+  cause this again.
+- **Photographs from Canon cameras thumbnailed about thirteen times slower than they needed
+  to.** A Canon raw file stores its sensor data in a form that, from the outside, is
+  indistinguishable from an ordinary photo, and SageThumbs was picking that instead of the
+  preview picture the camera saved alongside it. Since nothing can display sensor data as an
+  image, the whole shortcut was wasted and the file took the slow route.
+- **Large photographs thumbnailed far slower than necessary.** A big JPEG was decoded at full
+  size and then shrunk, rather than asked for a small version to begin with. A folder of
+  large wallpapers now pre-builds in around a tenth of the time it used to.
+- **"Build thumbnails here" did nothing on a drive root.** Right-clicking a whole drive
+  (`E:\`) appeared to do nothing at all, while the same entry worked on any ordinary folder.
+  A drive root ends in a backslash, and that backslash was being swallowed by the quoting
+  rules Windows uses to pass the folder to the program, so what arrived was not a path that
+  could exist. Reported by @taylor-p-mason (#26).
+- **That same menu entry was labelled `(?)`.** The caption is written into the registry when
+  SageThumbs registers itself, and it was being looked up in a list that the shell extension
+  ships only a trimmed copy of, so the text came back empty. It now says what it should, in
+  every language, and corrects itself when you update. Reported by @taylor-p-mason (#26).
+- **The File Types columns can be resized again.** Extension and Category were fixed at a
+  width too narrow for their own labels in several languages, and widening the window did
+  not help because only the Description column grew. Reported by @taylor-p-mason (#26).
+- **The Quick preview window could close when you pressed a selection key on an empty pane.**
+  Selecting text with the keyboard first asks which line is currently at the top of the view.
+  When the pane had no text in it there was no such line, and the calculation was asked for a
+  value between zero and minus one, which stops the program rather than answering "none". It
+  now answers "none". Only the preview window was ever affected by this; File Explorer itself
+  was not.
+- **Thumbnails are no longer randomly smaller than the files next to them.** Explorer centres
+  a thumbnail rather than enlarging it, so any file whose source picture was smaller than the
+  icon size drew as a visibly smaller tile. Photoshop files showed this worst, because the
+  preview Photoshop bakes into a PSD varies in size depending on the app and version that
+  wrote it, so two PSDs side by side could get different tile sizes for no visible reason.
+  Reported by @eddy593 (#25).
+- **A malformed MP4 could read past the end of the file.** A 64-bit box size could wrap
+  around, so the parser kept walking instead of stopping.
+- **Photos carrying rotation information could thumbnail sideways.** The two faster decode
+  paths skipped the rotation step the normal path applies.
+- **Nine AI code reviews were run over the whole codebase; 264 confirmed issues are fixed.**
+  Every file parser is now fuzzed on every build, which previously only happened on the
+  developer's own machine.
+
+
+## 1.12.0
+
+**TL;DR**
+
+**New**
+
+- **Build a whole folder's thumbnails up front from the command line** (#23)
+- **Build thumbnails here on the right-click menu**
+- **Welcome screen offers the format badge option** (#22)
+
+**Changed**
+
+- **Toolbar icons now look the same on every Windows version**
+
+**Everything in 1.12.0**
+
+### Added
+
+- **Build thumbnails for a whole folder up front, instead of waiting for Explorer to catch up.**
+  `st2k prebuild <folder> --recurse` walks a folder and asks Windows for every supported file's
+  thumbnail, so the pictures are already there the first time you open it. Useful after clearing
+  the thumbnail cache, or for a large library you have just copied in. By default it only builds
+  what is missing, so running it twice is cheap; `--rebuild-all` skips that check. It reports how
+  many were built, already present, and failed. Files that live in the cloud and have not been
+  downloaded yet are skipped, because building their thumbnails would pull them down.
+  Requested by @taylor-p-mason (#23).
+
+  Windows stores thumbnails separately for each icon size, so building only one size would leave
+  you still watching tiles appear in every other Explorer view. It therefore builds the three
+  sizes Explorer's Medium, Large and Extra-large views actually read. `--size` takes a list if
+  you want to choose (for example `--size 256`), and sizes that land in the same internal bucket
+  are merged so nothing is built twice.
+- **"Build thumbnails here" on the right-click menu for folders and drives.** The pre-build
+  feature above is now a menu entry rather than a command you have to type. Right-click a folder
+  (or the empty space inside one, or a drive) and it walks the whole tree with a progress window
+  you can cancel. It appears by default and can be turned off in Settings. It is a plain menu
+  entry rather than a shell add-in, so it loads no SageThumbs code into Explorer and cannot slow
+  down or crash your folder windows.
+- **The welcome screen now offers the format badge.** The option that stamps a small label
+  (`PSD`, `SVG`, `AVIF`…) into the corner of a thumbnail already existed in Settings, but nothing
+  pointed at it, so people who wanted a way to tell similar-looking files apart never found it.
+  It is now one of the optional switches on the welcome screen's second page. Still off unless
+  you ask for it, because it changes the picture you asked to see. Raised by @knchmpgn (#22).
+
+### Changed
+
+- **The toolbar icons now ship with SageThumbs instead of coming from Windows.** They used to be
+  drawn with whichever icon font the operating system happened to provide, which is why they
+  vanished entirely on Windows 10 (fixed in 1.11.1) and why they looked slightly different
+  between Windows versions. A small icon set is now built into the program itself, so every
+  machine shows the same buttons regardless of Windows version. It adds about 4 KB. The old
+  behaviour is kept as a fallback in case a machine refuses the built-in one.
+
+## 1.11.1
+
+**TL;DR**
+
+**Fixed**
+
+- **Toolbar buttons no longer show as empty boxes on Windows 10** (fixes #21)
+
+**Everything in 1.11.1**
+
+### Fixed
+
+- **Every toolbar button showed as an empty box on Windows 10.** The Quick preview's buttons,
+  the video player controls and the screenshot editor's tools all drew their symbols from an
+  icon font that only ships with Windows 11. Windows does not complain when a font is missing,
+  it quietly swaps in a text font that has none of those symbols, so the whole row came out
+  blank. SageThumbs now uses whichever icon font the machine actually has, and checks rather
+  than assuming. Thanks to @MuntasirTonmoy for the report (#21).
+
+## 1.11.0
+
+**TL;DR**
+
+**New**
+
+- **Photoshop files look sharp in Quick preview**
+- **Stepping through a folder with arrow keys is much faster** (#20)
+
+**Changed**
+
+- **One installer for everyone, no Full or Compact choice**
+
+**Fixed**
+
+- **Zip, RAR, 7z and G-code files now get thumbnails in Explorer**
+- **Setup no longer asks you to close your file manager** (fixes #15)
+- **Arrow-keying through photos is about five times quicker**
+- **Large PNG images no longer decode twice**
+- **Big pictures appear faster in Quick preview**
+- **Install no longer takes thumbnails away from other programs for good**
+- **Formats Windows decodes preview noticeably faster**
+- **Very large photos, scans and panoramas get thumbnails**
+- **Fewer big files silently lose their thumbnail**
+- **Doctor report names every file type SageThumbs took over**
+
+**Everything in 1.11.0**
+
+### Changed
+
+- **One installer, no Full/Compact choice.** Setup used to ask whether to include the
+  ImageMagick engine, and picking the smaller option quietly removed about a hundred file
+  types with nothing to explain why a file later showed no thumbnail. Everyone now gets the
+  complete engine; upgrading from a Compact install fills in what was missing.
+
+### Added
+
+- **Photoshop files look sharp in the Quick preview.** A PSD or PSB carries a small preview
+  picture inside it - often about 160 pixels wide no matter how big the artwork is - and that
+  is what you were seeing, stretched. Now the small one still appears instantly, and the real
+  full-size artwork replaces it a moment later, so text and fine detail stay crisp. Needs the
+  full install (the compact one has no compositor and keeps the quick preview).
+
+- **Stepping through a folder with the arrow keys is much faster.** Recently viewed pictures
+  are kept ready instead of being decoded from scratch every time, and the next file in the
+  direction you are heading is decoded before you get there. Going back to a photo you just
+  looked at is now instant. Thanks to @themakershousechaple-max for the report (#20).
+
+### Fixed
+
+- **Plain .zip, .rar and .7z files never got the contact-sheet thumbnail in Explorer, and
+  3D-printer G-code never got one at all.** Both features decide what a file is from its
+  extension, and both were asking Windows for the file's location to read it. Explorer hands a
+  thumbnail handler an open file rather than a location, so the question came back blank every
+  time and both quietly did nothing - while working perfectly from the app itself, which is why
+  it went unnoticed. They now read the file's name from what Explorer does give them.
+
+- **Setup no longer asks you to close your file manager.** Any program that has opened a
+  file-picker dialog is holding SageThumbs' thumbnail component in memory, and installers
+  normally deal with that by asking you to quit the program first, or by giving up. Directory
+  Opus and Everything were both hitting this. Setup now slides the old component aside and puts
+  the new one in its place, so whatever is running keeps working, the install finishes, and no
+  reboot is needed. Thanks to @MxMaster3 for the report (#15).
+
+- **Arrow-keying through a folder of photos is roughly five times quicker than it was.** The
+  preview window shows about a megapixel, so unpacking a 12-megapixel photo in full just to
+  shrink it was work nobody could see. It now loads a screen-sized version and only fetches the
+  full-resolution one if you zoom in. The picture you see is the same, the size shown in the
+  window is the real one, and zooming still gives you every pixel the file has.
+
+- **Large PNG images were being decoded twice.** A shortcut added for speed asks the image
+  decoder for a small version of a picture instead of a full-size one. That is a big win for
+  photos, where the decoder can genuinely skip most of its work, and no win at all for PNG,
+  where it has to unpack the whole thing anyway and shrink it afterwards. The shortcut was
+  being used for both, so every large PNG got decoded once for the shortcut and again properly.
+  SageThumbs now asks the decoder up front whether the shortcut will actually help, and skips
+  it when it will not. Arrow-keying through a folder of photos got about 15% quicker overall.
+
+- **Big pictures appear faster in the Quick preview.** Before drawing a photo, the viewer has
+  to blend it onto the window's background in case parts of it are see-through. Photos never
+  are, and blending something fully solid onto a background just gives you the photo back - so
+  it was doing tens of millions of sums per picture to arrive at the image it started with. It
+  now skips straight to drawing when a picture has no transparency, which is almost always.
+  A 24-megapixel photo reached the screen about two and a half times quicker. Pictures that
+  really do have transparency are handled exactly as before.
+
+- **Installing SageThumbs no longer takes thumbnails away from another program for good.**
+  For every file type we support, Windows keeps one slot saying which program draws that
+  type's thumbnails. We claimed those slots on install - which is the whole point of the app -
+  but we overwrote whatever was there without keeping a copy, so if another thumbnail program
+  (Icaros, a codec pack, a design app) had been drawing them, its setting was simply gone.
+  Uninstalling us did not bring it back either: we tidied up our own entry and left the slot
+  empty. Now we remember exactly what was in each slot before we took it, and hand it straight
+  back when you turn a file type off or uninstall. Nothing you need to do; it applies from this
+  version onward.
+
+- **Formats the OS decodes are noticeably quicker to preview.** When SageThumbs needs a small
+  picture from a big one, it now asks the codec for a smaller picture directly instead of
+  having it produce the full-size image and shrinking that afterwards. Modern codecs can skip
+  most of their work when they know a small result is wanted, and a half-gigabyte image went
+  from about six seconds to about four. Same output, less work.
+
+- **Very large photos, scans and panoramas get thumbnails at last.** Files past the internal
+  256 MB ceiling used to be refused before anything looked at them, so a half-gigabyte scan
+  showed a blank icon no matter what. Windows' own codecs can now read such a file straight
+  off the disk and shrink it while reading, so it never has to fit in memory. Measured: a
+  528 MB image went from nothing at all to a thumbnail in about six seconds. Covers the
+  formats the OS understands (JPEG, PNG, TIFF, HEIC, AVIF, camera RAW); anything else behaves
+  exactly as before.
+
+- **Fewer big files silently losing their thumbnail.** The "skip files bigger than this"
+  setting shipped at 100 MB while the engine itself has always been happy up to 256 MB, so the
+  setting - not any real limit - was what left large photos, scans and layered files with a
+  blank icon. The default is now 256 MB to match. (Videos were never affected: they are read a
+  few megabytes at a time, so a multi-gigabyte film has always thumbnailed regardless of this
+  number.)
+
+- **`st2k doctor` now tells you when *we* are the reason a thumbnail changed.** The report
+  could already spot another program taking a file type from us, but not the reverse - which is
+  the far more common case right after installing. It now lists every file type we took over
+  and which program we took it from, by name.
+
+## 1.10.1
+
+**TL;DR**
+
+**Fixed**
+
+- **One-click updates work again**
+
+**Everything in 1.10.1**
+
+### Fixed
+
+- **One-click updates work again.** Since 1.3.3, clicking "Update" downloaded the new
+  version, verified it, and then failed with a message wrongly claiming you needed an
+  administrator account. The real cause was on our side: the app kept its own grip on the
+  downloaded installer in a way that stopped Windows from starting it. If you are on any
+  version from 1.3.3 through 1.10.0, this one update has to be downloaded by hand from the
+  releases page; after that, one-click updating works from then on. The whole update path
+  now runs for real - install, then upgrade itself in place - on every code change and on
+  every release before it is published, so it cannot silently break like this again.
+
+## 1.10.0
+
+**TL;DR**
+
+**New**
+
+- **Press Space to preview inside Everything**
+- **Press Space to preview inside any app's Open dialog**
+- **Choose which tool the screenshot editor starts in**
+- **A FAQ now answers common thumbnail and install questions**
+
+**Everything in 1.10.0**
+
+### Added
+
+- **Press Space to preview inside [Everything](https://www.voidtools.com/).** Click a result in
+  voidtools' search window and tap Space, and you get the same instant preview you get in a
+  folder, following you as you arrow down the hits. Everything 1.5 and up, installed or
+  portable. Asked for on the voidtools forum, where the answer was that support had to be added
+  on our side; it has been. While your cursor is still in Everything's search box, Space stays a
+  space, because that is what it should do.
+
+- **Press Space to preview inside any app's Open/Save dialog.** Picking a photo to attach or a
+  file to upload, and not sure which one it is? Click it in the dialog and tap Space to see it
+  full size, instead of cancelling out to go and look. It works even in Documents, Desktop and
+  Downloads, where the dialog does not otherwise tell anyone what it is pointing at. Space keeps
+  its normal meaning while the cursor is in the file-name box, so the preview only ever appears
+  once you have clicked into the file list. 64-bit applications.
+
+- **Choose which tool the screenshot editor starts in**, under Settings, Screenshots. It now
+  opens holding the **arrow** instead of the rectangle, because pointing at the thing you just
+  captured is usually why you are annotating it, and you can set it to any of the ten drawing
+  tools if you would rather start somewhere else.
+
+- **A FAQ**, at [docs/FAQ.md](FAQ.md), linked from the top of the README. Thumbnails not
+  appearing, files stored online-only, antivirus warnings, what the portable zip can and cannot
+  do, and the limits of the Space preview, all answered in one place instead of scattered across
+  issues.
+
+### Known limitation
+
+- **The Space preview cannot work over a window running as administrator.** Windows deliberately
+  withholds keystrokes typed into an elevated window from ordinary programs, so the keypress
+  never reaches us. If Everything is set to run as administrator, turn that off (Tools, Options,
+  General) and use its service instead. The FAQ has the full steps.
+
+## 1.9.0
+
+**TL;DR**
+
+**New**
+
+- **A search box that finds any setting, on any page**
+- **An Appearance page for how thumbnails look**
+- **A dot marks pages where you changed a setting**
+
+**Changed**
+
+- **Right-click menu items get their own editing window**
+- **Welcome screen asks about film cover art and comic credit pages**
+- **Every settings page opens with a clear heading**
+
+**Fixed**
+
+- **Pop-up windows open centred on your mouse's monitor**
+- **Settings search boxes are shorter, with centred text**
+- **Rounded corners on search and format lists no longer cut off**
+- **Settings sync, tray menu and update prompt now translate**
+- **Page descriptions no longer cut off in most languages**
+- **File types table columns can no longer be dragged**
+
+**Everything in 1.9.0**
+
+### Added
+
+- **A search box that finds any setting, on any page.** There are nine pages and forty-odd
+  switches now, and "where is that option" had become the slowest part of using Settings. Type
+  into the box at the top right and it lists every match as "Page ▸ Setting"; click one and it
+  opens that page and highlights the control for you. It searches the setting names AND their
+  descriptions, so "cover" finds the film poster option even though the word "cover" is not in
+  its label.
+
+- **An Appearance page**, holding everything about how a thumbnail LOOKS: the format badge and
+  its colour, the checkerboard behind transparent images, the Windows file-type icon overlay,
+  and using a video's cover art. Those switches were previously spread between General and File
+  types, where each page mixed "what SageThumbs handles" with "how it draws". General is now
+  limits and language; File types is the format list.
+
+- **A dot on the sidebar next to any page where you have changed something from its default.**
+  Nine pages is too many to check one at a time when you are trying to remember what you
+  changed. The dot clears once you open that page, and stays cleared. It is a pointer to
+  somewhere you have not looked, not a badge that nags forever.
+
+### Changed
+
+- **The Right-click menu page is no longer cramped.** The list of menu items that you can tick,
+  untick and drag into order moved into its own "Edit menu items..." window, which gives it room
+  to be readable instead of squeezing it under everything else on the page.
+
+- **The welcome screen asks a second, plain question.** It offers the two options most people
+  want on but that ship off: using a film's cover art as its thumbnail, and skipping scanlation
+  credit pages when picking a comic cover. Each is a switch that says exactly what it turns on.
+  Both stay off unless you say so, and both live in Settings if you change your mind.
+
+- **Every page now opens with a heading**, and there is more space between the groups within a
+  page, so the sections read as sections rather than one long list of switches.
+
+### Fixed
+
+- **Windows opened in the top-left corner of the screen instead of in front of you.** The
+  welcome screen, and every other window SageThumbs opens on its own (convert, resize, image
+  info, the doctor report, the OCR result, files-to-folder and tags-to-folders), all placed
+  themselves in the corner of the primary monitor. They now open centred on the monitor your
+  mouse is on, at that monitor's scaling.
+
+- **The search boxes were too tall and their text sat too high in them.** Both the settings-wide
+  search and the format filter left a band of dead space under the text. They are shorter now,
+  with the text centred.
+
+- **The rounded corners on the search box, its results list and the format list were being cut
+  off**, leaving the edges looking bitten. They are drawn smooth now, and the search box no
+  longer has its right-hand curve sliced flat by the edge of the panel it sits on.
+
+- **The parts of the app that were still English in every other language now aren't.** Settings
+  sync (its heading, its button, and every status line it shows), the tray icon's menu, the
+  list of actions you can bind to the custom hotkey, the hints along the bottom of the
+  screenshot overlay, the update prompt, and the page the browser lands on after you sign in
+  were all hardcoded English, so they stayed English in all 35 translations. That is 44 new
+  pieces of text, translated into every language SageThumbs ships.
+
+- **Page descriptions were being cut off in most languages.** The new search box sits in the
+  top right of the page header, and the description under the page title stops short of it.
+  That left less room than the translations needed, so 161 of them ended in "..." across the
+  36 languages, English's own Right-click menu line among them. Every description is shorter
+  now, and a release check measures all of them so a future translation cannot quietly
+  overflow again. Ten sidebar names were over-long too and were being cut off mid-word, which
+  is what truncated the Greek "Data & backup" page title.
+
+- **The file-types table let you drag its columns wider and narrower.** The last column is sized
+  to fill the table, so dragging could only ever cut the description short or open a gap, and
+  the divider you dragged it by drew as a bright line down the right-hand edge. Dragging is off
+  and the line is gone.
+
+## 1.8.5
+
+**TL;DR**
+
+**New**
+
+- **Doctor report names a video's codec and whether Windows decodes it**
+- **Videos with cover art use it when no frame decodes**
+
+**Fixed**
+
+- **MP4 and MOV files no longer wrongly report no video track**
+- **Explorer Details pane no longer goes blank until restart**
+- **Office documents no longer show the wrong thumbnail picture**
+- **Comic archives no longer lose their cover page**
+- **Doctor report no longer states false causes or limits**
+- **Some Matroska files no longer read with wrong sizes**
+
+**Everything in 1.8.5**
+
+### Added
+
+- **`st2k doctor` now tells you which video codec a file uses, and whether Windows can actually
+  decode it.** This is the answer to "my mkv has no thumbnail" when everything else looks fine,
+  and it usually does look fine, because nothing is broken on our side. Windows does not include
+  every decoder: HEVC and AV1 are separate Microsoft Store downloads. Without one, no frame can
+  be produced no matter how healthy the file, the container or our registration are. The report
+  now names the codec, says whether a decoder is installed, and names the exact Store package to
+  get. It also reports Media Foundation being missing altogether, which is what an "N" or "KN"
+  edition of Windows looks like.
+
+- **Video files with cover art now use it when no frame can be decoded.** Matroska files can
+  carry a poster image, and many library rips do. If the codec is one Windows cannot read, that
+  poster is still a true picture of the film, so it becomes the thumbnail instead of a blank tile.
+
+### Fixed
+
+- **Some MP4/MOV files reported "no video track" when they plainly had one.** If the first track
+  in the file was an odd one (a subtitle, hint or empty track that editing software leaves
+  behind), the search gave up there instead of moving on to the next track. Those files fell back
+  to a lower-quality early frame, and `doctor` claimed their codec was unidentifiable.
+
+- **Explorer's Details pane could stop showing file information entirely, until it was
+  restarted.** Two files whose reads never return, typically OneDrive "online-only"
+  placeholders or a network share that dropped, permanently used up both metadata slots. From
+  then on, every other file in that Explorer process showed no dimensions, no camera info and no
+  audio tags, including perfectly ordinary local files, with nothing to indicate why. The slots
+  now expire, so a stuck file costs a short pause instead of the feature.
+
+- **Word, Excel and PowerPoint documents could show the wrong picture as their thumbnail.** An
+  unrelated image inside the document could be mistaken for the document's official preview,
+  which also meant the real preview was never looked for.
+
+- **A comic archive could lose its cover page** and show the plain zip icon, if it happened to
+  contain a file with a name Office documents use.
+
+- **`st2k doctor` no longer reports things that are not true.** Given a file path relative to the
+  current folder, it accused Explorer of refusing to produce a thumbnail when Explorer had simply
+  never been asked. It suggested ImageMagick as the cause of video failures, which ImageMagick is
+  never involved in. And with the size limit set to "no limit", it reported a cap of roughly
+  seventeen million megabytes rather than saying "Unlimited".
+
+- **Some Matroska files were read incorrectly.** Files whose internal size fields use the longest
+  encoding, which is what ffmpeg writes for nearly every file it produces, were parsed with a
+  malformed bit mask, giving nonsensical sizes.
+
+## 1.8.4
+
+**TL;DR**
+
+**New**
+
+- **Format badge can be a colour-coded file mark**
+- **Checkerboard behind transparent thumbnails, if you want one**
+- **Switch off Windows' file-type icon on thumbnails**
+- **Doctor report now asks the shell for the real thumbnail**
+
+**Changed**
+
+- **Playback bar uses the system's own icon set**
+
+**Everything in 1.8.4**
+
+### Added
+
+- **The format badge can now be a coloured mark instead of plain letters.** Reading three small
+  letters is slower than seeing a colour, so the badge is now a small tinted file mark with the
+  format written inside it, and the tint says what KIND of file it is: images, camera RAW,
+  ebooks, documents, audio, video and archives each get their own. Ticking "Show format badge on
+  thumbnails" gets you the coloured version; untick "Use a coloured icon badge" next to it for
+  the old plain text chip.
+
+- **A checkerboard behind transparent thumbnails**, if you want one. Explorer normally shows the
+  folder background through a see-through PNG, which is correct but can make a mostly-transparent
+  logo hard to see. The new switch on the General page paints the familiar light checkerboard
+  behind it instead. Off by default, and separate from the preview windows' own checkerboard,
+  because they are genuinely different surfaces.
+
+- **A switch to stop Windows drawing its own file-type icon on top of your thumbnails**
+  (Settings ▸ File types). Windows stamps the associated program's icon into the bottom-right
+  corner of a thumbnail, exactly where the format badge goes, and when that program has been
+  uninstalled it draws a blank page instead. This asks Windows not to draw it for the file types
+  SageThumbs handles. Reversible: unticking puts it back.
+
+- **`st2k doctor` now asks the shell for the thumbnail itself**, instead of only proving our own
+  decoder works. Those two answers can disagree, and when they do the disagreement IS the
+  diagnosis. It also names the folder's cloud-sync provider when the file lives in one, and calls
+  out file types whose leftover associations are stamping an icon over the badge.
+
+### Changed
+
+- **The playback bar's icons are now the system's own icon set.** The previous/next, play/pause,
+  speaker, repeat and arrow buttons were drawn by hand and looked it, especially next to the title
+  bar's buttons. They now come from the same Windows icon font as everything else, so the two rows
+  finally look like one family. Muting also swaps the speaker for the proper crossed-out glyph.
+
+## 1.8.3
+
+**TL;DR**
+
+**New**
+
+- **Keyboard controls for seeking, volume, mute and pause**
+- **Previous and next buttons on the playback bar**
+- **Repeat and playback speed buttons on the playback bar**
+- **Switch Left and Right between seeking and changing files**
+- **Playback bar buttons show names on hover**
+- **Load web images button appears in the preview itself**
+- **Find text in previews with Ctrl+F**
+- **Links in previewed web pages open in your browser**
+
+**Changed**
+
+- **Videos open at their real shape and rotation**
+- **Transparent images sit on a checkerboard and resize better**
+- **Files without an extension are recognised by content**
+- **CSV previews show 10,000 rows and row numbers**
+
+**Fixed**
+
+- **Videos that cannot decode fall back to a still frame**
+- **Archive names from older tools no longer show garbled text**
+- **Preview hotkey no longer opens a file picker by mistake**
+- **Markdown YAML headers show as a tidy block, not scrambled**
+- **UTF-32 text files decode correctly instead of gibberish**
+- **Zoom lands exactly on fit-to-window and 100%**
+
+**Everything in 1.8.3**
+
+### Added
+
+- **Video and music you can actually drive from the keyboard.** The Quick preview could only
+  ever be poked with the mouse while something was playing. Now the arrow keys seek (hold Ctrl
+  for a thirty-second jump, Shift for a one-second nudge), up and down set the volume, `M`
+  mutes, `L` toggles repeat, and `K` or `P` pauses. Page Up and Page Down still flip to the
+  next file in the folder, so nothing you already do has changed.
+
+- **Previous / next file buttons on the playback bar**, so you can walk through a folder of clips
+  without touching the keyboard.
+
+- **A repeat button and a speed button on the playback bar.** Clips used to loop forever with
+  no way to stop them, which is the wrong behaviour when you are checking whether a render
+  finished. Repeat is now a button you can turn off, and it remembers your choice. Next to it,
+  a speed button cycles 0.5x, 1x, 1.25x, 1.5x and 2x for skimming a long recording.
+
+- **A button on the playback bar for what Left/Right do.** Off, which is the default, they seek
+  inside the clip. On, they move to the previous and next file instead. Either way the bar's own
+  ⏮ ⏭ buttons and Page Up / Page Down always switch files, so nothing is ever out of reach.
+
+- **Every button on the playback bar now names itself when you hover it**, the way the buttons in
+  the title bar always have.
+
+- **"Load web images" is now a button in the preview itself**, on the title bar, and it only shows
+  up on documents that actually reference web-hosted images. It used to be a checkbox in Settings,
+  which is not where anyone looks when they are staring at a page full of grey labelled chips and
+  wondering whether the real pictures can be shown.
+
+- **Find in a document with Ctrl+F.** Works in text files, code, Markdown, and CSV tables. Type
+  and it jumps to the first match with a running count of how many there are; Enter or F3 walks
+  through them, Shift goes back, and Escape closes the bar. F3 reopens the last search without
+  retyping it.
+
+- **Links in a previewed web page now open in your browser.** Clicking a link in a local
+  `.html` file used to do nothing at all. Ordinary web links now hand off to your default
+  browser; the preview itself still runs with scripts off and no network access of its own.
+
+### Changed
+
+- **Videos open at their real shape.** Every clip used to open into the same wide window, so
+  anything filmed on a phone sat as a small strip in the middle of a lot of empty space. The
+  window now takes the video's actual dimensions, rotation included.
+
+- **Transparent images sit on a checkerboard.** A white logo on a transparent background looked
+  like an empty pane. It now gets the same subtle checkerboard the right-click preview has
+  always used, controlled by the same setting. Transparent images are also resized more carefully
+  than before, so fine detail no longer breaks up when one is shown smaller than its real size.
+
+- **Files with no extension are recognised by their content.** A picture saved without a file
+  extension used to show only an icon; the preview now looks at the file itself. Files with no
+  extension but a well-known name (`Makefile`, `Dockerfile`, `.bashrc`, or anything starting
+  with a `#!` line) also get syntax colouring now.
+
+- **CSV previews show ten times more rows** (10,000 instead of 1,000) and gained a row-number
+  column, so you can find your place in a long file. Pipe-separated `.psv` files are now shown
+  as a table too.
+
+### Fixed
+
+- **A video that opens but cannot be decoded no longer shows a permanently blank pane.** It now
+  falls back to a still frame, the same as a file the player refuses outright.
+
+- **Archive listings no longer show mojibake for names written by older tools.** Entry names
+  that are really UTF-8 but not flagged as such are now read correctly.
+
+- **The preview hotkey no longer occasionally pops a file picker** when pressed immediately
+  after switching windows, instead of previewing what you had selected.
+
+- Markdown files that begin with a YAML block (the `---` header used by static site generators
+  and note-taking apps) show that block as a tidy code block instead of scrambling it.
+
+- Text files saved as UTF-32 are now decoded properly instead of appearing as gibberish.
+
+- Zooming an image now lands exactly on "fit to window" and "100%" instead of skipping past
+  them by a fraction.
+
+## 1.8.2
+
+**TL;DR**
+
+**New**
+
+- **Quick preview shows the tables in SQLite database files**
+- **Portable copy offers to switch on thumbnails at first run**
+
+**Fixed**
+
+- **Wide tables in Quick preview no longer overlap or overflow**
+- **HEIC and AVIF photo thumbnail colours were wrong since 1.3.6**
+- **Red and blue swapped in HEIC, AVIF and JPEG XR thumbnails** (fixes #9)
+- **AVIF thumbnail colours no longer shift on a busy PC** (fixes #9)
+
+**Everything in 1.8.2**
+
+### Added
+
+- **Press Space on a database file and you can see what's in it.** SQLite files (`.db`,
+  `.sqlite`, `.sqlite3` and the rest of that family) now open in the Quick preview like any
+  other document: the size and page layout at the top, then a section for each table with its
+  real column names and the first rows laid out in a grid, and the full `CREATE` statements at
+  the end, syntax-highlighted. The Contents sidebar lists the tables, so a database with thirty
+  of them is still one click per table. It stays instant on large files because it reads only
+  the pages it needs instead of loading the whole thing, and a long table is cut off with a
+  note saying how many rows there really are. Nothing is ever written and no SQL is run against
+  your database; the file is read directly, the way the thumbnailer reads a JPEG. Because `.db`
+  is such a generic extension, anything that turns out not to be a SQLite file at all (Windows'
+  own `Thumbs.db`, for example) previews exactly as it did before.
+
+- **The portable version now offers to switch thumbnails on the first time you run it.**
+  1.8.1 made Explorer thumbnails possible without installing anything, but you had to know to
+  go and find the switch, and the welcome window still opened with a line saying thumbnails
+  were already being added, which is true of the installed build and not of a zip you just
+  unpacked. Anyone who took it at its word saw no thumbnails and reasonably concluded the
+  thing was broken. The welcome window now says what is actually true of a portable copy and
+  offers thumbnails as the first choice on it, alongside Quick preview and the screenshot
+  hotkey. It still only ever writes to your own user account, needs no administrator rights,
+  and Settings ▸ Advanced turns it back off. Installed builds are unchanged.
+
+### Fixed
+
+- **Wide tables in the Quick preview ran into each other and off the edge of the window.**
+  A CSV export with a lot of columns was the worst case: headings printed on top of one
+  another, so `username` and `password` came out as one unreadable word, and the values kept
+  going past the right-hand edge of the table with no grid around them. Resizing the window
+  made it worse rather than better. Three things were wrong at once. A value with no spaces in
+  it, like a long API key, could not be wrapped anywhere, so it was drawn at full length
+  straight through whatever was next to it. The column widths were allowed to add up to more
+  than the window, so the grid lines stopped at the edge while the text carried on past them.
+  And nothing stopped a cell from painting outside its own column in the first place. Columns
+  are now shared out the way a browser does it, so a narrow column keeps its full width and
+  only the genuinely wide ones give way; anything too long to fit wraps onto the next line
+  inside its own cell; and every cell is clipped to its column no matter what. Tables in
+  Markdown files, in the new database view and in READMEs get the same fix, and a very long
+  unbroken word in ordinary text now wraps instead of disappearing off the side.
+
+- **Worth updating for if you keep HEIC or AVIF photos: their thumbnail colours have been
+  wrong since 1.3.6, for everybody, not only the person who reported it.** Details below.
+
+- **HEIC, AVIF and JPEG XR thumbnails had their red and blue channels swapped.** Skies came
+  out orange, skin came out blue. It only happened when the thumbnail was smaller than the
+  picture, which is to say almost always, so if you have iPhone photos in a folder this is
+  the bug you were looking at. It has been there since 1.3.6. The resizing step handed the
+  pixels back in a different channel order than the one it was given, and we took them at
+  their word. Full-size operations were never affected, which is why Convert, Resize and the
+  preview pane always looked right while the folder view did not. (issue #9)
+
+- **AVIF colours no longer go wrong when your PC is busy.** Converting a batch of files, or
+  anything else that pins your processor, could make the odd thumbnail come out with shifted
+  colours while the rest were fine. Reading an AVIF correctly takes us about a third of a
+  second of actual work, but we were giving up on it after 20 seconds of waiting, and on a
+  fully loaded machine a job that small can sit in the queue for longer than that. We then
+  quietly fell back to the Windows decoder, which is the one that gets these files wrong. The
+  time limit now counts work done rather than time passed, so a busy machine no longer
+  changes the result, while a genuinely stuck file is still stopped as quickly as before.
+  (issue #9)
+
+## 1.8.1
+
+**TL;DR**
+
+**New**
+
+- **Portable version can now show Explorer thumbnails** (#13)
+
+**Everything in 1.8.1**
+
+### Added
+
+- **The portable version can now do Explorer thumbnails after all.** 1.8.0 said it couldn't.
+  That was wrong, and this fixes it. The zip now includes the thumbnail handler, and
+  `st2k register` (or the button in Settings -> Advanced) switches it on for your user
+  account only - no installer, no administrator rights, nothing written machine-wide. The
+  classic right-click menu comes with it. `st2k register --off` undoes it, and you should run
+  that before moving or deleting the folder, otherwise Windows is left pointing at a file that
+  is no longer there. The Explorer preview pane, the Details pane columns and the Windows 11
+  right-click menu still need the installer, because Windows only accepts those registered for
+  the whole machine. (issue #13)
+
+## 1.8.0
+
+**TL;DR**
+
+**New**
+
+- **Optional format badge on thumbnails showing the real file type**
+- **A portable version that needs no installer or admin rights** (#13)
+- **A Check for problems button in Settings under Advanced**
+- **Doctor now catches four more causes of missing thumbnails**
+- **Setup can restart File Explorer for you at the end**
+- **Restart hotkey service button moved to the Screenshots page**
+- **Screenshot hotkey repairs itself if its startup entry is deleted**
+
+**Changed**
+
+- **PDF page-margin option moved to the Ebook/comic tab**
+- **Feedback reply field must be an email address if filled in**
+
+**Everything in 1.8.0**
+
+### Added
+
+- **Optional format badge on thumbnails.** Turn it on and every thumbnail gets a small label
+  in its corner saying what the file actually is - PSD, JXL, AVIF, JP2 - so you can tell
+  formats apart in a folder where the pictures look alike. Off by default, in Settings ->
+  General. Switching it on or off clears the thumbnail cache for you, because Windows stores
+  the picture we drew and would otherwise keep showing the old one. (in-app suggestion)
+
+- **A portable version, no installer.** Extract the zip and run it. Nothing is installed, no
+  administrator rights are needed, and your settings live in `SageThumbs2K.ini` next to the
+  exe rather than in the registry - delete that file and it goes back to storing them the
+  normal way. You get the app and the command line tool, so Settings, Convert and Resize,
+  quick preview, screenshots, OCR, the colour picker and the folder tools all work. It does
+  **not** give you Explorer thumbnails or the right-click menu. (Superseded in 1.8.1, which
+  adds both.) The screenshot tool also runs only while the app is open, since a portable copy
+  can be moved or unplugged at any time. (issue #13)
+
+- **A "Check for problems" button in Settings, under Advanced.** SageThumbs has had a thorough
+  self-check for a while, but only from a command prompt, so in practice nobody ever saw it. It
+  now opens in a window you can read and copy, and it tells you in plain words what is wrong and
+  how to fix it, whether that is a Windows setting, our registration, or the file itself.
+
+- **`st2k doctor` now catches four more reasons thumbnails go missing**, all of them things
+  that look like the app is broken when it isn't. It spots when Windows' "Adjust for best
+  performance" setting is on, which switches thumbnails off and quietly turns them back off
+  every time you fix it. It tells you when a file lives in OneDrive and hasn't been downloaded
+  yet, so there is nothing on your PC to make a picture from. It warns if an old pre-2017
+  SageThumbs is still installed, because running *its* uninstaller can strip the registrations
+  this one needs. And it reminds you that a folder set to Details, List or Small icons never
+  shows thumbnails at all, whatever software you have. Each one comes with the fix.
+
+- **Setup can now restart File Explorer for you at the end**, as a tick box on the last page.
+  Installing a thumbnail handler doesn't clear the pictures Windows already remembered, so
+  files you had browsed before could keep showing plain icons and make a perfectly good
+  install look like it did nothing. Ticking the box clears that and brings Explorer straight
+  back. It closes any open Explorer windows, so it is a choice rather than something setup
+  does behind your back. Wherever SageThumbs restarts Explorer, it now waits and checks it
+  actually came back, and starts it again itself if it didn't, so you can never be left
+  looking at an empty desktop.
+
+- **"Restart hotkey service" now sits on the Screenshots page**, next to the hotkey it belongs
+  to, with a green or red badge saying whether the helper is actually running. It used to be
+  buried under Advanced, which is not where you look when your hotkey has stopped working.
+
+- **The screenshot hotkey now repairs itself if something deletes its startup entry.** Some
+  antivirus tools remove it, because a program adding itself to Windows startup looks like
+  something malware does, and until now that left the hotkey quietly dead at your next sign-in.
+  Opening Settings puts it back.
+
+### Changed
+
+- The PDF page-margin option moved from General to the Ebook/comic tab, where the other
+  document settings already live.
+
+- **The reply field on the feedback form is an email address now.** It used to say "email or
+  other contact" and accept anything, so people typed their actual message into it and we had
+  no way to write back. It is still optional - leave it empty and your feedback is sent
+  anyway - but if you do fill it in, it has to be an address that could receive a reply.
+
+## 1.7.5
+
+**TL;DR**
+
+**New**
+
+- **Built-in JPEG 2000 decoder that reads only the size shown**
+
+**Fixed**
+
+- **Black-and-white JPEG 2000 scans no longer render as solid black** (fixes #11)
+- **Preview pane stops showing stale pictures after sitting idle** (fixes #11)
+
+**Everything in 1.7.5**
+
+### Fixed
+
+- **Black-and-white scanned pages could render as a solid black square.** Some JPEG 2000
+  scans - the kind archive.org uses for book and map pages - store the picture as numbered
+  colours rather than as brightness, and a blank white page is stored as "colour number 0".
+  Our new decoder was treating that number as a brightness value, so the whitest page came
+  out the darkest. It now reads the colour table the file provides. (issue #11)
+
+- **The preview pane could stop refreshing after it had been sitting idle.** Come back to a
+  folder after a while, click a different picture, and the pane sometimes kept showing the
+  previous one. Windows quietly recycles the preview pane when it has been idle, which
+  destroys the window we draw into; we kept drawing into the window that no longer existed,
+  so the update went nowhere and the stale picture stayed put. We now notice the window has
+  gone and rebuild it. (issue #11)
+
+### Added
+
+- **A built-in JPEG 2000 decoder that only decodes what the thumbnail needs.** JPEG 2000
+  stores every image as a stack of halved resolutions, but every decoder we could reach
+  either could not use that (ImageMagick's reduction flag returns the wrong part of the
+  image) or did not exist in usable form - so until now a 76-megapixel scan had to be
+  decoded in full just to make a tile. The new decoder reads only the resolution being
+  displayed: that scan now thumbnails in 0.25 seconds instead of 4.4, and previews in 1.2
+  seconds instead of 5 - and the result is slightly sharper, because a true wavelet
+  resolution level keeps detail that shrinking a full decode averages away. Verified
+  bit-exact on lossless test images (a correct reversible decode has no rounding excuse),
+  and anything the decoder does not support falls back to the old path automatically, so
+  no file that rendered before renders worse.
+
+## 1.7.4
+
+**TL;DR**
+
+**Changed**
+
+- **Game textures with mipmaps thumbnail about 17 times faster**
+
+**Fixed**
+
+- **Image info now shows the real size of large JPEG 2000 files**
+- **Very large JPEG 2000 scans thumbnail faster and stop timing out** (fixes #11)
+
+**Everything in 1.7.4**
+
+### Changed
+
+- **Game textures with mipmaps thumbnail about 17x faster.** A `.dds` file usually already
+  contains the picture at every halved size down to 1 pixel, because that is what a game
+  engine displays at a distance. We were ignoring all of it and decompressing the full-size
+  image to build a small tile. An 8192 x 8192 texture went from 0.87 seconds to 0.05. The
+  tile now comes from the texture's own smaller copy, so it looks very slightly softer than
+  a full decode would, which is exactly what the game itself shows.
+
+### Fixed
+
+- **"Image info" reported the wrong size for large JPEG 2000 files.** A 9958 x 7686 map scan
+  confidently described itself as 4096 x 3161. Nothing could read a `.jp2` header directly, so
+  the size was taken from a full decode, and that decode is capped at 4096 pixels for safety.
+  The number you were shown was the cap, not the picture. It now reads the real dimensions
+  straight out of the file in about a third of a second, without decoding anything.
+
+- **Very large images thumbnailed about twice as fast, and huge scans stopped timing out.**
+  A 76-megapixel JPEG 2000 map scan (only 11 MB on disk) took around 9 seconds and, on a busy
+  folder, missed the preview pane's time limit entirely, so the pane showed nothing for a file
+  that was perfectly readable. The problem was not the file's size: whatever you were going to
+  see it at, the decode always rendered a 4096-pixel version first and threw most of it away.
+  It now decodes straight to the size being displayed. That scan is about 4.4 seconds for an
+  Explorer thumbnail and 5 seconds in the preview pane, and detail is slightly *better*,
+  because the picture is no longer resized twice. Most of what remains is the JPEG 2000
+  decoder itself. (issue #11)
+
+## 1.7.3
+
+**TL;DR**
+
+**Fixed**
+
+- **AVIF thumbnails no longer have shifted colours from Windows' codec** (fixes #9)
+- **Wide-gamut 10-bit AVIF and HEIC keep their colour profile**
+- **Preview pane no longer keeps the previous file's picture** (fixes #11)
+- **Doctor no longer reports thumbnails disabled by cache settings**
+- **Modern DDS game textures (BC7, BC6H, BC4, BC5) now thumbnail**
+- **Image info shows correct values for DDS game textures**
+
+**Everything in 1.7.3**
+
+### Fixed
+
+- **AVIF thumbnails had shifted colours, and it was Windows, not ImageMagick.** Files written
+  by `avifenc` or `ffmpeg` came out visibly off, while the same files looked right in every
+  other viewer. The cause was Windows' own AV1 codec: we asked it first, and it misreads the
+  colour information libaom writes by default. Measured against two independent decoders, on
+  a saturated test patch out of 255, it was off by 19 on 8-bit files and by 14 on 10-bit ones,
+  where even neutral grey drifted from 128 to 139. Other viewers were fine because they do
+  not use Windows for this.
+
+  AVIF now goes to ImageMagick except in the one case Windows demonstrably gets right
+  (ordinary 8-bit BT.709, which is most web AVIF and stays on the fast path). On the Compact
+  install, which has no ImageMagick, nothing changes: you keep the thumbnail you had.
+  `scripts/repro-avif-color.ps1` reproduces the whole thing from scratch. (issue #9)
+
+- **Wide-gamut 10-bit AVIF and HEIC lost their colour profile.** A separate fault the above
+  uncovered: images decoded through ImageMagick come back at 16 bits per channel, and the
+  colour-management step quietly skipped anything wider than 8-bit. An Adobe RGB AVIF was
+  landing 79/255 out on a saturated patch. Those images are now colour-managed like every
+  other format, which is the same "decoded it right, then threw the profile away" fault that
+  was fixed for JPEG XL in 1.7.1.
+
+- **The preview pane could get stuck on the file you were looking at before.** Click through a
+  folder of files that need a slower decoder (JPEG 2000 `.jp2` is the usual one) and the pane
+  would stop keeping up: it kept showing an earlier file's picture no matter what you selected
+  next. The pane keeps one handler alive and re-drives it per file, and when a decode came back
+  empty nothing replaced what was already on screen. A single file on its own never hit this,
+  which is why it went unnoticed. The pane now always clears first, so a file that fails to
+  decode shows an empty pane instead of quietly leaving the wrong picture up. (issue #11)
+
+- **`st2k doctor` claimed thumbnails were disabled when they were not.** Turning off the Windows
+  thumbnail *cache* (`NoThumbnailCache` / `DisableThumbnailCache`) was reported as four failures
+  saying thumbnails are switched off. Those settings only stop Windows saving thumbnails to disk;
+  thumbnails still work, they are just recomputed each time. They are now reported as a note
+  rather than a problem.
+
+- **Modern game textures (`.dds`) now thumbnail: BC7, BC6H, BC4 and BC5.** Someone left this
+  in an uninstall comment, and they were right. SageThumbs handled the 1998 half of DDS
+  (DXT1/DXT3/DXT5) and fell over on everything a game has actually shipped for the last decade.
+  BC7, the format most modern colour textures use, only worked on the Full install and only by
+  handing the file to ImageMagick. BC6H (HDR), BC4 and BC5 (masks and normal maps) did not work
+  anywhere at all: not through SageThumbs, not through Windows' own DDS support, not through
+  ImageMagick.
+
+  DDS is now decoded natively, so every block format from BC1 to BC7 renders, HDR textures
+  included, on **both** the Full and Compact installs and without shelling out to anything. The
+  uncompressed layouts came along with it: 16- and 32-bit float surfaces, 10-bit and 16-bit
+  channels, the 565/5551/4444 packings, greyscale and alpha-only textures, and the decade-old
+  DirectX 9 files that describe their pixels with bit masks.
+
+- **"Image info" reported nonsense for DDS files.** The header fields were read four bytes off,
+  so the mip-level count showed the writing tool's signature as a number (ImageMagick's files
+  claimed 1,195,461,449 mip levels) and the compression line was garbage. It now reads the real
+  values, tells signed BC4/BC5/BC6H apart from unsigned, and no longer mislabels a BC6H texture
+  as BC7.
+
+## 1.7.2
+
+**TL;DR**
+
+**Fixed**
+
+- **Blender thumbnails are no longer upside down** (fixes #10)
+
+**Everything in 1.7.2**
+
+### Fixed
+
+- **Blender `.blend` thumbnails were upside down**
+  ([#10](https://github.com/LunarWerxs/SageThumbs-2k/issues/10)). Blender stores its preview
+  bottom-up, and we were reading the rows straight through, so every `.blend` came out
+  vertically flipped. Now flipped to match, the same way Blender's own thumbnailer does it.
+
+## 1.7.1
+
+**A word about updates.** Ship nothing for a month and people ask whether the project is dead.
+Ship twice in one day and people ask you to please, for the love of god, stop. There is no
+version of this that everybody likes, so I went with the one where bugs actually get fixed.
+
+More usefully: the automatic update check only ever ran if you had switched on the screenshot
+helper, which almost nobody had. For most people it was never checking at all, which isn't
+"quiet", it's broken. That's fixed here. If your copy still never mentions a new version,
+please tell me through **Send feedback** in the About box. I can't fix what I can't see.
+
+**TL;DR**
+
+**New**
+
+- **A one-time welcome screen for Quick preview and screenshots**
+
+**Fixed**
+
+- **JPEG XL thumbnails now use the file's colour profile** (fixes #9)
+- **Updates that cannot replace their files now say so**
+- **Automatic update check now runs on every install**
+- **A blocked update now says it was blocked**
+- **Update permission prompt no longer hides behind the download window**
+
+**Everything in 1.7.1**
+
+### Added
+
+- **A one-time welcome screen.** SageThumbs has two extras that stay switched off until you
+  ask for them, and most people never found out they existed. On first launch it now offers
+  both in one small window: **Quick preview** (select a file in Explorer, press Space, see it
+  full size) and the **screenshot hotkey** (Ctrl+PrtScn to grab, annotate and copy any part of
+  the screen), with an option to use PrtScn on its own instead. Nothing is turned on unless
+  you say so, it appears once, and upgrading from an older version never shows it.
+
+### Fixed
+
+- **JPEG XL thumbnails had the wrong colours when the file wasn't plain sRGB**
+  ([#9](https://github.com/LunarWerxs/SageThumbs-2k/issues/9)). Every other format already
+  honoured the colour profile inside the file; `.jxl` was decoding correctly and then
+  ignoring it, so anything from a wide-gamut source (Adobe RGB, Display P3, most modular
+  and lossless workflows) came out visibly shifted, while every other viewer showed it
+  right. Now colour-managed like the rest. Ordinary sRGB files are unchanged.
+- **An update that cannot replace its files now says so.** If Windows is holding a file open,
+  the installer can only swap it on the next restart, and until now setup finished looking
+  perfectly successful while the PC stayed on the old version. It now checks afterwards and
+  tells you plainly, with what to do about it.
+
+- **"Automatically check for updates" now actually runs on every install.** The periodic check
+  used to happen only inside the optional screenshot helper, so if you had never switched
+  screenshots on, SageThumbs never checked for a new version, even though the setting looked
+  switched on. It now checks on its own schedule, and again whenever you open SageThumbs. There
+  is still no background service: the check starts, looks once a day at most, tells you if
+  there is something newer, and closes. Turning the setting off removes the schedule.
+- **A blocked update now tells you it was blocked.** Every failure used to be reported as
+  "cancelled at the Windows permission prompt" and then quietly dropped, so if your antivirus
+  or a security policy stopped the installer, you saw nothing at all. Now SageThumbs says what
+  happened, names Smart App Control when it is switched on, and offers the download page. Only
+  an update *you* cancel stays silent.
+- **The Windows permission prompt for an update no longer hides behind the download window.**
+  The progress window closes before the prompt appears, and the prompt now belongs to the
+  SageThumbs window that started the update.
+
+## 1.7.0
+
+**TL;DR**
+
+**New**
+
+- **Quick preview remembers the size you drag it to**
+- **Quick preview remembers the volume between tracks**
+
+**Everything in 1.7.0**
+
+### Added
+
+- **Quick preview remembers the size you drag it to.** Previously every file reopened at the
+  size the viewer picked for that file, so a window you had just widened snapped back the moment
+  you arrowed to the next one. Resize it once and that is now the size, for the next file and for
+  every preview after it. Double-click the title bar to forget it and go back to fitting each
+  file to its own content. The size is stored independently of display scaling and is clamped to
+  fit whatever screen you open it on.
+- **Quick preview remembers the volume.** Turning a clip down (or muting it) now carries to the
+  next video or audio track, instead of every file starting at full volume again.
+
+## 1.6.0
+
+**TL;DR**
+
+**New**
+
+- **Windows on Arm gets its own native installer**
+- **EPS files now get thumbnails without rendering PostScript**
+- **Paint.NET files now get thumbnails from their built-in preview**
+
+**Fixed**
+
+- **Submenu previews now appear reliably in the right-click menu**
+- **General settings page no longer crowds its footer**
+- **Screenshot selections measured on the right screen with mixed DPI**
+- **Strip metadata now refreshes the thumbnail immediately**
+- **HEIC and AVIF edge-case transparency is preserved**
+
+**Everything in 1.6.0**
+
+### Added
+
+- **Windows on Arm is supported, with its own installer.** `SageThumbs2K-Setup-<ver>-arm64.exe`
+  runs natively on ARM64 Windows instead of under emulation, and it is a full build: it bundles
+  the same ImageMagick engine as the x64 installer, so every format works the same on both.
+  The x64 installer is unchanged.
+- **EPS files now get thumbnails, without rendering PostScript.** SageThumbs reads the
+  safe raster preview already embedded by DOS-EPS, EPSI, or Photoshop, while files with no
+  embedded preview still keep their stock icon.
+- **Paint.NET `.pdn` files now get thumbnails.** Paint.NET saves a small flattened preview
+  inside the file, and SageThumbs reads that, so you see the picture rather than a blank
+  icon, with every layer already composited. It works on files from older Paint.NET
+  versions as well as current ones, and nothing about the drawing itself is opened.
+
+### Fixed
+
+- **Submenu menu previews now appear reliably.** The preview row is added while the
+  right-click menu is built instead of depending on Explorer to send a submenu-open
+  notification that it can omit for extension-created child menus.
+- **The General settings page no longer crowds the footer.** The checkerboard option now
+  lives with the Right-click Menu preview controls it affects, leaving comfortable space
+  above Save and Close while the two list-heavy pages keep their intentional scrolling.
+- **Screenshot selections are measured against the right screen on mixed-DPI setups.** With
+  a scaled display placed to the left of, or above, the main one, the capture overlay sized
+  its selection outline, handles and readout for the wrong monitor.
+- **Strip metadata now refreshes the file's thumbnail immediately.** Explorer is notified
+  after the in-place rewrite instead of continuing to show the cached pre-strip image.
+- **HEIC/AVIF edge-case transparency is preserved.** Compact-layout AVIF `mini` containers
+  now reach the bundled decoder, and the Full install's isolated thumbnail/preview handlers
+  route affected HEIC files around the Windows decoder that flattens their auxiliary alpha.
+
+## 1.5.0
+
+**TL;DR**
+
+**New**
+
+- **HDR screenshots no longer look washed out**
+- **Strip metadata now removes Content Credentials (C2PA)**
+- **Strip metadata covers WebP, SVG and HEIC/AVIF**
+- **Converting keeps camera, date, GPS and caption details**
+- **Convert writes every preset size at once and can pad to fit**
+- **Comic archives get an index comic readers understand**
+- **Combine into PDF can add margins and fit A4 or Letter**
+- **Web fonts and subtitle files now preview**
+- **Image info reveals gain maps, AI tags and texture details**
+- **Colour picker can collect a set of colours**
+
+**Fixed**
+
+- **Esc now cancels a screenshot and menus open in front**
+- **Camera names no longer appear in quote marks**
+- **Deeply nested and OneDrive files get thumbnails again**
+- **Bundled ImageMagick updated to 7.1.2-29**
+
+**Everything in 1.5.0**
+
+### Added
+
+- **Screenshots of an HDR display are no longer washed out.** Grabbing the screen the
+  ordinary way gets what Windows has already flattened to standard range, which on an HDR
+  monitor looks pale and grey with the bright parts blown out. SageThumbs now takes the real
+  high-range image and maps it down itself, so the shot looks like the screen did. Only kicks
+  in on a monitor that is actually in HDR mode; everything else captures exactly as before,
+  and if anything goes wrong it quietly falls back rather than failing. On a laptop with an
+  external screen, each display is handled on its own, so a mixed setup comes out right.
+- **Strip metadata now removes Content Credentials (C2PA).** This is the provenance record
+  newer cameras and AI image tools embed, and it is not EXIF or XMP, so ordinary metadata
+  cleaners leave it behind. Image info tells you whether a file carries one before you decide.
+  A JPEG XT high-range layer uses the same marker and is deliberately left alone.
+- **Strip metadata covers more formats:** WebP, SVG and HEIC/AVIF as well as JPEG and PNG. An
+  SVG loses the author, machine name and editor history it was exported with, while a
+  description inside a shape is kept because that is what a screen reader reads out. HEIC and
+  AVIF are cleaned without moving a single byte in the file, so a photo cannot be damaged by
+  it; if the layout is anything unfamiliar it declines instead of guessing.
+- **Converting keeps your photo's details.** Camera, lens, exposure, date, GPS, keywords and
+  captions now survive Convert and Resize instead of being thrown away when the picture is
+  re-saved. On by default, switchable in Settings. Shrink for email still removes everything,
+  on purpose: that one exists to hand a file to someone else.
+- **Convert can write every preset size in one go**, named so you can tell them apart, and can
+  **pad to an exact size** with a soft blurred fill instead of leaving you to crop.
+- **Comic archives get a proper index.** Combine into CBZ now writes the `ComicInfo.xml` that
+  Kavita, Komga and YACReader read, with the page count and each page's size.
+- **Combine into PDF can add a page margin**, and can fit pages to A4 or Letter, centred and
+  never enlarged.
+- **More things preview:** `.woff` web fonts get the same specimen sheet as any other font,
+  and `.srt` / `.vtt` subtitle files open as text.
+- **Image info shows more of what a file is hiding:** whether it has a high-range gain map,
+  the AI-generation tags newer tools write, the names tagged on faces, and for a game texture
+  its real compression format and mip count.
+- **The colour picker can collect a set.** Ctrl+Space (or Ctrl+click) adds the colour under the
+  cursor to a list and keeps picking; Space copies the whole list. Esc still cancels.
+
+### Fixed
+
+- **Esc now cancels a screenshot.** The capture window could end up without keyboard focus, so
+  no key reached it at all: the mouse worked, nothing else did, and you were stuck under a
+  full-screen overlay. The same fault also meant the colour picker ignored Space and Esc, and
+  that right-click windows like Convert could open BEHIND the Explorer window that launched
+  them and look like the menu item had done nothing.
+- **Camera names no longer appear wrapped in quote marks** in Explorer's columns and details.
+- **Files in deeply nested folders get thumbnails again**, including OneDrive-synced ones well
+  past the old path-length limit.
+
+### Security
+
+- **Bundled ImageMagick updated to 7.1.2-29**, picking up a set of 2026 fixes for ways its
+  security policy could be side-stepped, plus hardening across several older image formats.
+
+## 1.4.1
+
+**TL;DR**
+
+**Fixed**
+
+- **Huge OpenEXR files now get thumbnails**
+- **Widening the Quick preview window re-wraps the text**
+
+**Everything in 1.4.1**
+
+### Fixed
+
+- **Huge OpenEXR files now get thumbnails.** A 12K VFX render pass, the kind that lands
+  hundreds of megabytes on disk with PIZ compression, used to show nothing at all: it was
+  simply too big to load, so no thumbnail, no preview pane, no Quick preview. EXRs are now
+  read straight off the file and shrunk as they're read, so size stops mattering; a 445 MB
+  12288x6480 frame that produced nothing before now thumbnails in a few seconds. Ordinary
+  EXRs got much faster too (about 6x on a 12K file) and use a fraction of the memory.
+- **Widening the Quick preview window re-wraps the text.** Markdown and other rendered
+  documents were laid out in a fixed-width column, so dragging the window wider only added
+  empty space at the sides and every line broke in the same place. The text column now
+  follows the window, so making it wider really does fit more words per line.
+
+## 1.4.0
+
+**TL;DR**
+
+**New**
+
+- **Send feedback without leaving the app**
+- **Read the text off your screen with OCR**
+- **One-key OCR copies text straight to the clipboard**
+- **OCR now reads small on-screen text**
+- **Quick preview gains a Copy text (OCR) button**
+
+**Fixed**
+
+- **Chinese, Japanese and Korean text files are readable again**
+- **Chinese, Japanese and Thai text now wraps correctly**
+
+**Everything in 1.4.0**
+
+### Added
+
+- **Send feedback without leaving the app.** A new **Send feedback** box lets you fire off a
+  suggestion, a bug report, or "please support this file format" straight to the developer,
+  with no GitHub account needed. Pick what it's about, type your message, and send. Leaving
+  an email address is entirely optional; skip it and the message still arrives, you just
+  won't get a reply. If you'd rather do it in the open there's a link to the GitHub issue
+  tracker right in the box, and if the send fails your text is put on your clipboard so
+  nothing is lost. Reach it from the **Send feedback** button in the About box.
+
+- **Read the text off your screen.** The screenshot editor has a new **Copy text (OCR)**
+  button, or press **Ctrl+T**: drag out a region, click it, and the words inside land on your
+  clipboard *and* open in a small editable window, so you can fix anything the scan misread
+  before you paste. Useful for text you can't select any other way: an error dialog, a video
+  frame, a screenshared document, a photo of a receipt. It uses the text recognition already
+  built into Windows, so it adds nothing to the download. If there are no readable words in
+  the region it tells you, instead of quietly copying nothing.
+- **A one-key version of it.** Settings ▸ Screenshots ▸ Custom action gained **Copy text on
+  screen (OCR)**. Bind it to a hotkey and there is no editor at all: press the key, drag over
+  the text, and it is on your clipboard the instant you let go. Don't want to set up a hotkey?
+  The same thing is one click away in the tray icon's menu.
+- **OCR now reads small on-screen text.** Windows' recognizer quietly gives up on the small type
+  most windows actually use, returning nothing at all or running words together. Captures are now
+  enlarged before they're read, which is exactly what it needed: text that came back empty or as
+  `theothersession's` now transcribes cleanly. Big captures are left alone, since their text is
+  already large enough.
+- **And a button for it in Quick preview.** Press Space on a picture and the toolbar now has a
+  **Copy text (OCR)** button: click it and the words in that file are on your clipboard. It reads
+  every format SageThumbs can open, not just the ones Windows understands by itself, so a
+  Photoshop file, a camera RAW or a scanned document all work. On a multi-page PDF it reads the
+  page you're actually looking at.
+
+### Fixed
+
+- **Chinese, Japanese and Korean text files are readable again.** Quick preview assumed every
+  text file was UTF-8, so anything saved in GBK/GB18030, Shift-JIS, Big5 or EUC-KR came up as a
+  solid wall of `` replacement characters. Those encodings cover a huge share of real-world
+  `.txt`, `.csv` and `.srt` files in those languages. The preview now works out the encoding and
+  shows the actual text. Files saved as UTF-16 without a byte-order mark are picked up too.
+- **Chinese, Japanese and Thai text now wraps instead of running off the edge.** Those languages
+  don't put spaces between words, and Quick preview only knew how to break lines at spaces, so a
+  whole paragraph was treated as one enormous word, ran off the right-hand side of the panel and
+  got cut off. Text now wraps to the panel like it should, and follows the usual typesetting
+  rules: a full stop or closing bracket won't be pushed to the start of a line, and an opening
+  bracket won't be left stranded at the end of one.
+
+## 1.3.8
+
+**TL;DR**
+
+**Fixed**
+
+- **HEIC and AVIF thumbnails keep their declared colours**
+
+**Everything in 1.3.8**
+
+### Fixed
+
+- **HEIC and AVIF thumbnails keep their declared colors.** Files that pair Display-P3
+  primaries with a non-sRGB transfer curve are no longer forced through an incompatible
+  Display-P3 profile, which could produce a visible color cast. Embedded ICC profiles and
+  standard iPhone Display-P3 images continue through the normal color-managed path.
+
+## 1.3.7
+
+**TL;DR**
+
+**New**
+
+- **Music files show their album art**
+
+**Fixed**
+
+- **Right-click preview shows the picture again on menu-skin PCs**
+
+**Everything in 1.3.7**
+
+### Fixed
+
+- **The right-click preview shows the picture again, without recolouring your menu.** Since 1.3.2
+  the preview had been squashed into a strip a few pixels tall on PCs running a third-party menu
+  skin such as StartAllBack or ExplorerPatcher. It is drawn full size on those PCs now. Everyone
+  else keeps the menu exactly as Windows draws it, because the two kinds of PC need the preview
+  drawn two different ways and SageThumbs now picks the right one for yours. There is no setting to
+  get wrong: if you have never heard of a menu skin, nothing about your menu changes.
+
+### Added
+
+- **Music files show their album art.** Pressing Space on an MP3, FLAC, M4A, OGG or WMA already
+  played the track with a seek bar; the picture area behind it was blank. It now shows the cover
+  art stored in the file. Tracks without any keep the plain dark background.
+
+## 1.3.6
+
+**TL;DR**
+
+**Changed**
+
+- **Explorer stays responsive when menus and metadata appear**
+- **Large camera RAW and OS-codec thumbnails use bounded memory**
+- **Broken Windows metafiles fail quickly instead of hanging**
+- **Settings sync is safer across devices and accounts**
+- **Release packages are self-contained and icon-verified**
+- **Screenshots and Quick preview use one resident helper**
+- **Release builds now fail closed when checks fail**
+
+**Fixed**
+
+- **Huge archives return immediately instead of tying up Explorer**
+- **Conversions are exact, atomic and memory-bounded**
+- **AVIF and JPEG XL export now include their real writers**
+
+**Everything in 1.3.6**
+
+- **Explorer stays responsive when menus and metadata appear.** Right-click construction no longer
+  decodes the selected file just to prepare a preview; the image is generated only if the
+  SageThumbs submenu actually opens. Details-pane metadata probes are header-only, capped at
+  250 ms, and limited to two detached workers so slow files or providers cannot accumulate work in
+  Explorer or SearchIndexer.
+- **Large camera RAW and OS-codec thumbnails use bounded memory.** Shell streams can take an early,
+  structurally validated embedded JPEG without reading the sensor-data tail, while WIC scales
+  HEIC, AVIF, RAW, and JPEG 2000 frames before copying RGBA pixels into SageThumbs. Ordinary TIFF
+  files remain on the normal path, and the configured maximum file size still applies.
+- **Pathological Windows metafiles fail quickly.** WMF and EMF decoding now has a dedicated
+  three-second/96 MiB ImageMagick budget instead of consuming the broader raster allowance.
+- **Connections sync is safer across devices and accounts.** Nested preference changes preserve
+  unrelated remote edits, cache validators cannot cross account boundaries, shutdown flushes
+  pending settings, and retry timing honors server throttling.
+- **Release packaging is self-contained and icon-verified.** Public artifacts contain the
+  installable application without development folders, and release validation checks the visible
+  executable and installer branding before publication.
+- **Huge archives now return immediately instead of tying up Explorer.** The archive limit
+  is enforced before 7z parsing on every shell-stream path, even when Max file size is set
+  to Unlimited or a provider omits the filename or length. The reported 909,208,825-byte
+  project archive was tested directly and rejected before parsing; network-share timing
+  is allowed to vary.
+- **Conversions are exact, atomic and memory-bounded.** EXR, HDR, Farbfeld, PAM and PPM
+  use native streaming writers with high-bit-depth data preserved where the format allows.
+  Every other advertised target uses an explicit bundled writer; unsupported targets fail
+  before reading the source, and a failed conversion cannot replace an existing file or
+  leave PNG data under the wrong extension.
+- **AVIF and JPEG XL export now include their real writer engines.** Earlier Full
+  packages advertised these conversions but removed load-bearing ImageMagick
+  delegates, which could leave PNG bytes under the requested extension on a clean PC.
+  This build retains the required writers, runtimes and legal files, independently
+  verifies all 14 Magick-backed output signatures, and rejects incomplete bundles.
+- **Screenshot and Quick preview background handling is down to one resident helper.**
+  The removed watchdog stays removed, and install/verification restarts the shared daemon
+  directly instead of leaving a second command-shell process behind. Full-screen editor
+  automation now also exercises Shift-snapped line drawing through the real window.
+- **Release builds now fail closed.** Staged contents, exact upgrade-cleanup rules, package
+  signatures, source inputs, version, artifact digest, size budget and reviewed release
+  notes are all verified before a build can be published.
+
+## 1.3.5
+
+**TL;DR**
+
+**Changed**
+
+- **Screenshot lines and arrows snap cleanly while Shift is held**
+- **Full-screen screenshot editor can be tested end to end**
+- **Archive contact sheets use bounded memory**
+- **Screenshot hotkeys and Quick preview use one helper process**
+
+**Fixed**
+
+- **Large 7z files no longer stall Explorer, even on network shares**
+
+**Everything in 1.3.5**
+
+- **Screenshot lines and arrows now snap cleanly while Shift is held.** The live
+  preview and saved annotation use the same nearest-45° endpoint, even when Shift is
+  pressed or released midway through a drag. The editor also has clearer contextual
+  instructions and tool-aware cursors; Esc dismisses the current flyout, text edit,
+  drawing or selection before closing the capture, and Ctrl+Shift+Z now redoes.
+- **The full-screen screenshot editor can now be tested end to end.** Its window is
+  discoverable by Windows UI automation, and an internal synthetic-canvas mode exercises
+  the real editor without exposing the desktop or writing to the clipboard, files, or an
+  upload service.
+- **Large 7z files no longer stall Explorer, especially on network shares.** A 7z over
+  the configured maximum file size now keeps the normal 7-Zip icon before SageThumbs
+  parses its directory, including when the shell stream does not reveal the filename.
+  For archives that are within the limit, 7z reads are buffered instead of turning an
+  encoded header into thousands of tiny network round trips; decompression uses one CPU
+  thread and no more than 8 MiB of picked-image data in total.
+- **Archive contact sheets use bounded memory.** Each image is cropped and reduced as soon
+  as it is decoded, rather than retaining as many as four full-resolution images while
+  composing a thumbnail.
+- **Screenshot hotkeys and Quick preview now use one resident helper process.** The separate
+  watchdog process has been removed. The remaining helper still re-registers hotkeys after
+  sleep, lock/unlock and remote-desktop changes, and Settings or the next logon restores it
+  after a crash or manual termination.
+
+## 1.3.4
+
+**TL;DR**
+
+**Changed**
+
+- **Quick preview opens common images with less disk I/O**
+- **Release and performance tooling is more trustworthy**
+
+**Fixed**
+
+- **Folder navigation follows Explorer's natural filename order**
+
+**Everything in 1.3.4**
+
+- **Quick preview opens common images with less disk I/O.** Static GIF, PNG and WebP files now
+  reuse the bytes already read while checking for animation instead of reading the file twice.
+  Large project and archive formats also use the same bounded, preview-aware reader as Explorer
+  thumbnails, avoiding unnecessary whole-file buffering.
+- **Folder navigation follows Explorer's natural filename order.** Moving between nearby files
+  now places `image2` before `image10`, and the slim preview scrollbar has a larger invisible
+  grab area without taking more room from the document.
+- **Release and performance tooling is more trustworthy.** Releases are attached to the exact
+  commit validated by CI, the build reports only the installer for the requested version, and
+  performance runs isolate every output and report failed decodes plus percentile timings.
+
+## 1.3.3
+
+**TL;DR**
+
+**Changed**
+
+- **Updates are verified more defensively before Windows runs them**
+- **More malformed input and network cases fail safely**
+- **Maintenance and build reproducibility improved**
+
+**Fixed**
+
+- **The Quick preview scrollbar now works like a real scrollbar**
+
+**Everything in 1.3.3**
+
+- **The Quick preview scrollbar now works like a real scrollbar.** In long text, code and
+  rendered Markdown previews, you can grab the thumb and drag it to any point in the document.
+  Clicking the track above or below the thumb moves by one page, and hover/pressed feedback
+  makes the narrow control easier to target. High-resolution mouse wheels and touchpads also
+  keep their partial scroll movement instead of occasionally losing it.
+- **Updates are verified more defensively before Windows runs them.** The built-in updater now
+  accepts installers only from this project's canonical GitHub release path, requires the
+  release's SHA-256 digest, verifies the bytes written to disk, and keeps the temporary
+  installer protected from replacement through the elevation hand-off.
+- **More malformed-input and network-edge cases fail safely.** Bounds and validation were
+  tightened across several image/document readers and screenshot-upload URL handling, including
+  rejecting ambiguous custom endpoints instead of handing them to Windows' networking stack.
+- **Maintenance and build reproducibility.** Compatible locked dependencies were refreshed,
+  the largest preview/decoder modules were split into smaller focused files, the real Rust 1.93
+  minimum is checked in CI, and third-party GitHub Actions are pinned to immutable revisions.
+
+## 1.3.2
+
+**TL;DR**
+
+**Changed**
+
+- **Settings buttons now read Save and Close**
+
+**Fixed**
+
+- **Large archives no longer peg your CPU and disk**
+- **Archives full of SVG images now get a preview**
+- **Right-click menu is readable again in dark mode**
+- **Settings is fully translated again in all 35 languages**
+- **Thanks to Bruno for the dark-mode menu and Settings reports**
+
+**Everything in 1.3.2**
+
+- **Clicking a large archive no longer pegs your CPU and disk.** A big `.7z` could send
+  SageThumbs off decompressing a large chunk of the file just to build a thumbnail, because
+  the pictures inside a solid archive can sit a long way into the compressed data and
+  everything before them has to be unpacked to reach them. SageThumbs now works out up front
+  how much it would have to unpack, and if the pictures are buried too deep it just shows the
+  normal archive icon instead of grinding away at the file. Archives whose images sit near the
+  front still get their preview exactly as before.
+- **Archives full of SVG images now get a preview.** A `.zip` or `.7z` containing only `.svg`
+  files fell back to the plain archive icon, because the preview builder could not draw
+  vector images. It now builds the usual multi-image preview tile from them.
+- **The right-click menu is readable again in dark mode.** With the menu preview switched on,
+  every entry in the SageThumbs menu turned black against the dark background and was nearly
+  impossible to read. The preview picture is now drawn in a way that lets Windows carry on
+  theming the rest of the menu, so the text stays light.
+- **The Settings buttons now say what they actually do.** The main button reads **Save** in
+  every language; in a lot of them it said "OK", which normally means "apply and close", so
+  people quite reasonably expected the window to shut and reported it as a bug. The second
+  button now reads **Close** instead of "Cancel", since your changes are already saved by that
+  point and nothing is being undone.
+- **Settings is fully translated again.** 82 pieces of text, including the entire left-hand
+  navigation, every page description, several buttons and a batch of tooltips, were still
+  appearing in English in all 35 non-English languages. They are now translated everywhere,
+  and a new build check keeps any future translation from going missing.
+- Thanks to **Bruno** for reporting the dark-mode menu and the confusing Settings buttons.
+
+## 1.3.1
+
+**TL;DR**
+
+**New**
+
+- **Task-list checkboxes render in the Quick preview**
+- **Thumbnails for modern GIMP XCF files**
+- **Explorer thumbnails for ZIP, RAR and 7z archives**
+- **st2k doctor can now probe one specific file**
+
+**Changed**
+
+- **Menu changes take effect right away**
+- **Big files and folders thumbnail much faster**
+- **Hardened archive reading against malformed files**
+
+**Fixed**
+
+- **Show quick actions in the menu works again**
+- **Big EPUB books now show their real cover**
+- **Copied Markdown keeps headings, lists and formatting**
+- **Silent installs no longer hang on a fresh machine**
+
+**Everything in 1.3.1**
+
+- **"Show quick actions in the menu" works again.** Turning it on is meant to put Convert into,
+  Convert…, Resize and Rotate straight on the right-click menu instead of one level deep in the
+  submenu, but on many setups it did nothing. If your right-click menu is the classic full one
+  (a very common Windows 11 choice), the quick actions were being hidden with nothing to replace
+  them. They now show up whenever the option is on.
+- **Menu changes take effect right away.** Toggling a menu option in Settings and hitting Save
+  now refreshes Explorer's menu, so you see the change on your next right-click instead of having
+  to restart Explorer or sign out.
+- **Big files and big folders thumbnail much faster.** Large Photoshop (`.psd`/`.psb`), AutoCAD
+  (`.dwg`) and 3D-printer G-code files used to be read in full just to pull out the small preview
+  buried near the start - so a folder of them filled in slowly, one at a time. SageThumbs now
+  reads only the part of the file that holds the preview, which is a tiny fraction of a large
+  document. Very large AutoCAD files that previously showed no thumbnail at all now get one.
+- **Big EPUB books now show their real cover.** A large e-book could end up showing a random
+  picture from inside it instead of the actual cover; it now picks the cover the same reliable
+  way small books always did.
+
+- **Copying from a Markdown Quick preview now keeps the document's structure.** Ctrl+C used
+  to flatten everything: nested bullets came out flat at one level, headings and quotes lost
+  their markers, code blocks ran into the surrounding prose, and every paragraph was jammed
+  against the next with no blank line between them. The copied text is now proper Markdown,
+  so it pastes with its headings, list nesting, numbering, quotes, fenced code and paragraph
+  breaks intact, and still reads correctly if you paste it somewhere plain. Task-list items
+  copy as real GFM checkboxes (`- [x]`), and tables still copy tab-separated so they paste
+  straight into a spreadsheet as columns.
+- **Task-list checkboxes render in the Quick preview.** A Markdown checklist (`- [ ]` /
+  `- [x]`) now shows real checkboxes, a filled blue box with a tick for done items and an
+  empty box for the rest, instead of the literal `[ ]` / `[x]` text.
+- **GIMP `.xcf` files now get a thumbnail, including modern GIMP 2.10 / GIMP 3 files.**
+  Older GIMP files worked before, but a file saved by a current GIMP showed nothing at
+  all in Explorer. SageThumbs now reads the XCF file itself and flattens its layers into
+  a thumbnail, so no separate tool is needed and it works on every install, compact
+  included.
+- **New: Explorer thumbnails for ZIP/RAR/7z archives.** A plain archive now shows what's
+  inside it instead of a generic icon: either a single cover image, or by default a
+  contact-sheet collage of up to four images, so a folder of photos zipped up looks
+  obviously different from a single photo. Picked the same smart way as comic covers:
+  natural filename order, an image named "cover" preferred, junk like `__MACOSX` and
+  `Thumbs.db` skipped. Works on huge archives too: the file list comes from the zip's
+  central directory and only the picked images are ever read, so a multi-gigabyte zip
+  costs a few KB plus a handful of images, in the thumbnail and the preview pane alike.
+  Archives with no images, or that are encrypted, keep the normal icon. New toggle in
+  **Settings ▸ Ebook/comic**: "Contact-sheet thumbnails for ZIP/RAR/7z" (on by default;
+  off gives a single first-image thumbnail, classic CBXShell-style). Comic/ebook archives
+  (cbz/cbr/cb7/epub) are unchanged, always showing their one cover.
+- **`st2k doctor` can now probe one specific file.** Run `st2k doctor "C:\path\to\that.file"`
+  and it checks that exact file end to end: whether the type is one SageThumbs handles,
+  whether it's enabled, and crucially whether the file actually *decodes* into a thumbnail.
+  This closes a gap where the general self-check could report a clean bill of health while
+  one particular file still showed no thumbnail, because the file's format simply can't be
+  decoded on this machine. The report now says so, with the reason.
+- **Hardened archive reading** against malformed or hostile `.7z`/`.zip` files (updated the
+  7-Zip reader and bounded how many entries a crafted archive can make us process).
+- **Silent/unattended installs no longer hang on a fresh machine.** A first-time install run
+  with `/VERYSILENT` (or in an automated/sandboxed environment) could stall before copying any
+  files, because setup tried to stop a background component that only exists after a previous
+  install. It now skips that step on a fresh install.
+
+## 1.2.2
+
+**TL;DR**
+
+**New**
+
+- **New st2k doctor checks your whole setup**
+
+**Changed**
+
+- **Setup tells you if registering with Windows fails**
+
+**Fixed**
+
+- **Works on Windows editions without Media Foundation**
+- **Repair file associations and rebuild cache now work**
+- **Windows 10 shortcuts back on the right-click menu**
+- **Repair file associations no longer claims false success**
+
+**Everything in 1.2.2**
+
+- **Works on Windows editions without Media Foundation.** On "N" and "KN" editions of Windows
+  (sold in the EU and Korea without media playback components) the shell extension could not
+  load at all, so *nothing* worked: no thumbnails for any format, no right-click menu, no
+  details in Explorer, and no error to explain it. The video component is now loaded only when
+  it is actually needed, so at worst video files lose their thumbnails and everything else
+  works.
+
+- **"Repair file associations" and "Rebuild thumbnail cache" now work.** Both buttons closed
+  File Explorer and then failed to start it again, leaving an error about a network path that
+  could not be found. Nothing was wrong with your network - the commands they ran were being
+  quoted incorrectly, so Windows was handed a nonsense path. Both buttons now do what they say,
+  and no longer flash a black console window while they work.
+- **Setup tells you if registering with Windows fails.** Previously the installer could finish
+  and report success while security software had blocked the part that hooks SageThumbs into
+  Explorer - leaving you with no thumbnails and no explanation. Setup now checks afterwards and
+  says so plainly, with what to do about it.
+- **Windows 10: the Convert / Resize / Rotate shortcuts are back on the right-click menu.** They
+  were being hidden in favour of the modern Windows 11 menu, which does not exist on Windows 10,
+  so they simply disappeared.
+- **New: `st2k doctor`.** Run it from the install folder and it checks the whole chain in one go -
+  whether Windows has thumbnails switched off, whether SageThumbs is registered with Explorer,
+  whether the shell extension can actually load, which of your file types are hooked, and whether
+  the decoder itself works. It prints a plain-text report with a verdict and a fix for anything it
+  finds, ready to paste into a bug report.
+- **"Repair file associations" no longer claims success when it failed.** It used to report
+  "repaired" as soon as it managed to *start* the registration step, without checking whether that
+  step worked. It now waits for the result, verifies it, and tells you what actually went wrong -
+  a declined prompt, a missing file, or something undoing the registration.
+
+## 1.2.1 (2026-07-18)
+
+**TL;DR**
+
+**Fixed**
+
+- **Paint Shop Pro brushes get thumbnails, and tubes look sharper**
+
+**Everything in 1.2.1**
+
+- **Paint Shop Pro brushes now actually get thumbnails, and tubes get much sharper ones.**
+  1.2.0 registered the Paint Shop Pro file family but could only read previews stored as JPEG.
+  It turns out `.PspBrush` files never store one that way, so brushes showed no thumbnail at
+  all, and `.PspTube` files kept a tiny 80x80 thumbnail next to their real full-size picture,
+  so tubes came out blurry. SageThumbs now reads the compressed picture data inside these files
+  directly and always picks the largest one available: brushes work, and a tube shows its whole
+  contents crisply instead of one fuzzy corner. Also added the legacy `.tub` tube extension.
+  (Thanks again to the community member who reported this and supplied test files.)
+
+## 1.2.0 (2026-07-18)
+
+**TL;DR**
+
+**New**
+
+- **Thumbnails for the rest of the Paint Shop Pro family**
+- **See the source behind a rendered preview**
+
+**Everything in 1.2.0**
+
+- **The rest of the Paint Shop Pro family now gets thumbnails.** Brushes, picture frames,
+  picture tubes, preset shapes, selections and masks (`.PspBrush`, `.PspFrame`, `.PspTube`,
+  `.PspShape`, `.PspSelection`, `.PspMask`) use the same file container as `.pspimage`, so
+  they thumbnail through the same reader. Note that not every one of these files stores a
+  preview picture inside it - where there isn't one, you'll see the normal Windows icon,
+  exactly as before. (Thanks to the community member who spotted this.)
+- **You can now see the source behind a rendered preview.** Anything the Quick preview renders -
+  a Markdown file, a CSV/TSV table, a Jupyter notebook, an HTML page, an SVG - has a new **`{ }`**
+  button in the preview's toolbar (or press **Ctrl+U**) that swaps the rendered view for the raw
+  file, syntax-highlighted with line numbers and fully selectable. Press it again to go back. The
+  mode stays on while the window is open, so **←/→** keeps showing source as you flip through a
+  folder; opening a fresh preview always starts rendered. The button only shows up on files that
+  actually have both views, so it never appears on a photo or a video.
+
+## 1.1.1 (2026-07-17)
+
+**TL;DR**
+
+**Fixed**
+
+- **Uninstall no longer stops with a Resource error**
+
+**Everything in 1.1.1**
+
+- **Fixed:** on some Windows 11 systems, uninstalling could stop with a **"Resource TSetupForm
+  not found"** error and refuse to continue. The uninstaller now completes cleanly.
+
+## 1.1.0 (2026-07-17)
+
+**TL;DR**
+
+**New**
+
+- **Select and copy text in the Quick preview**
+
+**Fixed**
+
+- **A Markdown file with an empty heading no longer closes the preview**
+
+**Everything in 1.1.0**
+
+- **You can now select and copy text in the Quick preview.** Drag to select in text, code, log
+  **and rendered Markdown** previews - double-click grabs a word, **Shift+arrows** (with
+  Home/End/PgUp/PgDn, and Ctrl for whole words) select from the keyboard, and **Ctrl+A** takes
+  everything. **Ctrl+C** copies the selection, or the whole document if you haven't selected
+  anything. On a Markdown file you get the text as you see it rendered; **Ctrl+Shift+C** copies
+  the original Markdown source instead. Ctrl+C works on the other previews too: an image copies
+  the picture itself (including the exact PDF page or animation frame you're looking at), and
+  the file-info card copies its details. Plain **Home/End** jump to the top/bottom of a document.
+- **Fixed:** a Markdown file with an empty heading could close the preview instantly instead of
+  showing the file.
+
+## 1.0.1 (2026-07-14)
+
+**TL;DR**
+
+**Fixed**
+
+- **Small vector graphics convert to a usable size**
+
+**Everything in 1.0.1**
+
+- **Small vector graphics now convert to a usable size.** Right-click **Convert into PNG** on a
+  small SVG icon (or a small `.emf` clip art) used to hand back a tiny image at the file's built-in
+  size (as small as 24 pixels). Since these are vectors with no fixed resolution, SageThumbs now
+  renders them up to a crisp, usable size, so you get a proper image instead of a postage stamp.
+  Larger files are unchanged.
+
+## 1.0.0 (2026-07-14)
+
+**SageThumbs 2K is out of beta.** This release refines the Quick preview and Settings that arrived
+in 0.10 and smooths out the rough edges found in real-world use.
+
+**TL;DR**
+
+**New**
+
+- **Local HTML files render as real pages**
+
+**Changed**
+
+- **Preview opens in front, then stays out of your way**
+- **Smoother scrolling for text, code and log files**
+- **Smoother scrolling for large Markdown documents**
+- **A crisper, smoother Settings window**
+
+**Everything in 1.0.0**
+
+- **The preview opens in front, then stays out of your way.** Press Space and the preview jumps to
+  the front of your other windows, then behaves like a normal window you can click past or cover.
+  The old "always on top" behavior (which could sit over things you were trying to click) is gone.
+  You can still pin a preview on top from its toolbar. On by default.
+- **Local HTML files render as pages.** Open an `.html` file and the preview shows the real page
+  instead of its source. It runs locked down (WebView2 with scripts off and no network), so a local
+  page only ever shows its own content. On by default.
+- **Smoother text, code, and log scrolling.** Scrolling a large text file no longer flickers or
+  stutters, even very big files stay smooth, line numbers are shown, and there is now a scroll
+  position indicator on the side.
+- **Smoother Markdown scrolling.** Large Markdown documents scroll cleanly instead of lagging.
+- **A crisper Settings window.** The toggles, icons, and buttons are now smoothly anti-aliased
+  instead of looking jagged.
+
+## 0.10.0 (2026-07-13)
+
+**TL;DR**
+
+**New**
+
+- **Press Space to preview any file, QuickLook-style**
+- **Markdown preview adds a collapsible outline sidebar**
+- **CSV and TSV files preview as real tables**
+- **Jupyter notebooks preview rendered, no install needed**
+- **Optional: download web images in Markdown previews**
+- **Bare URLs in Markdown are now clickable**
+- **Optional: render local HTML files, locked down**
+
+**Changed**
+
+- **Outline sidebar polish and smoother animation**
+- **Markdown renders the way GitHub shows it**
+
+**Fixed**
+
+- **Animated CSS SVGs no longer show up blank**
+- **SVG images now show in the right-click preview**
+
+**Everything in 0.10.0**
+
+- **New: press Space to preview a file, QuickLook-style.** Select a file in Explorer (or on the
+  Desktop) and tap **Space** for an instant full-size popup, then Space or Esc to close. It shows
+  any format SageThumbs can decode, and adds a lot a still image can't: **videos and audio play**
+  (with a seek bar, play/pause and volume), **animated GIFs/WebP animate**, **code is
+  syntax-highlighted with line numbers** (editor-style, across the common languages - JSON keys,
+  strings and numbers each get their own colour), **Markdown renders GitHub-style** (with clickable
+  links), **multi-page PDFs
+  page** with the arrow keys or on-screen buttons, **fonts show a specimen** (name + pangram + glyph
+  sheet), and **archives (zip/7z/rar) list their contents** without extracting. Use **←/→** (or
+  PgUp/PgDn) to flip through the folder without closing, and **F11** for full-screen. You can zoom
+  and pan images with the wheel, and the popup never steals focus from Explorer. It's **off by
+  default**: turn it on under **Settings ▸ Quick preview**, where you can also tweak hold-to-peek,
+  close-on-focus-loss, pin-on-top, and which content types are previewed.
+- **New: Markdown preview has a collapsible outline sidebar.** When a Markdown file has headings,
+  the Space-bar preview shows a **Contents** panel on the left that lists them as a clickable,
+  indented outline. Click any heading to jump straight to that section, and the section you are
+  currently reading stays highlighted as you scroll. Toggle the panel with the outline button in the
+  toolbar; your choice is remembered for next time.
+- **New: CSV and TSV files preview as real tables.** Press Space on a `.csv`/`.tsv` and you get a
+  gridded, shaded table view (quoted fields, embedded commas and multi-line cells handled;
+  semicolon-separated exports detected automatically) instead of raw text. Very large files show
+  the first thousand rows with a note.
+- **New: Jupyter notebooks preview rendered.** `.ipynb` files show their markdown cells rendered,
+  code cells syntax-highlighted with line numbers, and text outputs (including cleaned-up error
+  tracebacks) - no Jupyter install needed.
+- **New (optional): download web images in Markdown previews.** Off by default: badges and other
+  web-hosted images show as labeled chips. Turn it on (Settings ▸ Quick preview) and they download
+  (HTTPS only, size-capped, in the background) and display like GitHub shows them.
+- **Outline sidebar polish.** Clicking an entry near the end of a document now visibly selects it
+  even when the page is already scrolled to the bottom, and the panel slides open and closed
+  instead of snapping.
+- **Bare links are clickable now.** A URL typed straight into Markdown (like `https://example.com`
+  or `www.example.com`) turns into a clickable link, the way GitHub does it. You no longer have to
+  wrap it in `[text](url)`. URLs inside code stay plain.
+- **Markdown now renders the way GitHub shows it.** README-style pages come out looking right:
+  the HTML "hero" section at the top (centered banner, title, tagline, badge row) renders instead
+  of disappearing, **pictures stored next to the file display inline** (sized like GitHub sizes
+  them, clickable when they're links), and **tables get real grid lines, shaded alternating rows,
+  and sensible column widths**. Common inline HTML (`<b>`, `<i>`, `<br>`, links, lists, tables,
+  `<details>` blocks) renders too, and the text column is capped and centered like a GitHub page
+  instead of stretching edge-to-edge. Web-hosted images (like status badges) show as small labeled
+  chips rather than being downloaded - previewing a file never touches the network.
+- **Optional: render local HTML files.** With the new **"Render local HTML files"** toggle
+  (Settings ▸ Quick preview, off by default), pressing Space on a `.html` file shows the rendered
+  page in an embedded, **locked-down** viewer - JavaScript is disabled and every network request is
+  blocked, so a page cannot phone home or load remote trackers. A companion **"Live-load .url
+  shortcuts"** toggle (also off by default) can open a `.url`'s real web page in a throwaway session;
+  left off, a `.url` just shows its target address as text.
+- **Animated (CSS-driven) SVGs no longer show up blank.** SVGs that hide their artwork at rest and
+  reveal it through a CSS animation now render their visible state everywhere (thumbnails, the
+  preview pane, and the new Space-bar preview) instead of an empty frame.
+- **SVG images now show a picture in the right-click preview.** Right-clicking an `.svg`
+  (or `.svgz`) used to show just the filename and size at the top of the SageThumbs menu, even
+  though the file thumbnailed normally everywhere else. It now shows the actual image there too.
+  (Video, PDF, and a handful of rare specialist formats still show name + size only in that menu
+  tile (rendering them in-place could momentarily freeze Explorer) but they still thumbnail
+  normally in the folder view and preview pane.)
+
+## 0.9.0 (2026-07-09)
+
+**TL;DR**
+
+**Changed**
+
+- **Format counts reconciled, and Convert and Resize write files atomically**
+- **Updated DjVu decoder with upstream fixes**
+
+**Fixed**
+
+- **Preview pane handles big files without reading them whole**
+- **DICOM .dcm medical scans now show real thumbnails**
+- **Apple .icns icons now actually show a thumbnail**
+- **Synced settings now show your name, not an email address**
+- **The app's own documentation screenshots lose a stray border**
+
+**Everything in 0.9.0**
+
+- **The preview pane now handles big files like thumbnails do.** Explorer's reading/preview pane
+  used to read a file whole before showing it, so a multi-gigabyte video, a long audiobook, or an
+  oversized comic/`.blend`/Photoshop file would either bog down the preview host or just show a
+  blank pane, even though its thumbnail worked fine. The pane now uses the exact same shortcuts the
+  thumbnail does: it grabs a single video frame, seeks straight to embedded album art, or pulls the
+  cover out of a huge archive without ever loading the whole file, and it respects your size limit.
+- **DICOM `.dcm` medical scans finally thumbnail.** They were listed as supported but never
+  actually rendered: the file's TIFF-like header fooled the decoder into treating it as a broken
+  TIFF. CT/MR slices now show real, legible anatomy (the low-contrast medical data is auto-stretched
+  so it isn't just a flat gray square).
+- **Apple `.icns` icons actually work now.** They were listed as supported but no decoder ever
+  handled them; the embedded PNG (or JPEG-2000) icon is now extracted directly.
+- **If you sync settings, your name shows up instead of a random email.** The "Synced as" row
+  used to show an opaque per-app privacy-relay address; it now shows your actual display name
+  (falling back to the relay address only if no name is available).
+- **Release-readiness polish.** Licensing docs, the supported-format counts quoted across the
+  README/docs, and some duplicated internal code were reconciled so everything lines up; file
+  renames during Convert/Resize are now atomic (no half-written output if something goes wrong
+  mid-write).
+- **Screenshot capture fixes.** A stray 1px window border and the invisible DWM resize border no
+  longer sneak into `--shot`-style captures used for the app's own documentation screenshots.
+- Updated the DjVu decoder dependency to pick up upstream fixes and trim unused transitive deps
+  (no user-facing behavior change).
+
+## 0.8.0
+
+**TL;DR**
+
+**New**
+
+- **Sync your settings across your PCs, off by default**
+
+**Changed**
+
+- **Removed .jbig from the supported formats list**
+- **Your sign-in token is stored securely on your PC**
+
+**Fixed**
+
+- **Compressed Blender files now show thumbnails**
+- **Big Blender and Photoshop files now show thumbnails** (fixes #1)
+- **Large Clip Studio Paint files now show thumbnails**
+- **EXR render passes with an empty alpha channel now render** (fixes #2)
+- **Old 32-bit TGA files no longer show up invisible**
+- **Huge Krita, OpenRaster, 3MF and FreeCAD files show the right preview**
+- **Amiga IFF/ILBM images with a mask now render correctly**
+
+**Everything in 0.8.0**
+
+- **Compressed `.blend` files now show thumbnails at all.** Files saved with Blender's
+  "Compress" option (gzip or zstd) previously never got a preview; now they do, at any size.
+- **Big Blender files finally show thumbnails.** `.blend` scenes over the size limit (100 MB by
+  default) were silently skipped by Explorer even though the thumbnail sits in the first few
+  kilobytes of the file; now we read just that small head slice, so a 2 GB scene thumbnails
+  instantly. Same fix for huge Photoshop `.psd`/`.psb` files. (Thanks to GitHub issue #1.)
+- **Big Clip Studio Paint canvases show thumbnails too.** A multi-layer `.clip` over the size
+  limit was skipped even though its preview lives in a small database at the end of the file;
+  we now jump straight to that database and read only it, so a 2 GB manga page thumbnails
+  instantly. Works in the preview pane and the `st2k` CLI as well.
+- **See-through EXR render passes show their content.** An OpenEXR whose alpha channel is
+  entirely empty (emission/AOV/environment passes) used to show a blank default icon; it now
+  renders its actual colors. Note: **DWAA/DWAB-compressed EXR needs the standard install** (the
+  bundled ImageMagick decodes it); uncompressed/ZIP/PIZ/B44 EXR work everywhere. (GitHub issue #2.)
+- **Old 32-bit TGA files no longer come out invisible.** Files whose header declares "no alpha"
+  but still carry a (meaningless, all-zero) 4th channel used to decode fully transparent, in
+  thumbnails, Convert, and the AI `view` tool. They now render opaque, as every image viewer does.
+- **Huge Krita/OpenRaster/3MF/FreeCAD files show the right preview.** Oversized project files
+  used to get an arbitrary internal layer image as their thumbnail (often blank); they now get
+  the real composite preview, same as small ones.
+- **Amiga IFF/ILBM images with a transparency mask render it correctly** (masked areas used to
+  come out opaque).
+- **`.jbig` removed from the supported-formats list.** It never actually decoded (no shipped
+  decoder can read it); the entry only cost a doomed 20-second attempt per file.
+- **Sync your settings across your PCs (new, and completely optional).** Settings has a new
+  **Data & Backup** section with a **"Sync settings…"** button: sign in with a Connections account
+  (it opens your real browser, SageThumbs never sees your password) and your portable preferences
+  follow you to every machine you sign into: thumbnail limits and quality, the right-click menu layout
+  and toggles, hotkeys, language, and ebook/comic options. It's **off by default** (no network happens
+  unless you turn it on), only an allowlist of portable settings syncs (**never your files, folder
+  paths, or passwords, and never your images**), and your settings always stay on your PC too, so
+  everything keeps working fully offline or signed out. Disconnect anytime and the cloud copy is
+  removed. As always, the thumbnail shell extension itself never touches the network; all sign-in and
+  sync code lives in the Settings app only.
+- **Your sign-in is stored securely.** The token that keeps you signed in is encrypted on your machine
+  with Windows' own DPAPI (only your account, on that PC, can read it) and is never part of the synced
+  data; the cloud copy is a plain "settings locker," no secrets.
+
+> Upgrading from 0.7.1? This release also rolls in everything under **0.7.2** below (hotkey resilience,
+> capture/upload feedback, and the CLI fixes).
+
+## 0.7.2
+
+**TL;DR**
+
+**New**
+
+- **Bind OCR text copying to your own hotkey**
+- **Quick-save hotkey now shows a flash when it worked**
+- **Settings now warns when a hotkey is taken by another app**
+- **Uploads now show an Uploading progress indicator**
+
+**Changed**
+
+- **Sort by image size is now much faster on big selections**
+
+**Fixed**
+
+- **Hotkeys now survive sleep, lock and app updates**
+- **Tray icon comes back after an Explorer restart**
+- **Copying a screenshot now retries if the clipboard is busy**
+- **Screenshot hotkey no longer stacks a second overlay**
+- **Command line: batch fails properly and PDF honours JPEG quality**
+
+**Everything in 0.7.2**
+
+- **Hotkeys now survive sleep, lock, and updates.** Windows silently un-registers global hotkeys
+  after sleep/resume, locking your PC, or a remote-desktop reconnect; the background helper now
+  re-registers them the moment those happen (plus a once-a-minute safety net), so your screenshot
+  hotkey keeps working instead of quietly dying until you reopened the app. App updates and
+  reinstalls also restart the helper automatically. Previously an update silently killed your
+  hotkeys until the next sign-in.
+- **The tray icon survives Explorer restarts.** When Windows Explorer crashes or restarts it wipes
+  all tray icons; the helper now puts its icon back automatically (and retries at sign-in if the
+  taskbar isn't ready yet).
+- **Copying a screenshot is more reliable.** If another app was momentarily holding the clipboard
+  (clipboard managers and Office do this constantly), your capture's copy could silently do
+  nothing; it now retries briefly instead of giving up.
+- **One capture at a time.** Pressing the screenshot hotkey twice no longer stacks a second frozen
+  overlay on top of the first.
+- **Bind OCR to your custom hotkey.** "Copy text (OCR)" joins the Quick Action list; press your
+  hotkey over the selected image(s) and the recognized text lands straight on the clipboard.
+- **"Sort into folders ▸ By image size" is much faster on big selections.** Reading each file's
+  dimensions now runs in parallel like the other batch actions (exotic RAW/HEIC files used to be
+  probed one at a time).
+- **CLI: `st2k batch` now fails properly.** It exits with an error when every file failed
+  (partial runs report how many failed) so scripts and automations can detect it. Also `st2k pdf`
+  now honors your configured JPEG quality instead of a fixed 85, and OCR errors say what actually
+  went wrong.
+- **The quick-save hotkey now shows it worked.** A split-second screen flash confirms the capture
+  (like Win+Shift+S); if the copy or the PNG save failed, a small notification tells you exactly
+  what went wrong instead of total silence.
+- **See when a hotkey is taken by another app.** If some other program owns your chosen chord,
+  Settings ▸ Screenshots now says so ("hotkey in use by another app") instead of claiming
+  everything is running, and it clears itself within a minute of the other app letting go.
+- **Uploads show an "Uploading…" indicator.** Both the screenshot Upload button and right-click ▸
+  Upload now show a small progress pill while the transfer runs, no more staring at nothing
+  wondering if the click registered.
+
+## 0.7.1
+
+**TL;DR**
+
+**New**
+
+- **See the exact pixel size while dragging a screenshot**
+- **Right-click any image to upload it and copy a link**
+
+**Changed**
+
+- **Hide tray icon setting moved to Advanced**
+
+**Fixed**
+
+- **Hotkey helper restarts itself so hotkeys keep working**
+- **About box now opens centered with the real GitHub logo**
+
+**Everything in 0.7.1**
+
+- **See a screenshot's exact size while you drag it.** When you drag out a region to capture, a small
+  `width × height` readout now sits at the corner of the selection, so you can size things precisely (in
+  real pixels).
+- **The screenshot / action hotkeys stay working.** The small background helper that powers the global
+  hotkeys now restarts itself automatically if it ever stops, and just opening Settings brings it back if
+  it was down, so your hotkey won't quietly stop firing. Its live status shows under Settings ▸ Advanced
+  ▸ "Hotkey service".
+- **New: right-click ▸ Upload (copy link).** Right-click an image (or several) and upload straight to a
+  free, no-account host (catbox.moe by default), with the link(s) copied to your clipboard; your original
+  files are left untouched. The resulting links open in a small window you can select and copy from.
+- **About box opens centered, with the proper GitHub icon.** The About window now appears centered over
+  Settings instead of stuck in the top-left corner, and its GitHub badge shows the real GitHub logo.
+- **"Hide tray icon" moved to Advanced.** That toggle now lives under Settings ▸ Advanced ▸ "Hotkey
+  service", next to the Restart button.
+
+## 0.7.0
+
+**TL;DR**
+
+**New**
+
+- **Assign your own hotkey to any tool**
+- **Quality slider added for AVIF and JPEG XL output**
+- **DSD audio thumbnails, now 316 supported file types**
+- **More file info in Explorer: date taken, GPS, audio tags**
+- **Dimensions, Date taken and more are now selectable columns**
+
+**Changed**
+
+- **Redesigned Settings with a Windows 11-style category rail**
+- **Music files get a cleaner right-click menu**
+- **WMA audio details, cleaner uninstall and safer updater**
+
+**Fixed**
+
+- **Transparent Photoshop files now preview with their transparency**
+- **Dimensions now show in Explorer's details pane**
+- **Show menu on all file types now works in Windows 11**
+- **MPEG transport stream and Ogg video now show thumbnails**
+- **Keep original file date now works in the Convert dialog**
+- **Searching by dimensions, camera or artist now works**
+- **Move to folder now tells you when it fails**
+
+**Everything in 0.7.0**
+
+- **Redesigned Settings window.** The old single long scroll is gone. Settings now opens with a
+  Windows 11-style **category rail** down the left (General · File types · Ebook/comic · Right-click
+  menu · Screenshots · Quick action · Advanced) and a clean content page on the right, with on/off
+  **toggle switches**, category icons, and a titled header per page. Everyday options sit up front;
+  diagnostics, updates and backup tuck under **Advanced**. Same settings, far less clutter. (The new
+  labels are translatable; languages without the new strings yet fall back to English.)
+- **Assign your own hotkey to a tool.** Pick an action (color picker, take a screenshot, Convert…,
+  rotate, move-to-folder, strip metadata, or open Settings) and a keyboard shortcut, and that shortcut
+  now works anywhere. The file actions run on whatever you've got selected in Explorer, or pop a file
+  picker if nothing's selected. It reuses the existing screenshot helper, so there's no extra
+  background program.
+- **Cleaner right-click menu on music files.** Right-clicking an audio file (MP3, FLAC, …) no longer
+  shows image-only actions like Resize, Rotate, or Set as wallpaper; just the ones that make sense
+  (move to folder, rename by tag, sort by tag).
+- **AVIF / JPEG XL quality slider.** The Convert… dialog now lets you set the quality for AVIF and
+  JPEG XL output (it only had this for JPEG and WebP before).
+- **+1 format: DSD audio (`.dsf`).** Album-art thumbnails for DSD audio files, now **316** supported
+  file types.
+- **Fixed: Photoshop files with a transparent background now preview correctly.** If you removed the
+  background in Photoshop and saved, the thumbnail used to show a solid **white** background, because it
+  came from Photoshop's built-in preview image, which can't store transparency. SageThumbs now renders the
+  actual layered image (keeping the transparency) for transparent PSD/PSB files. This was never a
+  refresh/cache problem: the thumbnail was always current, just flattened. (Needs the full install; the
+  compact, ImageMagick-free build still falls back to the white preview.)
+- **Fixed: dimensions now appear in the Explorer details pane.** The 0.6.0 update added image
+  dimensions, camera info, and audio tags for the formats Windows can't read, but they only showed up
+  in a file's Properties window and its hover tooltip, *not* in the details pane along the bottom (or
+  side) of the Explorer window, where a PSD, camera RAW, EPUB, etc. still listed only its date and size.
+  They now show there too.
+- **A lot more file info in Explorer.** While fixing the above we found the handler was reading several
+  useful facts and then throwing them away. Now, for the 300+ formats Windows can't read, Explorer's
+  Details pane / Properties / columns also show: **date taken, GPS location, color depth and DPI** for
+  photos and camera RAW; and **length (duration), bitrate, genre and year** for audio (OGG, Opus, AIFF,
+  Musepack, …). Camera RAW even gets its GPS location where Windows itself shows nothing.
+- **Those columns are now offered, not hidden.** You can right-click a column header (or "Choose
+  columns…") in a folder of PSDs/RAWs/etc. and actually pick Dimensions, Date taken, Length, Artist, …
+  as a **sortable/groupable column**; previously the data existed but Explorer never offered it for
+  those file types. The files are also classified for `kind:` search (e.g. Krita/OpenRaster as pictures).
+- **Fixed: "Show menu on all file types" now works on Windows 11's default menu.** The setting that adds
+  a small file-utility menu (move to folder / sort / rename / pick color) to *unsupported* files only
+  took effect on the old "Show more options" menu; on the modern Win11 right-click menu it did nothing.
+  Now it works there too.
+- **Fixed: more video formats get thumbnails.** **`.ts` / `.m2ts` / `.mts` (MPEG transport streams) and
+  `.ogv` (Ogg video)** were registered but always showed a blank icon; they were being routed to the
+  wrong decoder. They now use the OS video path like every other video. (`.flv` and raw `.mpg`/`.m2v`
+  are routed correctly too, but only show a frame if Windows actually has that codec installed.)
+- **Fixed: "Keep original file date" now applies to the Convert dialog.** The toggle worked for the
+  quick one-click converts but was skipped by the **Convert…** dialog, so its output always got the
+  current date. It's honored everywhere now.
+- **Fixed: searching by the info we add now works.** The dimensions/camera/audio details showed in the
+  Details pane but were stored in a form Windows Search wouldn't index, so "find by artist/camera/date"
+  never matched our files. They're now stored in the canonical form the index and column-grouping expect.
+- **Fixed: "Files to folder" tells you when it can't.** If creating the folder or moving the files failed
+  (read-only, locked, different drive), the dialog used to just close as if it worked. It now shows a
+  message and stays open so you can retry. The global-hotkey actions and the screenshot save now report
+  failures too, instead of silently doing nothing.
+- **+ audio length, bitrate, genre and year for WMA**, and a cleaner uninstall that no longer leaves
+  stray registry entries behind (including from very old versions). Under the hood: a security hardening
+  pass on the one-click updater (re-verifies the installer on disk right before it runs).
+
+## 0.6.3
+
+**TL;DR**
+
+**New**
+
+- **One-click updates from Settings**
+
+**Everything in 0.6.3**
+
+- **One-click updates.** When a new version is available, **Settings ▸ Check for updates** can now
+  download and install it for you: a progress bar shows the download, Windows asks once for
+  permission, and the update installs in the background and confirms when it's done. No more hunting
+  down the installer by hand. (You can still grab it from the releases page if you prefer.)
+
+## 0.6.2
+
+A bug-fix release centered on a serious file-dialog problem, plus a sweep for anything like it.
+
+**TL;DR**
+
+**Changed**
+
+- **Preview pane now follows your Windows theme**
+
+**Fixed**
+
+- **File dialogs no longer hang for up to two minutes**
+- **Corrupt files can no longer stall File Explorer**
+- **No more rare crash when closing a file dialog**
+
+**Everything in 0.6.2**
+
+- **Fixed: file dialogs could hang for up to ~2 minutes.** Opening a file picker (for example,
+  attaching or uploading a file in your browser) could freeze for a long time as the dialog closed,
+  and the preview pane could come up blank/white. The image preview now runs on its own
+  message-pumping thread, so closing the dialog is instant and the preview paints reliably. *(This
+  was the big one.)*
+- **Preview pane now follows your theme.** The preview's background matches Windows dark/light mode
+  instead of always being white, even when the host dialog hands the preview the wrong color.
+- **Fixed: an unusual or corrupt file can no longer stall the shell.** A hardening pass put a strict
+  time limit (and crash-safety guard) on *every* in-process decode path: PDF thumbnails, the
+  right-click menu preview, OCR, the Details/property handler, and the SVG / video / camera-RAW
+  helpers, so no single file can freeze Explorer, a file dialog, or the preview host. Earlier builds
+  could stall on a malformed PDF or a very large image.
+- **Fixed: a rare crash when closing a file dialog.** Background decode helpers now keep the
+  extension loaded until they finish, so the shell can't unload it out from under a running decode.
+
+## 0.6.1
+
+**TL;DR**
+
+**New**
+
+- **Audio waveform thumbnails for WAV and AIFF files**
+- **AIFF-C audio files now supported, 315 formats total**
+
+**Changed**
+
+- **Crisp thumbnails at large and Hi-DPI icon sizes**
+
+**Everything in 0.6.1**
+
+- **Crisp thumbnails at large/Hi-DPI icon sizes.** Raised the maximum generated thumbnail
+  edge from 256 px to 1024 px. On 4K displays and the larger ("jumbo") icon views, Explorer
+  asks for thumbnails bigger than 256 px; we used to hand back an undersized 256 px image,
+  which looked soft *and* couldn't be cached durably, so Explorer re-generated it on every
+  refresh, re-decoding a frame from each (potentially multi-GB) video each time. Now we honor
+  the requested size up to 1024 px, so big thumbnails are sharp and stay cached. Smaller views
+  are unchanged.
+- **Audio waveform thumbnails.** WAV, AIFF and AIFF-C files with no embedded cover art now
+  show a drawn waveform instead of a blank icon, a quick visual of the sound. Files that do
+  have album art still show the artwork; compressed formats (MP3/FLAC/…) are unchanged.
+- **+1 format: AIFF-C (`.aifc`).** The audio handler now also covers AIFF-C, bringing the
+  total to **315** supported file types.
+
+## 0.6.0
+
+**TL;DR**
+
+**New**
+
+- **Details in Explorer for 300+ formats Windows can't read**
+- **Proper color management for wide-gamut and CMYK images**
+- **Autodesk Fusion 360 files now show thumbnails, 314 formats**
+- **Repair file associations button in Settings diagnostics**
+- **MCP view and compress tools for AI agents**
+
+**Changed**
+
+- **Removed unused ImageMagick text shaping from the build**
+- **Hardening: fuzzing, COM tests and cleanup across all formats**
+
+**Everything in 0.6.0**
+
+- **Details in Explorer for 300+ formats Windows can't read.** A new property handler
+  surfaces image dimensions, EXIF camera info, and audio tags in Explorer's Details pane,
+  hover tooltips, and sortable/groupable columns, for the formats Windows has no idea how
+  to read on its own. Read-only and crash-isolated behind a panic boundary, like the
+  thumbnail provider.
+- **Proper color management.** Embedded ICC profiles and wide-gamut images (Display P3 /
+  Adobe RGB) now render in correct sRGB instead of looking over-saturated. AVIF/HEIC read
+  their profile from the ISOBMFF `colr` box (including the CICP nclx Display-P3 signal that
+  iPhone HEIC uses), and CMYK JPEGs are color-managed through their embedded CMYK profile.
+  Pure Rust; no C dependencies.
+- **Autodesk Fusion 360 (.f3d)** thumbnails, read from the zstd-compressed preview inside
+  the file's ZIP container, bringing the total to **314**.
+- **Repair file associations** button (Settings → Diagnostics): re-registers SageThumbs for
+  all your enabled formats when another app has taken over the thumbnails, then clears the
+  thumbnail cache.
+- **MCP `view` and `compress` tools.** The AI/agent server gained a `view` tool that decodes
+  any of the 314 formats to a PNG image block so an agent can actually *see* the file, plus a
+  `compress` tool.
+- **Unused ImageMagick text shaping was removed.** The bundled
+  glib/harfbuzz/freetype/fribidi/raqm stack is stubbed because SageThumbs does not invoke
+  ImageMagick's text, caption or font-rendering surfaces.
+- **Hardening.** Fuzzing and Miri over the untrusted-input parsers, COM round-trip tests for
+  the preview and property handlers, dead-code cleanup, and the test corpus extended to cover
+  all 314 formats.
+
+## 0.5.0
+
+**TL;DR**
+
+**New**
+
+- **Video thumbnails now show a representative frame, not the intro**
+
+**Changed**
+
+- **Video thumbnails are fast even on huge 4K files**
+- **MPEG and Flash videos keep the normal file icon**
+
+**Everything in 0.5.0**
+
+- **Video thumbnails, done properly.** Explorer now reliably shows a thumbnail for your
+  videos, and it's a *representative* frame from about a third of the way in, not the black
+  intro, fade-in, or studio logo you'd get from the opening frame. Covers **MP4, MOV, M4V,
+  MKV, WebM, AVI, and WMV**.
+- **Fast even on huge 4K files.** For MP4 and MKV we read the video's own index and pull just
+  the single frame we need (a few megabytes) instead of scanning the file, so a folder of
+  multi-gigabyte movies on a slow drive thumbnails quickly, and can no longer peg a CPU core
+  or leave blank tiles that never resolve.
+- Formats Windows itself has no codec for (MPEG-1/2 **.mpg/.mpeg**, Flash **.flv**) keep the
+  normal file icon; nothing can produce a thumbnail for them without an installed codec.
+
+## 0.4.9
+
+**TL;DR**
+
+**New**
+
+- **st2k command can compress to a target file size**
+- **Apple Live Photos show their still image, 313 formats total**
+
+**Fixed**
+
+- **Correct colors for wide-gamut phone and camera photos**
+- **Crisp pixel art and small icons instead of a blur**
+- **No more stuck blank thumbnails for files that decode empty**
+
+**Everything in 0.4.9**
+
+- **Correct colors for wide-gamut photos.** Thumbnails of Display-P3 / Adobe RGB images
+  (most modern phone and camera photos) are now color-managed to sRGB, so they match what
+  you see in Photos or a browser instead of looking over-saturated.
+- **Crisp pixel art & icons.** Tiny images (sprites, 16–64 px icons) now scale up sharp
+  instead of being blurred into a smudge.
+- **Compress to a target file size.** The `st2k` command-line tool gained
+  `compress <file> --max-size 1MB` (or `500KB`, etc.); it finds the best quality that
+  fits under your size limit.
+- **No more stuck blank thumbnails.** If a file decodes to nothing, Explorer now shows the
+  normal file icon instead of caching an empty tile you couldn't clear.
+- **Apple Live Photos (.livp)** now show their still image, bringing the total to **313**.
+
+## 0.4.8
+
+**TL;DR**
+
+**New**
+
+- **GeoGebra worksheets and .phz comics supported, 312 formats total**
+
+**Changed**
+
+- **DjVu hardening verified against scanned documents that used to crash**
+
+**Fixed**
+
+- **Thumbnails now work on a clean Windows install**
+- **More EPUB covers show up, including Standard Ebooks**
+- **Very large comic archives thumbnail again**
+
+**Everything in 0.4.8**
+
+- **Thumbnails now work on a clean Windows install.** The shell extension no longer
+  depends on the Visual C++ runtime, so it registers and shows thumbnails even on a fresh
+  machine that's missing the VC++ redistributable; previously that produced no thumbnails
+  and a cryptic "failed to register" error during install.
+- **More EPUB covers show up.** Books that reference their cover through a wrapper page
+  instead of the image directly (e.g. Standard Ebooks and many older EPUBs) now display
+  the real cover rather than a blank icon.
+- **Very large comic archives thumbnail again.** A CBZ or CB7 over 256 MB now shows its
+  cover, read straight from the archive without loading the whole file into memory, instead
+  of falling back to a generic icon.
+- **Two more formats**: GeoGebra worksheets (**.ggb**) and **.phz** comic archives,
+  bringing the total to **312**. A JPEG-2000 page inside a comic archive can now serve as
+  the cover too (on the full install).
+- **DjVu hardening verified**: the specific scanned documents that crashed the previous
+  generation of this kind of extension render cleanly here.
+
+## 0.4.7
+
+**TL;DR**
+
+**New**
+
+- **Automatic quiet update check when opening Settings**
+
+**Changed**
+
+- **Video previews and thumbnails are now time-bounded**
+- **Right-click actions now run in the background**
+
+**Fixed**
+
+- **Preview pane no longer hangs in file dialogs and Explorer**
+- **Right-clicking an exotic file no longer freezes Explorer**
+
+**Everything in 0.4.7**
+
+- **Fixed preview-pane hangs.** Selecting an image in a file dialog or the Explorer reading/
+  preview pane could freeze and sometimes need the preview host killed (or a reboot). Previews
+  now decode off the host's UI thread, and an internal concurrency lock that could leak when a
+  host was force-killed is now self-healing, so the hang can no longer build up over time.
+- **Right-clicking an exotic file no longer freezes Explorer.** The classic right-click menu's
+  preview now uses only the fast built-in decoders, never a slow external one on the shell
+  thread.
+- **Video previews and thumbnails are time-bounded**, so a stalling codec can't hang the
+  preview or thumbnail.
+- **Right-click actions run in the background.** Convert, Resize, Rotate, Strip metadata, and
+  the rest no longer freeze the Explorer window while they work, even across many files.
+- **Automatic update check.** Opening **Settings** now does a quiet, once-a-day background
+  check for a newer version and flags the "Check for updates" button when one is available;
+  no nagging pop-ups, and never more than once a day.
+
+## 0.4.6
+
+**TL;DR**
+
+**New**
+
+- **Video thumbnails using the OS's own codecs**
+- **Settings import and export as a readable JSON file**
+- **Check for updates button in Settings diagnostics**
+- **Rebuild thumbnail cache button clears stale cache**
+
+**Fixed**
+
+- **More reliable camera-RAW thumbnails, even with no extra codecs**
+
+**Everything in 0.4.6**
+
+- **Video thumbnails**: Explorer now shows a representative frame for video files
+  (Matroska **.mkv**, **.webm**, **.mp4**, **.mov**, **.avi**, and more) using the OS's own
+  codecs, so it bundles **zero** extra bytes and streams the file instead of loading it.
+- **Settings import / export**: back up your whole configuration, or move it to another PC,
+  as a single human-readable JSON file (Settings → Diagnostics).
+- **Check for updates**: a button that asks GitHub whether a newer release is out and points
+  you to the download (Settings → Diagnostics).
+- **Rebuild thumbnail cache**: clears Windows' stale thumbnail cache and restarts Explorer,
+  so a format/size change shows up immediately (Settings → Diagnostics).
+- **More reliable camera-RAW thumbnails**: RAW files now fall back to their embedded preview
+  even when it's small, so they thumbnail on a clean Windows install with no extra codecs.
+
+## 0.4.5
+
+**TL;DR**
+
+**New**
+
+- **Screenshot tool gains Ctrl+C to copy and Ctrl+S to save**
+
+**Everything in 0.4.5**
+
+- **Screenshot capture tool:** explicit **Ctrl+C** (copy) / **Ctrl+S** (save) keys, plus an
+  optional fixed save folder for Ctrl+S (otherwise it prompts each time).
+
+## 0.4.4
+
+**TL;DR**
+
+**New**
+
+- **Fully customizable right-click menu with drag-to-reorder entries**
+- **Diagnostics section with user-sendable log and crash capture**
+
+**Changed**
+
+- **Tools submenu flattened, and menu can show on all file types**
+- **Image info is now a verbose, copyable dialog with every EXIF tag**
+- **Settings window is vertically resizable with flicker-free scrolling**
+
+**Everything in 0.4.4**
+
+- **Fully customizable right-click menu**: drag to reorder entries *and* their dividers
+  (WYSIWYG), and show/hide any item; the menu mirrors your layout exactly.
+- "Tools" submenu flattened to individually toggleable top-level verbs; a **"Show menu on all
+  file types"** option (a condensed file-utility menu on unsupported files).
+- **Image info** is now a verbose, copyable dialog: every EXIF tag plus a GPS map link.
+- Settings window is **vertically resizable**, with flicker-free scrolling.
+- **Diagnostics** section: a user-sendable log with crash capture (Settings → Diagnostics).
+
+## Earlier (0.4.x)
+
+**TL;DR**
+
+**New**
+
+- **288 file formats, from camera RAW to ebooks and comics**
+- **Right-click toolkit: convert, resize, rotate, PDF and more**
+- **Native Windows 11 UI with dark mode and 36 languages**
+- **Searchable per-format on/off list with tunable thumbnail quality**
+- **Built-in screenshot capture with a configurable global hotkey**
+- **Crash-isolated: corrupt files can't take down File Explorer**
+
+**Everything in the earlier 0.4 releases**
+
+- **288 file formats**: camera RAW, Photoshop (PSD/PSB), HEIC/AVIF, JPEG XR, JPEG XL,
+  MS Office, DjVu, ebooks & comics, 3D-print files, and the obscure long tail.
+- **Right-click toolkit**: convert, resize, lossless rotate/flip, combine-to-PDF / -CBZ,
+  shrink-for-email, OCR, a system-wide eyedropper, strip metadata, copy, set-as-folder-icon,
+  set-as-wallpaper, and folder utilities. Multi-file jobs run in parallel across every core.
+- **Native Windows 11 UI** with system-following **dark mode** and **36 languages**.
+- A searchable **per-format on/off** list, and tunable thumbnail size + JPEG/PNG quality.
+- Built-in **screenshot capture** tool with a configurable global hotkey.
+- **Crash-isolated**: a corrupt or malicious file can't take down File Explorer (runs
+  out-of-process, panic-guarded, with a sandboxed decoder).

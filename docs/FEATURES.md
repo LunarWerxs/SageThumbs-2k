@@ -1,0 +1,1019 @@
+# SageThumbs 2K: Features & Decisions Reference
+
+A living, manual-ready catalog of everything SageThumbs 2K does and the key
+decisions behind it. Source for the eventual README / user manual / store
+listing. (This file is organized by feature area for end-user-facing
+documentation.)
+
+> **What it is:** a modern, crash-isolated Windows 11 shell extension (Rust) that
+> rebuilds the abandoned SageThumbs (Explorer thumbnails for 364 file types plus
+> a rich right-click image toolkit) and folds in XnShell/XnView-style conversion.
+> Free for personal use (PolyForm Noncommercial 1.0.0).
+
+---
+
+## 1. Thumbnails in Explorer
+
+SageThumbs draws Explorer thumbnails for file types Windows can't, via a tiered
+decoder (`image` crate → Windows WIC → a trimmed bundled ImageMagick → resvg for
+SVG), with embedded-cover/first-page extraction for containers.
+
+**364 registered extensions, in seven categories** (also how the Options list is
+grouped):
+
+| Category | Examples | How |
+|---|---|---|
+| **Image** (225) | png, jpg, gif, bmp, tiff, webp, heic/heif/**heics/heifs/hif**, avif/**avifs** (AVIF sequences, first frame), psd, **xcf** (GIMP), **psp/pspimage + pspbrush/pspframe/psptube/pspshape/pspselection/pspmask/tub** (the Paint Shop Pro family, incl. LZ77 composites), **iff/ilbm/lbm** (Amiga ILBM), **c4d** (Cinema 4D preview), **cdr/cdt/cmx** (CorelDRAW DISP preview), tga, **dds** (every block format BC1 to BC7, incl. BC6H HDR, natively), **vtf** (Valve Source-engine textures) and **ktx** (Khronos KTX 1 textures: S3TC, RGTC, BPTC and plain RGB/RGBA; the ETC and ASTC mobile formats are not read), exr, ico, **ani** (animated cursors, first frame), **icns** (Apple), **six/sixel** (DEC SIXEL terminal graphics, decoded natively), **jxr/wdp/hdp/wmp** (JPEG XR / HD Photo), jp2/**jpf/jpx**, hdr/**rgbe/xyze**, svg/svgz, **wmf/emf/emz/wmz** (metafiles), **swf** (Adobe Flash movies: drawn from the movie's own shapes and pictures, past an opening preloader), **sketch/procreate/skp/3dm/dwg/max/c4d/xd/cdr/cdt** (design/CAD/3D), **dxf** (the preview AutoCAD and BricsCAD save into the file; most DXF files from other programs carry none and keep the stock icon), **blend/.blend1–32** (Blender + auto-saves), **ai** (Illustrator), **eps** (embedded preview), **f3d** (Autodesk Fusion 360), **stl/obj/ply** (3D-print models, RENDERED: parsed and flat-shaded by SageThumbs' own tiny software rasterizer, since a mesh has no baked-in preview to extract), **apk/apks/xapk/apkm** (Android packages: the launcher icon named by the app manifest, resolved through the compiled resource table), **nupkg/vsix** (NuGet and Visual Studio / VS Code packages: the icon the package manifest names), … | image crate / WIC / ImageMagick / resvg (SVG) / manifest+resource-table lookup (APK) |
+| **Camera RAW** (34) | cr2/cr3, nef, arw, dng, raf, orf, rw2, pef, x3f, **bay/cap/dcs/drf/ori/ptx/pxn**, … | WIC (Raw Image Extension) / ImageMagick / embedded-JPEG preview |
+| **Ebook & comics** (12) | epub, mobi/azw/azw3, **prc** (Mobipocket), fb2/fbz, cbz, cb7, **cbr**, **cbt**, **phz** (zip comic) | native-Rust cover extraction (zip/7z/tar/**rar** via the pure-Rust `rars` crate + hand-parsed MOBI); an oversized CB7 received through a name-less shell stream keeps its stock icon rather than risking an expensive 7z directory scan |
+| **Document** (46) | **pdf** (page 1), **djv/djvu** (pure-Rust `djvu-rs` codec), **doc/docx/docm + dot/dotx** (Word), **xls/xlsx/xlsm/xlsb + xlt/xltx** (Excel), **ppt/pptx/pptm + pps/ppsx + pot/potx** (PowerPoint), **odt/ods/odp/odg/…** (OpenDocument), **key/pages/numbers** (Apple iWork), **indd** (InDesign), **vsd/vsdx/vsdm + vstx/vssx** (Visio drawings, templates and stencils: a stencil shows a preview only when Visio saved one with it, which most do not), **pub** (Publisher), **ggb** (GeoGebra), **xmind** (XMind mind maps: the map picture XMind saves) | OS `Windows.Data.Pdf` (PDF); pure-Rust `djvu-rs` (DjVu); embedded preview extraction (Office OOXML `docProps/thumbnail` + legacy OLE `\x05SummaryInformation` / iWork / InDesign / Visio / Publisher) |
+| **Audio** (18) | mp3, flac, ogg, opus, m4a, wma, ape, wavpack, musepack, **wav, aiff, aiff-c, dsf** (DSD) | embedded album art via `lofty`; **plus a drawn waveform for raw-PCM WAV/AIFF/AIFF-C with no cover art**, and a hand-rolled ASF parser for WMA (cover art + tags) which `lofty` can't read |
+| **Video** (26) | **mkv** (Matroska), **webm**, mp4/m4v, mov, avi, wmv, …  | a representative frame (30 % in by default, not the intro; adjustable in Settings ▸ Appearance) via the OS **Media Foundation** codecs. MP4/MOV (`moov`) and Matroska/WebM (Cues) parse the container's own index to read just the one keyframe nearest the chosen point (single-digit MB); AVI/WMV let MF's demuxer seek over a block-caching stream, never streaming the whole movie. **Four codec families Windows does not ship are decoded by SageThumbs itself**, in pure Rust and in a separate short-lived process: **FLV** (H.264 handed to Windows; VP6 and Sorenson Spark decoded here), **VP9 Profile 2/3** (10- and 12-bit HDR, which Windows declines even with its own VP9 extension installed), **10-bit H.264** (High 10, the usual choice for anime encodes; Windows' H.264 decoder stops at 8-bit) and **MPEG-1/2** in program, elementary and transport streams (VideoCD-era `.mpg`, bare `.m1v`/`.m2v`, DVD-style `.vob`, and MPEG-2 inside `.ts`/`.m2ts`/`.mts` recordings: Windows opens none of the first two on any edition and the rest only with a Store add-on; decoded here whenever Windows declines. Interlaced field-coded recordings are the one shape still left to the OS). |
+| **Archive** (3) | **zip**, **rar**, **7z** | the images INSIDE the archive, including SVG: a single cover, or by default a contact-sheet collage of up to four (Settings ▸ Ebook/comic). Identified generic archives honor **Max file size** before their directory is parsed; an oversized 7z is also rejected safely when its shell stream has no filename. ZIP/RAR and non-solid 7z read only the picked images; 7z extraction is single-threaded with an 8 MiB aggregate image budget. Solid 7z scans only a small bounded prefix and falls back to the stock icon when its images are buried too deeply. No readable image (or encrypted) keeps the stock icon |
+
+*Counts sum to **364** (canonical source: `formats::FORMATS.len()`; `st2k formats` prints
+it). DjVu (`.djv/.djvu`) thumbnails are decoded by the **maintained pure-Rust `djvu-rs`
+crate** (MIT, no C, no GPL): the page's pre-rendered thumbnail when present, else the
+rendered first page (IW44 background + anti-aliased JB2 text + foreground palette),
+including multipage shared-dictionary pages. EPS thumbnails come only from an embedded
+raster preview: a DOS-EPS TIFF, an EPSI greyscale preview, or a Photoshop JPEG resource.
+SageThumbs never renders PostScript or invokes Ghostscript; a preview-less EPS keeps its
+stock icon. **Autodesk Fusion 360** `.f3d` thumbnails come from the zstd-compressed preview
+inside the archive's ZIP container, inflated by the pure-Rust `ruzstd` decoder (no C dep).
+Photoshop files thumbnail from their embedded preview, and a **transparent** PSD
+(e.g. a removed background) renders the real layered composite so it keeps its
+transparency instead of flattening to white, while Convert / Resize / Image info
+always use the REAL full-resolution composite.*
+
+The table above is prose; the per-format ground truth is `st2k formats --json`, whose
+`source`/`convertible`/`preview_listing`/`os_codec` fields on every entry say exactly how
+that extension's thumbnail is produced and whether it depends on an OS codec. Run it (or
+`st2k doctor`'s "Format capability" section) rather than trusting a stale table cell.
+
+**Notable wins Windows itself can't do:** ebook/comic covers, Office/ODF previews
+(no in-box handler), PDF first page (no in-box thumbnailer), Ogg/Opus/APE album
+art, any RAW/HEIC the OS codec is missing, and a deep set of **art / CAD / 3D / design
+project files** whose baked-in preview we extract directly (no rendering, no
+codecs, so they work without touching ImageMagick at all): **Photoshop**
+`.psd/.psb`, **Affinity** `.afphoto/.afdesign/.afpub`, **Clip Studio** `.clip`,
+**Krita** `.kra`, **OpenRaster** `.ora`, **Pixelorama** `.pxo`, **Blender** `.blend`, **3MF** `.3mf`,
+**FreeCAD** `.fcstd` (and its `.fcbak`/`.fcstd1` backups), **Autodesk Fusion 360** `.f3d`, **Paint.NET** `.pdn`,
+**SolidWorks** `.sldprt/.sldasm/.slddrw` (the `PreviewPNG` stream; files saved by 2015+
+releases use a wrapper that is not a compound file and keep the stock icon), **Minecraft
+Bedrock** `.mcworld/.mctemplate/.mcpack/.mcaddon` (the game's own world photo or pack icon),
+and 3D-printer **G-code** `.gcode` plus PrusaSlicer's binary **`.bgcode`** (whole image blocks
+rather than base64 in comments; the largest PNG wins, and a QOI-only file is re-encoded).
+Two more carry no preview at all and are RENDERED instead: **Aseprite** `.aseprite/.ase`
+(frame 0 composited from its own layers and cels - RGBA, grayscale and indexed, layer and cel
+opacity, group visibility) and **SpriteLoop** `.spla` (frame 0 of the first animation, drawn
+from the part images and the rig's own transforms). *No Windows tool
+thumbnails most of these: PSD now works without ImageMagick, and `.clip`'s preview
+is read straight out of its embedded SQLite database (no extra dependency), even for
+canvases past the size limit, where only that small tail database is read, never the
+multi-hundred-MB layer data.* **GIMP** `.xcf` gets the same no-ImageMagick-needed
+treatment by a different route: XCF carries no baked-in preview to extract, so a native
+decoder reads the layers directly and flattens the visible ones into a thumbnail itself,
+handling both older and current GIMP file versions, RGB/grayscale/indexed images, and
+the various bit-depth and compression variants GIMP writes.
+
+**Archives get a peek inside:** plain `.zip`, `.rar`, and `.7z` files thumbnail too, drawing
+either a single cover image or (the default) a contact-sheet collage of up to four images
+pulled from inside, using the same smart pick as comic covers: natural filename sort, an
+the front cover preferred (back and variant covers go last), junk like `__MACOSX` and `Thumbs.db` skipped. The file list
+comes straight from archive metadata. ZIP/RAR and non-solid 7z read only the handful of
+images actually shown. Generic archives identified by filename honor **Max file size** before
+the directory is parsed; an oversized 7z is also refused when the shell supplies a name-less
+stream. This is especially important for large project backups on network shares. Past the
+256 MB in-memory limit an archive is never loaded whole: a ZIP or 7z reads its directory and
+the picked images, and a RAR (or `.cbr` comic) walks its entry headers and reads only the
+cover's entry. Within the
+limit, 7z reads are buffered to avoid tiny remote round trips, extraction uses one CPU thread,
+and picked images share an 8 MiB total budget. Solid 7z must decode
+front-to-back, so SageThumbs uses the first eligible images in physical order and enforces the
+same small decompression budget; if the first image is buried too deeply, the archive keeps
+its normal icon instead of making Explorer grind through it. A ZIP whose directory says it
+holds more than 262,144 entries also keeps its normal icon and gets no file listing: reading a
+directory that size costs tens of megabytes of memory before the first entry is reached.
+Each collage image is reduced immediately after decode, so several full-resolution photos are
+never retained at once.
+Raster images and SVG/SVGZ can both appear in the collage. The same picker feeds both the
+Explorer thumbnail and the big reading-pane preview. An archive with no images inside, or an
+encrypted one, keeps the normal icon. Toggle it (or drop back to a single cover image) in
+**Settings ▸ Ebook/comic**. Comic/ebook archives still use their dedicated one-cover path;
+an oversized CB7 presented without a recoverable filename is the safety exception and keeps
+its stock icon.
+
+**Per-type toggle:** the Options dialog lists every format with a checkbox; turn
+any on/off (multi-select with Shift/Ctrl, then Space or right-click → Check/
+Uncheck/Toggle selected).
+
+**Details for the formats Windows can't read:** a companion **property handler**
+(`IPropertyStore`) surfaces each file's facts in Explorer the same way the built-in
+ones do: for the 300+ formats Windows has no native reader for, it fills in image
+**dimensions**, **colour depth** and **DPI**, **EXIF camera / date taken / GPS location**,
+and for audio the **length, bitrate, artist, album, title, track, genre and year**. These
+appear in the **bottom/side Details pane**, the **Properties ▸ Details** tab, the **hover
+tooltip**, and as **sortable / groupable columns**; and the columns are *offered* in the
+"Choose columns…" picker for those file types, not just reachable by search. (Camera RAW
+even gets its GPS location, which Windows itself leaves blank.) It's **read-only** (it never
+writes back to your files) and **crash-isolated** behind the same panic boundary as the
+thumbnail provider, so a malformed file can't take down Explorer.
+
+**Very big files get their real picture.** A file past 256 MB is never loaded whole, on any
+surface (Explorer tile, preview pane, Quick preview, `st2k`), and still shows what the same
+file shows at a normal size: a Photoshop document's full picture (or, saved without
+"Maximize compatibility", its layers flattened), a PDF's or Illustrator file's first page or
+artboards, an Office, Visio, Publisher, 3ds Max or SolidWorks thumbnail, a RAR or 7z comic's
+cover, an Affinity document's preview, a DjVu book's first page, a 3D model, a FITS image, a huge TIFF/BigTIFF, PPM, PGM or TGA scan read a row at a
+time, and, for everything else, the picture in the file's first 16 MB when that is where it
+sits. A picture that runs past that point is never drawn from its first rows. Checked before
+every release by growing a real sample of every supported format past each size limit.
+
+**Big preview in the reading pane:** a companion **preview handler** (`IPreviewHandler`)
+renders the image LARGE in Explorer's preview/reading pane (and the file-open dialog's
+preview) for the same 300+ formats: ebook/comic covers, RAW, HEIC, PSD/`.blend`, audio
+album art, a video frame, and the rest. Like the thumbnail, it now handles **large files
+without loading them whole**: it grabs a single frame from a multi-gigabyte video, seeks
+straight to embedded album art in a long audiobook, or pulls the cover out of an oversized
+comic/`.blend`/Photoshop file, so files that used to bog down the preview host or show a
+blank pane now preview instantly, and your size limit is respected. It runs in Windows'
+**out-of-process preview host** (never inside `explorer.exe`) and is crash-isolated behind
+the same panic boundary, so a malformed file yields an empty pane, never a crash.
+
+**Cloud folders (OneDrive, Synology Drive, Nextcloud, …):** inside a synced folder Windows
+asks only ONE thumbnail provider for every file, the cloud app's, even for files that are
+fully downloaded, so without help none of the formats above would ever show there. SageThumbs
+links a small provider of its own into that slot and keeps a record of the one it replaced.
+For a file whose bytes are on this PC it draws what it would draw anywhere else (ours for our
+formats, Windows' or another program's handler for theirs); everything else, online-only files
+included, goes back to the cloud app's own provider, so nothing is ever downloaded just to draw
+a thumbnail. The link is made at install, re-made at sign-in (a cloud app may put its own
+provider back when it starts) and whenever Settings opens, and removed at uninstall.
+Settings ▸ General ▸ **Thumbnails in OneDrive & cloud folders** turns it off and hands every
+slot back. Packaged cloud apps that draw their own thumbnails (Dropbox, iCloud) are left alone.
+`st2k doctor` lists each cloud folder and whether it is linked.
+
+---
+
+## 2. Right-click image toolkit (`SageThumbs 2K ▸`)
+
+A nested submenu on both the classic and Windows-11 context menus. Appears only
+when the selection contains a supported image; archive thumbnails (zip/rar/7z, see §1)
+are deliberately left out of this menu (thumbnail and preview only).
+
+**Seven groups, most-used first**, each fenced by a divider on the classic menu: Convert into ·
+Convert... · Resize · Rotate / flip | Shrink for email · Compress to size · Strip metadata |
+Copy to clipboard · Copy text (OCR) · Copy as data URI · Upload | Combine into PDF ·
+searchable PDF · CBZ · Save frame as image | Rename · Files to folder · Sort into folders |
+Image info · Pick color | Set as wallpaper · lock screen · folder icon | Settings. Save frame
+as image shows only when the selection holds a video. The Windows 11 flyout keeps the order
+but has no dividers.
+
+**Multi-file jobs run in parallel.** When the selection has several files, Convert /
+Resize / Rotate / Strip and Combine-to-PDF fan out across every CPU core via a tiny
+dependency-free scoped thread pool (`crates/base/src/parallel.rs`), 6–15× faster than the old
+one-at-a-time pass, with no rayon weight added to the in-Explorer DLL. Each worker
+initializes COM, which incidentally fixed HEIC/RAW silently failing in the Convert path.
+
+- **Convert into ▸** PNG · JPG · WebP · WebP (lossless) · **AVIF** · BMP · GIF · TIFF ·
+  Icon (.ico); one-click, writes a new file next to the original (never overwrites). EXIF/XMP/IPTC
+  ride along into JPEG and PNG outputs (see **Saving**, below).
+  *HEIC→JPG works here too (a `.heic` decodes via WIC).* *(AVIF is written via the bundled
+  ImageMagick; if that engine is ever missing or unusable, the verb reports an error
+  (ImageMagick not available) rather than silently doing nothing.)*
+- **Convert…** (top-level): opens the **Convert dialog** (XnView-style): an
+  **Output format** dropdown, native **JPG · PNG · WebP · BMP · GIF · TIFF · ICO ·
+  TGA · QOI · PNM · PDF**, plus (on a full install with the bundled ImageMagick)
+  **18 more: AVIF · JPEG XL · PSD · DDS · JP2 · PCX · SGI · EXR · HDR · Farbfeld · PAM · PFM · DPX ·
+  FITS · XPM · PICT · RAS · PALM**; a per-format **Settings…** button (JPEG quality ·
+  **WebP lossless/lossy + quality** · PNG compression · **AVIF / JPEG XL quality**), a **Resize** checkbox with
+  presets *or* a custom **W × H**, a **Watermark** option (an image of your choice in a
+  corner or the centre, with size and opacity), an output-folder picker, and a progress bar. Batch:
+  applies to the whole selection. OneDrive files that are still cloud-only (not yet
+  downloaded to this PC) are skipped instead of failing the batch, and the dialog tells
+  you how many were skipped. On completion it offers to **open the output folder**.
+  *(Magick-only targets are hidden if the bundled engine is ever unavailable.)*
+- **Combine into PDF**: selected images → one PDF (one image per page, sized to the
+  image). Optionally with a **page margin** (Settings ▸ Saving), and the engine also
+  supports fitting onto A4 or Letter, centred, never enlarging a small image.
+- **Combine into searchable PDF (OCR)**: the same PDF, plus an invisible text layer. Each
+  page is read by Windows' own OCR engine and every word is laid exactly over its pixels,
+  so any PDF viewer can search the document and select or copy its text while it still
+  looks exactly like the images. Also `st2k pdf --searchable` and the MCP `pdf` tool's
+  `searchable` argument.
+- **Combine into CBZ (comic)**: selected images → one `.cbz` comic archive (a ZIP,
+  stored uncompressed), pages natural-sorted by name (page 2 before page 10). A
+  **`ComicInfo.xml`** goes in as the first entry with the page count and each page's
+  size, so Kavita, Komga and YACReader read the book's details instead of guessing.
+- **Resize ▸** Fit 1920×1080 · 1280×720 · 800×600 · Scale 50% · 25%: quick
+  presets that write a "(resized)" copy and never upscale.
+- **Shrink for email ▸** Small (640 px) · Medium (1024 px) · Large (1600 px):
+  caps the longest edge and writes a small "(email)" JPEG (q82, flattened onto
+  white); never upscales, never touches the original.
+- **Rotate / flip ▸** right 90° · left 90° · 180° · flip H · flip V (writes a
+  "(edited)" copy, never touches the original). **JPEGs rotate/flip losslessly**:
+  the DCT coefficients are rearranged directly (no re-compression, zero quality
+  loss), for baseline JPEGs with block-aligned dimensions; other JPEGs and formats
+  fall back to a normal re-encode.
+- **Rename ▸** By date taken · By camera + date · **By artist - title** ·
+  **By track - title**: batch-renames the selection from its metadata: photos from
+  EXIF (`YYYY-MM-DD HH.MM.SS`, optional camera prefix), music from audio tags (via
+  `lofty`: `Artist - Title`, or zero-padded `NN - Title`). Files missing the needed
+  metadata are left untouched; name clashes get a `(2)`, `(3)`… suffix.
+  **Rename with pattern…** opens a small dialog for everything else: a pattern with
+  `{name}`, `{ext}`, `{n}` / `{n:3}` (a padded counter), `{date}` (capture date, else the
+  file date), `{w}` and `{h}`, plus a find-and-replace, with a live preview of the first files
+  before anything is touched. The last pattern is remembered; nothing is ever overwritten.
+- **Files to folder**: create a folder and move the selected file(s) into it
+  (works on any file type). One file → a folder named after it (no prompt); several
+  → a name-prompt dialog. Always makes a *fresh* folder (never merges into an
+  existing one); collisions get a `(n)` suffix. A progress bar tracks the move and
+  the dialog stays responsive while it works.
+- **Sort into folders ▸**
+  - **By image size**: move each selected image into a `WIDTHxHEIGHT` subfolder of
+    its own folder.
+  - **By date taken**: move each selected image into a `YYYY-MM-DD` subfolder of
+    its own folder, named from its EXIF capture date. A file with no capture date
+    is left where it is.
+  - **By audio tag…**: sort selected music files into folders from their tags. A
+    dialog takes a destination, a folder-name **template** (`$artist - $album`,
+    tokens `$artist`/`$album`/`$title`/`$track`, `\` to nest), a "missing tag" text,
+    and **copy-vs-move**. Tags read via `lofty`. A progress bar tracks the sort and
+    the dialog stays responsive while it works.
+- **Copy text (OCR)**: extract text from the image to the clipboard.
+- **Image info**: a verbose, **copyable** metadata window: file size & type, image
+  format, colour depth/channels, dimensions, and **every EXIF tag** the file carries
+  (camera, lens, exposure, software, date, GPS with a map link, …), scrollable, far
+  more than a one-line popup. Plus the facts EXIF has no field for: whether the file
+  carries **C2PA Content Credentials**, whether a HEIC has an **HDR gain map**, the
+  **AI-generation tags** (digital source type, prompt, prompt author) newer tools write,
+  the **names on face regions** Lightroom and phone cameras tag, and for a **DDS** the real
+  texture compression (BC1 to BC7, signed variants named as such) and mip-level count.
+- **Pick color (eyedropper)…**: a **system-wide screen color picker**: your
+  mouse becomes an eyedropper anywhere on screen, with a 10× magnifier loupe that
+  follows the cursor; **press Space (or click)** to copy the pixel's `#RRGGBB` to
+  the clipboard, Esc to cancel. Picks from anywhere, not just the selected image.
+  On an HDR display, the picker adds a small note that the reading is approximate: it
+  is sampled from the tone-mapped SDR picture, since a true HDR value can't be read
+  this way.
+  The **screenshot region editor** carries the same eyedropper as a tool (the
+  **pipette button** on the toolbar, or the **`E`** key): the magnifier loupe lets
+  you sample any pixel of the frozen capture; a click copies its `#RRGGBB`, flashes
+  "Copied ✓", and sets it as the annotation colour, so you can grab a colour and Esc
+  out, or keep drawing in it.
+- **Strip metadata (EXIF/GPS)**: lossless removal of EXIF/IPTC/XMP/comments
+  (keeps the ICC color profile), for **JPEG, PNG, WebP, SVG and HEIC/AVIF**. An SVG loses
+  its `<metadata>`/`<title>`/`<desc>` at the document level (the author, the machine name,
+  the editor history) while a `<title>` *inside* a shape is kept, because that one is what
+  a screen reader reads out. HEIC/AVIF are handled without moving a single byte: the EXIF
+  and XMP items are overwritten in place with valid empty ones of the same length, so no
+  file offset shifts and a photo can never be corrupted by the strip; if the file's layout
+  is anything we do not fully recognise, it refuses instead of half-stripping. It also removes
+  **C2PA "Content Credentials"**, the provenance manifest newer cameras and AI
+  image tools embed: it is neither EXIF nor XMP (a JUMBF box, carried in JPEG
+  APP11 segments or a PNG `caBX` chunk), so ordinary metadata scrubbers leave it
+  in the file. A **JPEG XT** HDR extension layer wears the same APP11 marker and
+  is deliberately left alone. Image info shows whether a file carries Content
+  Credentials before you decide to strip them.
+
+  *(These four were a "Tools ▸" submenu; they're now individual top-level entries:
+  show/hide + reorder each like any other menu item.)*
+- **Copy to clipboard**: the image as a bitmap.
+- **Copy as data URI**: base64-encodes the file and copies a `data:<mime>;base64,…`
+  URI to the clipboard as text, ready to paste into CSS/HTML/JSON.
+- **Upload (copy link)**: uploads the selected image(s) to a keyless, no-account
+  host and copies the resulting link(s) to the clipboard. The built-in hosts are tried in
+  order until one takes the file, and the list is yours to edit (Settings ▸ Screenshots ▸
+  *Edit upload hosts…*, or `st2k upload-hosts`). Multi-select uploads every selected image
+  and copies all the links. A small **"Uploading…" indicator** shows while the transfer
+  runs, so a multi-second upload never looks like a dead click.
+  **Every link says when it expires.** Hosts keep files for anything from a few hours to
+  years, so the result window shows under each link when its host deletes it, and
+  **Recent uploads** (the button in that window, Settings ▸ Screenshots, the tray menu, or
+  `st2k upload-history`) lists every link you uploaded with the time it has left, or when it
+  expired. The expiry comes from each host's published policy at the moment of upload; a
+  custom host of your own shows none.
+  Upload hosts are third-party, best-effort services: availability is not guaranteed, and
+  some may reject traffic from datacentres or VPNs. SageThumbs shows the host's failure
+  reason when an upload is refused.
+- **Set as folder icon**: makes the selected image the icon of its containing
+  folder (writes a hidden square `.ico` + `desktop.ini`, marks the folder
+  customized, and refreshes Explorer (the same mechanism as Explorer's own
+  Customize ▸ Change Icon).
+- **Set as wallpaper ▸** Stretched · Tiled · Centered · Filled · Fitted · Spanned.
+- **Set as lock screen** - the same decode path as wallpaper, then Windows' own lock-screen setting.
+- **Settings**: opens the Settings window (same as the Start-menu shortcut), so
+  settings are reachable straight from the right-click menu.
+
+**Context-menu preview** (the signature SageThumbs/XnShell touch): right-click a
+single image and the menu itself shows a small **thumbnail + filename +
+dimensions/size**, at the top of the `SageThumbs 2K ▸` submenu by default, or
+directly on the main menu, or off (Options → "Menu preview:"). Clicking the
+preview opens the image. Works for every format the fast in-process tiers cover
+(HEIC, RAW, ebook covers, PSD/blend previews, **SVG/SVGZ**, …), but **not** video,
+PDF, or the ImageMagick-only long tail (DPX, J2K, PCX, metafiles, …): those tiers are
+deliberately skipped inside the menu (a right-click must never freeze Explorer
+on a slow render), so such files show a caption-only tile with name + size while
+still thumbnailing normally in the Explorer view itself. (SVG is the exception in
+that group: resvg is pure-Rust and in-process, so it renders here too, bounded by
+the same short menu-preview budget.) Transparent images sit
+on a **subtle checkerboard** (on by default,
+toggleable) so see-through areas don't vanish into the menu; it follows the
+light/dark menu theme automatically. At 100% display scale with no menu skin the
+preview is a native bitmap menu item, so the menu keeps Windows' dark theme. At any other
+scale, or with a menu skin (StartAllBack, ExplorerPatcher, …), SageThumbs draws the tile
+itself, sized for the display: Windows would otherwise draw a bitmap item twice over itself
+there (the overlapping "3 KB KB" captions of #61) or squash it to a sliver, and the price is
+that Windows then draws that menu in its light classic style. *Note: it appears in the classic
+menu ("Show more options" on stock Windows 11); the modern Win11 menu does not
+allow custom bitmap items.*
+
+---
+
+## 3. Quick preview (press Space, see the file)
+
+A QuickLook-style instant previewer, on by default unless another Space-bar previewer (QuickLook,
+Seer) is already installed (switch it in **Settings ▸ Quick preview**).
+Tap **Space** in Explorer (or on the Desktop) and a borderless, dark/DPI-aware popup shows the
+selected file at full size, without stealing focus from Explorer; tap Space again (or Esc) to
+close, or hold Space and release to "peek". While it's open, arrow-clicking a different file in
+Explorer follows the selection. A selected **`.lnk` shortcut** resolves to its target.
+The preview has its own **taskbar button and Alt+Tab entry**, so one that ends up behind another
+window or minimized is one click away; and tapping Space in Explorer while the preview is hidden
+behind it, or minimized, brings it back instead of closing it unseen.
+
+**It works in [Everything](https://www.voidtools.com/) search results too** (voidtools' file
+finder, v1.4 and v1.5, installed or portable, under any instance name). Click a result and tap
+Space; the preview follows as you arrow through the hits, exactly as it does in a folder. While
+the caret is in Everything's search box, Space stays a space: the preview is only ever offered
+to the result list.
+
+**And inside any app's Open/Save dialog.** Picking a file to attach, upload or open: click it in
+the dialog and tap Space to see what it actually is, without cancelling out to go look. Space
+keeps its normal meaning while the caret is in the file-name box, so it only ever previews once
+you have clicked into the file list. 64-bit apps only.
+
+It previews **everything the thumbnailer can decode** (all the image/RAW/ebook/office/… formats),
+plus these viewer-only extras:
+
+- **Video and audio playback** via Media Foundation (the OS codecs, zero bundled bytes), in a
+  window sized to the clip's real shape (a phone video shot in portrait opens portrait). The
+  transport strip has **⏮ / ⏭ previous-and-next-file buttons**, **play/pause**, an
+  **`m:ss / m:ss`** time readout, a **click-and-drag seek bar**, a **mute + volume slider**, a
+  **repeat toggle** and a **speed button** (0.5x · 1x · 1.25x · 1.5x · 2x); repeat, speed and
+  volume are all remembered. It is fully keyboard-driven too: **←/→** seek (with **Ctrl** for 30 s
+  and **Shift** for 1 s), **↑/↓** volume, **M** mute, **L** repeat, **K** or **P** pause,
+  **Home/End** jump to the ends, **Page Up / Page Down** move to the next file in the folder.
+  A **button on the strip itself** flips **←/→** to switch files instead of seeking, for anyone
+  flipping through a folder of clips rather than watching one. Every control on the strip names
+  itself on hover. Audio files (mp3/flac/ogg/…) play through the same transport, with the track's
+  embedded cover art as the backdrop. When Windows has no decoder for part of a file, the title
+  bar **says which**: "No sound: DTS isn't supported by Windows" (Windows ships no DTS decoder),
+  or "Still frame: HEVC video needs the HEVC Video Extensions from the Microsoft Store". Codec
+  packs such as K-Lite cannot fill that gap, because they plug into DirectShow, not the Media
+  Foundation the preview plays through.
+- **Animated GIF / APNG / animated WebP** play frame-by-frame (respecting each frame's delay).
+- **Font specimens** for `.ttf`/`.otf`/`.ttc` **and `.woff`**: the font's own name, a pangram at
+  several sizes, and an A–Z / a–z / 0–9 glyph sheet, all rendered in the font itself (via the OS
+  text stack). A `.woff` web font is just an sfnt with compressed tables, so it is unpacked on the
+  fly and previews exactly like a `.ttf`.
+- **Archive listings** for `.zip`/`.7z`/`.rar` and zip-based packages (.jar, .whl, .nupkg, .appx,
+  .msix and the like): a sorted file tree with sizes, read from the central directory / headers
+  only; nothing is extracted. Android packages (.apk) show their app icon instead.
+- **Local HTML rendering** (opt-in, off by default) in an embedded **locked-down** WebView2:
+  JavaScript disabled and **every non-`file://` request blocked**, so a page cannot phone home or
+  load remote trackers. A separate opt-in can live-load a `.url` or `.webloc` shortcut's real page
+  in a throwaway session; left off, either one shows its target address as text. Adds next to nothing to the app size
+  and never touches the shell-extension DLL (the browser engine ships with Windows 11).
+- **Rendered Markdown**, GitHub-style: headings, lists, block quotes, fenced code, and inline
+  **bold**/*italic*/`code`/~~strike~~ plus **clickable links** (http/https/mailto only), including
+  **bare URLs** typed straight into the text (`https://…` / `www.…`), GitHub-style, without needing
+  `[text](url)`. URLs inside code stay literal. README
+  "hero" sections written in raw HTML (centered banner + title + tagline + badges) render properly,
+  **images stored alongside the file display inline** (GitHub-style sizing, clickable when linked),
+  and **tables draw the full grid with shaded alternating rows and auto-fitted columns**. The text
+  column is capped and centered like a GitHub page. Web-hosted images (status badges and the like)
+  show as labeled chips by default; a **"Load web images"** button appears on the title bar
+  whenever the open document actually references any, and fetches and displays them (HTTPS only,
+  size-capped, in the background). Off by default, and your choice is remembered.
+  Markdown with headings also gets a **collapsible outline sidebar** (a "Contents" panel): a
+  clickable, indented list of the headings that jumps to a section on click (and selects it even
+  when the page is already at the bottom) and highlights the one you are reading as you scroll.
+  The panel slides open/closed via the outline button on the toolbar; the choice is remembered.
+- **CSV/TSV/PSV column view**: spreadsheets-ish files render as a real gridded table (quoted
+  fields, embedded commas/newlines, `;`-separated exports auto-detected, tab for `.tsv` and pipe
+  for `.psv`), with a row-number column so you can keep your place, capped with a note for huge
+  files.
+- **Find in the document with Ctrl+F**, in text, code, Markdown and CSV tables alike: a bar with a
+  live match count, **Enter/F3** for the next hit and **Shift** for the previous, **Esc** to close.
+  F3 reopens the last search without retyping it.
+- **SQLite databases** (`.db`/`.sqlite`/`.sqlite3`/…): a look inside without opening a database
+  tool. You get the size and page layout, then a section per table with its real column names and
+  the first rows in a gridded table, and the full `CREATE` statements at the end in a
+  syntax-highlighted block. Big files stay instant because it reads only the pages it needs rather
+  than loading the file, and long tables are capped with a "first N of M rows" note. Strictly
+  read-only: the file format is parsed directly, so no SQL is ever run against your database.
+  `.db` is a generic extension, so anything that turns out not to be a SQLite file (`Thumbs.db`,
+  for one) previews exactly as it did before.
+- **Email files** (`.eml` and Outlook `.msg`): an exported message opens as a message rather than
+  as a wall of MIME. You get the subject as the heading, then From / To / Cc / Date, then a count
+  and the names of anything attached, then the text of the mail. HTML-only mail is flattened to
+  readable text. Nothing in the message is fetched from the internet, and **attachments are listed
+  only**: never opened, never extracted, never written anywhere. Everything that came out of the
+  file is escaped before it is displayed, so a subject line dressed up as a link renders as the
+  text it really is. A `.msg` that is not really a message, or an `.eml` that is not really mail,
+  previews exactly as it did before.
+- **A hex view for files nothing can render.** An unknown binary shows a classic hex dump -
+  offsets, bytes, and the printable characters beside them - instead of a bare info card, so you
+  can at least see what a file starts with. Long files are truncated with a note saying so
+  rather than being read end to end.
+- **Folders show their total size.** Selecting a folder and tapping Space totals what is inside
+  it. When a folder is too large or too deeply nested to finish counting quickly, it says "more
+  than" that figure rather than showing a number that is simply wrong.
+- **Save the frame you are paused on.** The Save button works on a video, writing the frame at
+  the current position as an image; the right-click menu offers "Save frame as image" for a
+  video-only selection instead of the picture verbs that never applied to it.
+- **The toolbars are keyboard-reachable.** Tab moves into the caption toolbar and the video
+  controls, arrows move along them, Enter or Space presses the focused button, and Escape
+  returns to the content. The focused button draws a visible ring.
+- **A per-extension blocklist** (**Settings ▸ Quick preview**): list the extensions you never
+  want previewed at all. Empty by default, and deliberately separate from the File types page,
+  which governs Explorer thumbnails rather than the preview window.
+- **3D-print models** (`.stl`, `.obj`, `.ply`, and a `.3mf` that carries no slicer picture,
+  Bambu Studio's and OrcaSlicer's multi-part files included): these carry no picture inside
+  them, so one is drawn. The model is rendered shaded from a consistent three-quarter angle above and in front
+  of it, the way a slicer shows it, in Explorer
+  thumbnails and at full size in the preview, on a transparent background like any other
+  thumbnail. A folder of prints becomes something you can tell apart at a glance. A scan of
+  millions of triangles is drawn whole, triangle by triangle as the file is read, so it never
+  has to fit in memory. Geometry is read defensively (the drawing work and the points held in
+  memory are capped, non-finite values dropped) because the bytes come from a file someone
+  else made.
+- **Jupyter notebooks** (`.ipynb`): markdown cells render, code cells show syntax-highlighted with
+  line numbers in the notebook's language, and text outputs (stream, results, cleaned error
+  tracebacks) display beneath their cells.
+- **Syntax-highlighted** text/code with **line numbers**, editor-style, for the common languages
+  (Rust, Python, JS/TS, JSON, Java, Go, C/C++, C#, Ruby, PHP, Lua, Kotlin, Swift, shell, HTML/CSS,
+  SQL, YAML/TOML/ini and more: comments, strings, numbers, keywords, and JSON/object keys in their
+  own colour), a small pure-Rust lexer, in both standalone code files and Markdown code fences.
+  Files with no extension are covered too: the well-known names (`Makefile`, `Dockerfile`,
+  `.gitignore`, `.bashrc`, `go.mod` and friends) are recognised by name, and a script starting
+  with a `#!` line is recognised by its interpreter.
+- **Transparent images sit on a checkerboard** rather than vanishing into the background, the
+  same one the right-click preview uses and governed by the same setting. They are also
+  area-averaged when shown smaller than life size, so thin lines and fine texture stay clean
+  instead of breaking up.
+- **Files saved without an extension still preview.** If the content is recognisably a picture
+  (PNG, JPEG, GIF, BMP, WebP, TIFF, AVIF/HEIF, QOI), it is shown as one instead of falling back
+  to a plain info card.
+- **View source**: anything that RENDERS can be flipped to its raw text and back: a Markdown file,
+  a CSV/TSV table, a Jupyter notebook, a rendered HTML page, an SVG. Hit the toolbar's **`{ }`**
+  button or press **Ctrl+U** and you get the underlying file, syntax-highlighted with line numbers,
+  fully selectable and copyable; press it again to go back. The mode sticks while the window is
+  open, so **←/→** keeps showing source as you flip through a folder, and a fresh preview always
+  opens rendered. The button only appears on files that actually have both views.
+- **Non-Unicode text files decode properly.** A text file that isn't UTF-8 is worked out rather
+  than mangled: **GBK/GB18030** (Simplified Chinese), **Shift-JIS** (Japanese), **Big5**
+  (Traditional Chinese) and **EUC-KR** (Korean), plus your own system codepage for the
+  single-byte languages, and UTF-16 saved without a byte-order mark. Uses the tables already in
+  Windows, so it adds nothing to the download.
+- **Chinese, Japanese, Korean and Thai text wraps instead of running off the edge.** Those
+  scripts don't separate words with spaces, so lines are broken between characters instead,
+  following the usual typesetting rules: closing punctuation is never pushed to the start of a
+  line, opening brackets are never stranded at the end of one, and vowel/tone marks stay attached
+  to the character they belong to. For CJK that per-character break is the correct convention. For
+  **Thai** it is an improvement, not perfection: proper Thai line breaking needs dictionary-based
+  word segmentation, which isn't bundled, so a break can land inside a word. The text is readable
+  and fully on-screen either way.
+- **Multi-page PDF navigation**: PageUp/PageDown or the arrow keys (or on-screen ◀ ▶ buttons) page
+  through the document, with a "current / total" indicator in the title bar.
+- **Zoom + pan** on images (wheel to zoom at the cursor, or Ctrl+=/Ctrl+- to zoom in one step at a
+  time, centred the same way; drag to pan, **Ctrl+0** to toggle fit/100 %). Keyboard zoom can
+  reach true 100% even in a small window showing a very large image. Long text/code and rendered
+  Markdown have wheel/touchpad scrolling plus a visible
+  scrollbar: drag its thumb to scrub through the document, or click the track to move one page.
+- **Select & copy**: drag-select in text/code/log **and rendered Markdown** previews
+  (double-click selects a word; **Shift+arrows**, Shift+Home/End/PgUp/PgDn and the Ctrl
+  word-wise variants select from the keyboard; **Ctrl+A** selects all), then **Ctrl+C** copies
+  the selection, or, with nothing selected, the whole document. Markdown copies as the text you
+  SEE (tables come out tab-separated, so they paste into a spreadsheet as columns); **Ctrl+Shift+C**
+  copies the raw Markdown source instead. Ctrl+C elsewhere copies the content too: the image
+  itself (the exact PDF page / animation frame being shown), or the info card's text. The
+  toolbar's copy button copies the file's path instead. Plain **Home/End** jump to the
+  top/bottom of a text or Markdown document.
+- **Folder browsing + full-screen**: **←/→** (or PgUp/PgDn) flip through the current folder's
+  previewable files without closing the popup, QuickLook-style. **Double-click** a picture, PDF
+  page or video (or press **F11** once the preview has focus) for borderless full-screen; double-click
+  again, press Esc or F11, or double-click the title bar to go back.
+- **It remembers the size and the place you drag it to.** Out of the box each file opens sized to
+  its own content (a photo at its real pixels, a document at reading width), centred. Resize the
+  window once and that becomes the size, for the next file and for every preview after it,
+  instead of snapping back; move it and the next preview opens where you left it (unless that spot
+  is on a monitor that is no longer connected). **Double-click the title bar** to forget both and
+  go back to fitting each file, centred. The size is stored independently of display scaling, so
+  it looks the same on a second monitor at a different zoom level.
+- **It stays on screen.** The window always opens, and grows, inside the visible part of the
+  screen: a tall picture slides up rather than disappearing under the taskbar.
+- **It remembers the volume.** Turn a clip down (or mute it) and the next video or track starts
+  there, rather than every file blasting at full volume again.
+- A slim caption **toolbar**: light/dark, keep-on-top, copy path, **copy text (OCR)**, **save**, file
+  info, upload & copy link, open with…, open, settings, close. The icons come from a font
+  bundled with the app rather than from Windows, so they look the same on every machine, and
+  they are drawn at one consistent size with clean edges rather than the faintly coloured ones
+  you get when icons are rendered the way text is.
+- **A light/dark button for the window you are looking at.** The Theme setting decides what
+  every preview opens as; this switches just this one, and only until you close it. Useful for
+  the case a single setting can't cover: a dark photograph reads better on a dark background
+  even if you keep the rest of the app light, and a scanned page is the other way round. The
+  button shows the background you'll get, a sun while you're dark and a moon while you're
+  light.
+- **A settings button** that opens Settings straight on its **Quick preview** page, instead of
+  making you find the window and then the page inside it.
+- **Upload & copy link is opt-in and always asks.** One click would otherwise put the file on a
+  public website, so the button stays off until you turn on **Allow uploading from the preview**
+  (a click while it is off says so and offers that page), and once on it names the file and asks
+  before every upload.
+- **Copy text (OCR)** right from the toolbar: click it and the words in the picture you're
+  looking at land on your clipboard, and open in a small editable window so you can fix anything
+  the scan misread. It works on **every format SageThumbs can decode**, not just the few Windows
+  can open on its own, because the file is decoded through the normal pipeline before it reaches
+  the recognizer: a PSD, a camera RAW, a HEIC, a scanned DjVu all work. On a multi-page PDF it
+  reads **the page you are on**, not page 1. The button only appears for picture-ish content:
+  a text or Markdown preview already has selectable words.
+- **Save the page or frame you're looking at.** Click the toolbar's save button, or press
+  **Ctrl+S**, to save what's currently on screen as a PNG: the page you're on in a multi-page
+  PDF, or the frame you're paused on in an animated GIF/APNG/WebP or video.
+- **Print what you're looking at.** The toolbar's print button, or **Ctrl+P**, opens the
+  standard Windows print dialog and prints the image, PDF page or animation frame fitted to
+  the page.
+- A calm **info card** (icon, name, size, date) for unsupported files or folders, never an error.
+
+The viewer is a separate single-instance process, so a hostile-file decode can only take down a
+throwaway window, never Explorer or the hotkey helper. It rides the same opt-in background helper
+as the screenshot/custom-action hotkeys, so turning it on adds no extra resident process.
+
+**Responsiveness, in plain words:** a slow file (a stalled network share, a removable drive that
+has gone to sleep) can never freeze the preview window. The window appears right away, before the
+file is even read, and it keeps answering to clicks, closes, and key presses the whole time a slow
+read is happening in the background. If you switch to a different file before the slow one has
+finished loading, only the file you're now looking at can ever appear, never a leftover result
+from the one you left. Each loading stage is held to a stated time budget, a stall or an
+abandoned load is logged with the current count against a cap on how much of that can pile up,
+and closing the window while something is still loading cancels that load's own bookkeeping
+right away.
+
+---
+
+## 4. Options dialog
+
+Reached from the Start-menu shortcut (`SageThumbs 2K`); the window is titled
+**Settings**. Native Win32, dark-mode aware, 36 languages. **Redesigned in 0.7.0**: a
+Windows 11-style **category rail** (General · Appearance · File types · Ebook/comic ·
+Right-click menu · Screenshots · Screenshot files · Quick action · Advanced · Quick preview ·
+Data & Backup · Licence) on
+the left with a content page on the right: **toggle switches**, category icons, and a titled
+header per page. Everyday knobs up front; Diagnostics / Updates / Backup tuck under
+**Advanced**. (Fixed-size window; the old single long scroll is gone.)
+
+**Search all settings** (1.9.0): the box at the top right of the window matches every switch
+on every page, by its label *and* by its description text, and lists the hits as
+"Page ▸ Setting". Picking one opens that page and highlights the control. Ten pages and forty-odd
+switches is past the point where hunting by tab is reasonable.
+
+**A dot on the rail** marks any page holding a setting you have changed from its default, so
+"what did I turn on" is answerable without opening all ten. Opening that page clears its dot
+for good; it points at somewhere you have not looked, and is not a permanent badge.
+
+- **General:** enable thumbnails, prefer embedded (EXIF) thumbnails, the **Limits & quality**
+  block (max file size, max thumbnail size, JPEG quality, PNG compression), and the language
+  picker. On a portable copy the per-user Explorer registration switch sits at the top.
+- **Appearance** (new in 1.9.0): every "what does the tile look like" switch in one place, having
+  previously been split between General and File types. **What goes in the corner of a
+  thumbnail** is one three-way choice, because only one thing fits there: *Windows' file-type
+  icon* (the default: the associated program's icon. Explorer draws it unaided on documents, but
+  never on a type it treats as a picture, which is what Photoshop, Illustrator and most editors
+  register their formats as, and it draws a blank page once a program's registration has gone
+  stale, so for those SageThumbs tells Explorer which icon to draw; a program that has switched
+  its own icon off is left alone, and `st2k doctor` names it), *a SageThumbs format mark* (the file's format
+  stamped in the corner, as a colour-coded file mark with one colour per kind of file, or as
+  plain text; never on a Microsoft Store app's own file icon, such as Notepad's on a `.txt`,
+  which Windows draws from a PNG inside the app), or *nothing*. Picking either of the last two also stops Explorer painting over the
+  corner, which the two separate switches this replaced could not guarantee. **The installer
+  asks this once on a first install**, and it is changeable here at any time. When the corner
+  holds a SageThumbs format mark, **Format mark size** picks how big it is drawn (Small, the
+  original, or Medium or Large for reading the format at a glance); it scales with the tile,
+  so the choice looks the same in every Explorer view. Alongside it:
+  **paint a checkerboard behind transparent thumbnails** (off by default; Explorer normally
+  shows the folder background through them), **its colours** (Automatic, Dark so white images
+  stand out, or any two of your own from the Windows colour picker; the same colours draw the
+  right-click and Quick preview checkerboards) and **use a video's cover art instead of a frame**.
+- **File types:** purely the per-format list, with search, bulk select and **Defaults**.
+- **Right-click menu:** enable the menu, **show it on all file types** (so it's there everywhere; an
+  unsupported file gets a condensed file-utility set: Files to folder / Sort into folders
+  / Rename / Pick color), menu-preview placement (off / submenu / main menu), **a subtle
+  checkerboard behind transparent previews** (on by default), and **show quick actions
+  (Convert / Resize / Rotate) directly in the main right-click menu** (they then leave the
+  SageThumbs 2K submenu, so nothing is listed twice).
+- **Limits & quality:** max file size (MB), max thumbnail size (px), JPEG quality,
+  PNG compression. **Max file size bounds what is read INTO MEMORY, not what can be
+  thumbnailed.** A picture past it is not given up on: it is read off the disk a strip at a
+  time and shrunk as it is read, so a 340-megapixel, several-hundred-megabyte image still
+  produces a thumbnail (about two seconds, with no meaningful memory growth) instead of a
+  stock icon. Lowering the setting yourself still means "do not spend effort on files this
+  big" and is honoured; the default is deliberately set clear of the internal ceiling so it
+  is never the thing that refuses a file the engine could handle.
+  **Settings you have not changed are not written when you press Save**, so they keep
+  following the default and benefit from any later change to it; anything you set explicitly
+  is stored and honoured unchanged.
+- **Saving:** **keep the original file's date/time on Convert / Resize / Rotate /
+  Shrink output** (opt-in; off = "now", like most tools). Plus **keep EXIF and other
+  metadata when converting** (on by default): Convert and Resize carry the camera, lens,
+  exposure, date, GPS, XMP and IPTC from the source into the new file instead of losing them
+  in the re-encode. The saved orientation is reset to "upright", because the pixels already
+  are, so a phone photo can't come out sideways. **Shrink for email deliberately ignores this
+  and always drops metadata** - that path exists to hand a file to someone else, and mailing
+  your home GPS coordinates is worse than losing a camera model. To remove metadata on
+  purpose, use Strip metadata.
+- **Menu items:** an XnShell-style checklist to **show/hide _and reorder_ each
+  SageThumbs 2K right-click entry**, opened with **Edit menu items...** at the bottom of the
+  Right-click menu page. Since 1.9.0 it is its own window rather than a list squeezed under
+  everything else on that page, which is what kept the page cramped: a drag-to-reorder list
+  needs room, and it competes badly with a page that also has sections.
+  Tick/untick to show or hide an item; **drag the rows
+  to reorder them**, and **drag the divider rows** to regroup the menu; the right-click
+  menu mirrors your arrangement exactly (group dividers included; an accent line shows the
+  drop point as you drag, the list scrolls when you drag to its top or bottom edge, and it
+  stays where it was scrolled after the drop). **Right-click a row to add a divider** above
+  or below it, or to remove a divider. Every divider row has its own tick box too: clear it
+  and the menu draws no line there, while the row keeps its place. **Reset** brings back the
+  factory menu (order, ticks and dividers). **Done** tidies doubled dividers and dividers at
+  either end, then applies the list to the menu straight away; **Cancel**, **Escape** and the
+  window's X throw the edit away. Applies to both the classic and the modern Win11 menus.
+  Only an order you actually arranged is kept: if you leave the default, the menu follows
+  the default in later versions too. In an arranged order, an entry a later version adds
+  joins its own group instead of the bottom.
+- **Ebook & comic covers:** sort archive pages naturally, prefer the front-cover image (back and variant covers go last),
+  skip scanlation filler (credits/logos; on by default). **Contact-sheet thumbnails for ZIP/RAR/7z**:
+  on by default, showing a collage of up to four images pulled from a plain archive;
+  switch it off for a single first-image thumbnail, classic CBXShell-style.
+- **Screenshots:** enable the capture hotkey (default Ctrl+PrtScn; a plain PrtScn
+  preset is offered) for the region editor, **plus an optional second "quick-save"
+  hotkey** that grabs the whole screen straight to the clipboard + a saved file
+  with no editor (Off by default); a **split-second screen flash confirms the capture**
+  (like Win+Shift+S), and if the copy or the save failed, a small notification says
+  exactly what went wrong instead of silence. **On an HDR monitor** the capture is taken from
+  the real high-range picture and mapped down for the editor at that monitor's own **SDR content
+  brightness**, so desktop windows come out exactly as on an SDR screen and only what is
+  brighter than them (HDR video, games) is rolled off toward the monitor's peak, keeping its
+  colour; each monitor of a mixed setup is handled on its own. As you drag out the region, a live **`width × height`
+  pixel readout** follows the selection so you can size a capture precisely. In the editor,
+  hold **Shift** while drawing a line or arrow to snap it to the nearest **45° angle**;
+  Esc first cancels the active editor action before closing the capture, and
+  **Ctrl+C copies to the clipboard, Ctrl+S saves, and Ctrl+U uploads it and copies the
+  link** (Enter copies too). Next to **Pixelate** (`B`, the safe way to hide text) sits
+  **Blur** (`G`), a soft Gaussian blur whose strength is a setting (**Blur strength**,
+  2 to 40 px, 12 by default); its tooltip says Pixelate is safer for text, since a light blur
+  can leave words readable. **Crop** (`X`) keeps the part you drag: the rest is shaded until
+  Enter crops (the editor stays open) or Esc cancels, and Ctrl+Z / Ctrl+Y undo and redo a crop
+  like any other edit. Copy, Save, Upload and Copy text all take the cropped picture. A **Copy text
+  (OCR)** button on the editor toolbar (or **Ctrl+T**) reads the *words* out of the region
+  instead of the pixels: the text lands on the clipboard and opens in a small **editable**
+  window, so a misread character can be fixed before you paste it. Works on anything on
+  screen: a dialog you can't select text in, a video frame, a screenshared document.
+  Recognition uses Windows' built-in engine, so it adds nothing to the download. A slashed
+  zero that engine reads as `ø`/`Ø` comes out as `0` inside any word that has a digit in it.
+- **Screenshot files** (its own page, next to Screenshots): what a saved capture looks like.
+  **Save screenshots as** PNG (the default), JPEG (with its own **quality** setting; a
+  transparent capture is laid on white), WebP (lossless), or one of two **HDR formats** that
+  keep an HDR monitor's full brightness and colour instead of the 8-bit picture: **PNG HDR**
+  (16-bit, BT.2020 primaries, the PQ curve, tagged with the PNG Third Edition `cICP` chunk and
+  a `cLLI` light-level chunk) and **JPEG XR HDR** (lossless scRGB half-float, the format
+  Windows' own Game Bar saves HDR screenshots in). Annotations are laid into the HDR file at
+  the monitor's SDR white, so they look as they did in the editor; a capture with no HDR
+  monitor saves in the HDR formats too, at the standard SDR white. The **Screenshot file name** is a
+  template: `{yyyy}` `{MM}` `{dd}` `{HH}` `{mm}` `{ss}` `{ms}` insert the capture's date and
+  time, `{app}` the program that was in front (`Desktop` when nothing was), and `/` or `\`
+  start a subfolder, created when needed. The default, `Screenshot {yyyy}-{MM}-{dd}
+  {HH}.{mm}.{ss}`, gives the names captures always had; the extension follows the format, a
+  character Windows forbids in a file name is dropped, and a reserved device name (`CON`,
+  `NUL`, `COM1`, …) gets a `_` in front. Saving never overwrites: a name already taken gets a
+  number. The clipboard always gets a plain bitmap, whatever the format. **Save to a set
+  folder on Ctrl+S** (a toggle): when on, Ctrl+S auto-saves the capture to a folder
+  you pick with **Set save folder…** (defaults to your Desktop); when off, Ctrl+S asks where
+  to save each time, offering the chosen format and the templated name. **Custom action hotkey:** assign ONE global
+  hotkey to any of a curated set of actions: **pick a color** (the screen color picker),
+  take a screenshot, Convert…, rotate right, move files into a new folder, strip metadata,
+  **upload (copy link)**, **copy text (OCR)** straight to the clipboard,
+  **copy text on screen (OCR)**, or open
+  Settings. **Copy text on screen (OCR)** is the one-key version of the editor button: the
+  capture overlay opens, you drag over the text, and it reads it and closes the moment you
+  release. No editor, no toolbar, no click: press, drag, paste.
+  If you give two of these hotkeys (capture, quick-save, custom action) the same key
+  combination, Settings tells you which two collide and won't let you save until you
+  pick a different combination for one of them, instead of quietly saving both and
+  leaving one of them unreachable.
+  You don't have to bind a hotkey for it either: the tray icon's menu has
+  **Copy text on screen (OCR)** as a plain click.
+  Screen-wide actions run instantly; the file actions operate on the
+  current **Explorer selection** (or prompt with a file picker when nothing is selected).
+  It rides the same opt-in helper, so binding one needs no extra background process.
+- **Quick preview:** enable the Space-bar previewer (see §3) and tune it: **hold-Space
+  peek**, **close when it loses focus**, **open in front** (bring the preview to the
+  foreground when it opens, without pinning it always-on-top), and whether to preview
+  **text/code** files, **Markdown** files, and **local HTML** pages. Off by default;
+  enabling it starts the same opt-in background helper the hotkeys use.
+- **Supported file types:** the full per-extension checklist (Extension / Category
+  / Description columns), with bulk select and a **Defaults** button that re-ticks the
+  recommended set; this resets *only* the file-type list (the whole-dialog factory reset
+  is the **Reset all settings** button under Diagnostics).
+- **Language:** system default or any of 36 complete translations. A release check
+  keeps every locale at the same key and placeholder set as English.
+- **Diagnostics:** a **Verbose logging** toggle and an **Open diagnostics log** button:
+  the app writes a rotating log (version/OS header + a panic hook that records any crash
+  by `file:line` before `panic = abort` aborts) to `%LOCALAPPDATA%\SageThumbs2K.log`, so a
+  bug report can ship a real repro. A **Run Doctor** button checks every enabled file
+  type and reports whether SageThumbs actually owns its thumbnails, naming which other
+  program's icon handler has taken one over if so; the results can be exported as a
+  single zip file, including the relevant tail of the log, for a bug report. A **Repair
+  file associations** button re-registers
+  SageThumbs for every enabled format when another app has hijacked the thumbnails, then
+  clears the thumbnail cache so the fixed types redraw. Plus a **Reset all settings**
+  button that restores every option to its factory default.
+- **Hotkey service:** a live status line (Running / Stopped / Off) and a **Restart** button
+  for the small background helper that powers the screenshot & custom-action hotkeys, plus
+  Quick preview, the **Hide tray icon** toggle (the hotkeys still fire when it's hidden), and
+  **Double-click tray icon**: take a screenshot (the default), open Settings, or do nothing.
+  There is one resident helper, not a separate watchdog. It starts at sign-in from your own
+  Task Scheduler task, not the Windows Run list, so it is not listed under Task Manager's
+  Startup apps. Opening Settings, installing an
+  update, or the next logon brings it back after a crash or manual termination. The hotkeys
+  also **survive the things Windows silently breaks them with**: sleep/resume, locking your
+  PC, remote-desktop reconnects, Explorer restarts (the tray icon comes back too), and app
+  updates all re-register them automatically. If
+  **another app owns your chosen chord**, the status line says so ("hotkey in use by
+  another app") instead of pretending everything works, and it clears itself within a
+  minute of that app letting go. Quitting from the tray icon disables it for good (until
+  you re-enable it here).
+- **Updates:** a **Check for updates** button (plus an *Automatically check for updates*
+  toggle) asks GitHub whether a newer release exists. With the toggle on, SageThumbs also
+  checks on a schedule of its own, and again whenever you open it - **no background service
+  and nothing resident**: the check starts, looks once a day at most, tells you if there is
+  something newer (click the notification to go straight to the update), and closes.
+  Switching the toggle off removes the schedule. When an update
+  is available, SageThumbs can **download and install it for you**: a progress bar shows the
+  download, the file is integrity-checked, Windows asks once for permission, and the new
+  version installs in the background and confirms with a quiet tray notification when it's
+  done, or tells you when a Windows restart is still needed to finish it (until that restart,
+  it asks you to restart before installing another update). A second
+  notification offers to refresh your thumbnails: instead of waiting for Explorer's thumbnail
+  cache to expire on its own, clicking it refreshes them right away. If antivirus, a security
+  policy or GitHub itself gets in the way, it **says so** rather than
+  failing quietly, and points you at the releases page. You can still grab the installer from
+  there by hand if you prefer. The portable copy never installs itself: it points you at the
+  new portable zip.
+- **About:** a compact card: the eye logo, a **version pill that links to the GitHub
+  repo** (with the GitHub mark), a live **"Up to date" / update-available pill** that
+  re-checks on click, and a **Send feedback** pill, plus the licence, copyright, and the
+  clickable LunarWerx Studios wordmark. Opens **centered over the Settings window**. The
+  Settings main view also carries a small author credit and a promo banner.
+- **Send feedback:** the pill on the About card opens a box for a suggestion, a bug report,
+  or a "please support this format" request, sent straight to the developer without needing
+  a GitHub account. Choose the category, write the message, tick **I promise I am not being
+  a jerk** (Send stays greyed out until you do), hit Send. The email field is **optional**
+  and labelled as such: leave it blank and the message still gets through, you simply don't
+  get a reply. The box also links to the GitHub issue tracker for anyone who'd
+  rather file it in public, and if the send can't get through your text is copied to the
+  clipboard so nothing is lost.
+- **Licence:** shows whether the copy is running as personal or business, a field to enter
+  and redeem a seat key (`esk_...`), and a **Check now** button to re-verify immediately. For a
+  business copy with no key redeemed yet, this is also where the evaluation lives, alongside
+  the launch notice and the strip across every Settings page (days left, an **Open licence**
+  button and a **Buy a licence…** button). The line shows one of: the evaluation and its days
+  left, the evaluation ended and the date thumbnails stop, stopped (a key is required), no key
+  entered, licensed (with the last verified date), revoked (with why, when known, and when the
+  copy stops), personal use, or - on a machine currently relying on its offline certificate
+  rather than a live check - an early warning once that certificate is nearing its own expiry.
+  A failed check never moves the "last verified" date forward.
+- **The business evaluation:** a copy installed for business use works in full for 7 days,
+  then asks for a key for 3 more days, then stops drawing thumbnails, previews and the Details
+  pane and hides its right-click menu on that computer until a key is redeemed; the Quick
+  preview and the folder pre-build say why instead of opening. A tray balloon (with the
+  resident helper) or a notification (from the daily background check) says how long is left
+  and opens the Licence page when clicked. Redeeming a key restores everything with the next
+  thumbnail. A copy that once held a key is never stopped by a network outage, only by a
+  revocation, and then with the same 3 days of notice. `st2k doctor` reports the state.
+- **Plan, updates window and renewal:** a commercial licence is a subscription per installation,
+  US$5 a month or US$50 a year, the same price for home and business use. It gives commercial
+  (work) use, priority support, and every paid feature added from now on. Home use stays free and
+  keeps updating. Licences bought before 2026-11-01 keep the terms they were sold under: for those,
+  the Licence page shows when their 12 months of updates end ("Updates until \<date\>", or
+  "Updates ended \<date\>" once it has passed), and a **Renew updates** button appears in the last
+  60 days and stays available afterwards. Once that window has ended the app stops OFFERING builds
+  published after it, and says so with the renewal link instead of installing; nothing else changes.
+  The version already installed keeps working, with every feature, indefinitely, and security
+  releases are still offered to every licensed installation regardless of the window.
+
+---
+
+## 5. Design decisions (the "why")
+
+- **Crash isolation:** runs in Explorer's isolated thumbnail host; `panic=abort` +
+  `catch_unwind` at every COM boundary, bounded allocation, checked slicing; bad
+  input yields the default icon, never a crash.
+- **Use the OS, bundle nothing extra, where possible:** PDF rendering and OCR both
+  use in-box WinRT APIs (`Windows.Data.Pdf`, `Windows.Media.Ocr`); zero added
+  bytes. The screenshot editor's **Copy text (OCR)** rides the same recognizer as the
+  right-click verb, so screen OCR cost nothing in download size either. PDF *writing* (Combine-to-PDF) is a hand-rolled minimal `/DCTDecode` PDF;
+  no PDF library. HEIC normally decodes through WIC: Microsoft's free **HEIF Image
+  Extensions** (+ **HEVC Video Extensions** for iPhone HEIC) provide that path. **AVIF is
+  decoded by SageThumbs itself** (the Rust AV1 decoder `rav1d` plus our own container,
+  colour and HDR code), in a short-lived helper process so a damaged file can never take
+  Explorer down; it needs no Store extension. The installer also retains ImageMagick's
+  HEIF engine because the advertised AVIF writer requires it and it provides a long-tail
+  fallback.
+- **Trimmed ImageMagick** is bundled for the long tail of formats (RAW, DICOM, PCX,
+  J2K, …), and every install carries it. The measured magick-only set (the formats that
+  depend on it): the JPEG-2000 family (j2c/j2k/jp2/jpc/jpf/jpm/jpx), film/print scans
+  (cin/dpx/cal/cals/fits/fts/pcd), Windows metafiles (wmf/emf/emz/wmz), Visio
+  (vsd/vsdx/vsdm/vstx/vssx), legacy-Office OLE previews (max), classic bitmaps
+  (pcx/dcx/dib/ras/sun/sgi/xbm/xpm/xv/wpg/pdb), scientific floats
+  (pfm/phm/fl32/mat/vicar/viff/vips/pgx/ph), miff/mng/tiff64, and **DWAA/DWAB-
+  compressed OpenEXR** (uncompressed/ZIP/PIZ/RLE/B44 EXR decode pure-Rust; the
+  DWA lossy codecs need the bundled magick (the standard install has it).
+- **Colour-managed thumbnails:** images carrying an embedded ICC profile or a
+  wide-gamut tag (Display P3 / Adobe RGB) are converted into sRGB before display, so
+  they no longer look over-saturated next to ordinary photos. AVIF/HEIC read their
+  profile from the ISOBMFF `colr` box, including the CICP `nclx` Display-P3 signal
+  iPhone HEIC uses, and CMYK JPEGs (Photoshop's YCCK ones included) are converted through
+  their embedded CMYK profile. Photoshop documents drawn from their own pixels (the Quick
+  preview, or a file saved without a preview image) go through the document's profile, so a
+  CMYK, grayscale or Adobe RGB document shows the colours Photoshop shows.
+  HDR PNGs (a `cICP` chunk signalling PQ or HLG, BT.2020 or Display P3) are turned into
+  linear light and tone-mapped like EXR and Radiance files, so they render with the right
+  curve instead of washed out; HDR AVIF and HEIC (a PQ or HLG `nclx` signal) take the same
+  tone map, whether Windows' own codec or the bundled ImageMagick decoded them. All pure-Rust
+  (`zune-jpeg` for raw CMYK + `moxcms` for the transform), no C colour-engine dependency.
+- **Accessible Settings:** the category rail reports a name, a role and the current selection to
+  UI Automation, so Narrator and NVDA can navigate it.
+- **Lossless where it matters:** metadata strip rewrites JPEG segments / PNG chunks
+  without touching pixels; rotate writes a copy rather than re-compressing in place.
+- **Permissive, lean dependencies:** MIT/Apache/BSD only; no GPL/AGPL, **no
+  proprietary code**. MOBI is hand-parsed to avoid libmobi's LGPL; RAR/CBR uses the
+  pure-Rust `rars` crate (MIT/Apache, `#![forbid(unsafe)]`) instead of the proprietary
+  UnRAR C++ (swapped 2026-06-15), so `cargo deny` passes the whole graph with no license
+  exceptions. WebP encodes lossless via the pure-Rust `image` crate, or lossy via
+  `libwebp` (the one optional bundled C dep, compiled with `cc`).
+- **Dark mode** is honored throughout (title bar, controls, list header text,
+  combo, owner-drawn menus) using the standard uxtheme app-mode ordinals.
+- **Single source of truth** for the menu (a `MenuItem` tree) drives both the
+  classic `IContextMenu` and modern `IExplorerCommand` surfaces.
+
+---
+
+## 6. Packaging
+
+- **Two architectures, both Full.** A separate `SageThumbs2K-Setup-<ver>-arm64.exe` runs
+  natively on Windows on Arm and bundles the same ImageMagick engine as the x64 installer,
+  so format coverage is identical on both; there is no cut-down ARM edition.
+- Inno Setup installer, one payload with no install-type choice. Every build includes a
+  dependency-closed, security-trimmed ImageMagick runtime. Its unused text-shaping stack
+  (glib / harfbuzz / freetype / fribidi / raqm) is stubbed because SageThumbs never
+  invokes ImageMagick's text, caption or font-rendering surfaces.
+- **Personal-or-business question on every interactive install.** The installer asks how
+  you'll use SageThumbs 2K: personal (free, every feature, non-commercial) or business
+  (needs a commercial licence under the PolyForm Noncommercial license; a 7-day evaluation
+  starts on install). Your answer is written machine-wide and stays in effect across silent
+  self-updates; changing it means running the installer interactively again, and choosing
+  Personal on a computer that was set up for business use asks once whether you are sure.
+  See section 4's Licence settings for redeeming a business seat key.
+- Registers the thumbnail provider + context-menu handlers under HKLM (admin);
+  cleanly unregisters on uninstall.
+- **Portable zip**, both architectures, no installer and no administrator rights. Unpack it
+  anywhere and settings live in an ini beside the exe instead of the registry. Everything a
+  portable copy touches stays in that same folder: sign-in details, the custom
+  screenshot-upload host list, HTML-preview browser data, and the update-check cache all live
+  beside the portable copy instead of the host PC's own storage, and a portable copy always
+  refuses to install an update on its own (grab the installer by hand from the releases page
+  instead). Everything that
+  is already an app works straight away: Settings, Convert/Resize, Quick preview, screenshots,
+  OCR, the colour picker, the folder tools and the `st2k` CLI/MCP server. **Explorer thumbnails
+  and the classic right-click menu work too**, opt-in: the welcome window offers them on first
+  run, and `st2k register` / Settings ▸ General toggle them any time (that row sat on Advanced
+  until 1.9.0, purely for space; it is the first row of General on a portable copy now). That registration is
+  per-user, needs no elevation and is undone with `st2k register --off`; do it before moving the
+  folder, since the keys record where the DLL currently sits. The Explorer *preview pane*, the
+  Details-pane columns and the Windows 11 right-click menu are registered machine-wide by
+  design, so those still need the installer.
+- App/installer/shortcut icon embedded from the logo.
+
+---
+
+## 7. Planned / deferred
+
+- **Convert hub:** EPS encode + more exotic targets via the bundled ImageMagick. *(AVIF and
+  JPEG XL encode already SHIP via the bundled ImageMagick, with a quality slider in the Convert
+  dialog; lossless/lossy WebP shipped too. A native WIC-backed HEIF/AVIF encoder is a possible
+  future optimization to shrink the ImageMagick dependency for those targets.)*
+- **Quick edits:** set-as-lock-screen, contact sheet / montage.
+  *(Lossless JPEG rotate (jpegtran-style, no recompression) already shipped, see §2;
+  copy-as-base64 data URI shipped too, see §2's "Copy as data URI".)*
+
+*(**DjVu** and the lossless-JPEG-rotate bullets used to live here as "planned"; both shipped
+(DjVu via the pure-Rust `djvu-rs` crate, see §1) and were moved out so this list only shows
+genuinely-outstanding work.)*
+
+### 7a. AI / agent integration: **CLI + MCP server shipped** (`st2k.exe`)
+
+> Phase 1 (the
+> `st2k` command-line tool) **and** Phase 2 (`st2k --mcp`, an MCP server) are both
+> built + installed. `st2k` verbs: `thumbnail · convert · batch · rotate · strip · ocr ·
+> pdf · cbz · info [--json] · formats [--json]`: the bundled engine as an offline image
+> toolbox for scripts and agents, zero extra installs. `batch` can also recurse into
+> subfolders with `--recurse`, and its `info` mode now returns richer per-file details,
+> including audio tag data (artist, album, title) for audio files. **Fifteen tools** are
+> exposed over **MCP** so an AI client can discover and call them: the core verbs plus
+> **`cbz`**, two agent-first tools, **`view`** (decode any file to a PNG image block the
+> agent can actually *see*) and **`compress`**, and the diagnostic/maintenance tools
+> **`doctor`**, **`prebuild`**, **`register_status`** and **`batch`**. `pdf` and
+> `cbz` also report which inputs they left out and why (unreadable, undecodable, or
+> unencodable) instead of silently skipping them, accept `--strict` to fail and write
+> nothing rather than a partial file, and `--json` returns that same detail as JSON; the
+> MCP `pdf`/`cbz` tools return the same JSON and accept a `strict` argument. `pdf
+> --searchable` (MCP: `searchable`) OCRs every page and adds an invisible text layer so the
+> PDF is searchable and its text can be selected and copied.
+
+**Idea:** because SageThumbs already bundles real image
+capabilities (364-format decode incl. RAW/HEIC/ebook covers, ImageMagick, WIC, the
+WinRT PDF + OCR engines, convert/resize/rotate/strip/PDF), expose those to AI
+agents and scripts so users don't need to install a separate toolkit. **Do not
+bundle anything new**; only surface existing functions.
+
+**Status:**
+1. ✅ **CLI shipped** as a standalone **`st2k.exe`** (console subsystem): verbs
+   `convert`, `rotate`, `strip`, `info` (JSON to stdout), `ocr` (text to stdout), `pdf`
+   (combine), **`cbz`** (combine into a comic-book archive), `thumbnail` (render any of
+   the 364 types to PNG), **`batch`** (bulk thumbnail/convert over many files/folders in
+   ONE process, fanned out across all CPU cores, with `--recurse` to walk subfolders and
+   a richer `info` mode that includes audio tag data), `formats`. All logic lives in the
+   `lib` (`verbs`, `strip`, `ocr`, `topdf`, `decode`, `parallel`); the CLI is a thin
+   arg-parser over the same functions the menu uses. (Shipped as a separate binary, not a
+   flag on the Options app.)
+2. ✅ **MCP server mode** (`st2k --mcp`, stdio JSON-RPC 2.0): exposes **15** MCP
+   tools (`tools/list` + `tools/call`) so an agent auto-discovers and calls them: the
+   core verbs (now including **`cbz`**) plus **`view`** (which decodes any of the 364
+   formats to a PNG **image block**) so an AI agent can actually *see* the file,
+   **`compress`**, and the diagnostic/maintenance tools **`doctor`**, **`prebuild`**, and
+   **`register_status`**. Newline-delimited stdio, spawned on demand by the client (not
+   a daemon); one small dep
+   (`serde_json`, CLI-only). `src/mcp.rs`. To use: point an MCP client at
+   `C:\Program Files\SageThumbs2K\st2k.exe` with arg `--mcp`.
+3. **Net effect:** installing SageThumbs gives any local agent a free, offline
+   image-processing toolbox: convert, OCR, metadata, PDF, thumbnail, over the
+   formats Windows itself can't handle, with zero extra installs.
+
+Constraints honored: reuse existing capabilities only; offline by default; file-writing
+verbs require an explicit output argument (`rotate`/`resize` write an `(edited)`/
+`(resized)` sibling; `strip` is in-place).
+
+### 7b. Settings sync: optional Connections account (opt-in)
+
+> **New.** In **Settings ▸ Data & Backup**, a **"Sync settings…"** button lets you sign in
+> with a Connections account and sync your SageThumbs preferences across your PCs. It's
+> **opt-in and off by default**; no network happens unless you click it.
+
+Sign-in opens your real browser (standard OAuth 2.0 + PKCE; SageThumbs never sees your
+password), and from then on your portable settings (thumbnail limits/quality, menu layout
+and toggles, hotkeys, language, container preferences) follow you to any machine you sign
+into. Only an explicit **allowlist** of portable preferences syncs; **never** file paths,
+secrets, or per-machine state, and never your images. Your settings always stay on your PC
+too; the cloud is only a sync layer, so the app works fully offline / signed out; disconnect
+anytime (it removes the cloud copy). **The shell-extension DLL never touches the network**:
+all sign-in/sync code lives in the Settings app only, preserving the crash-isolation guarantee.
+The refresh token is stored encrypted (Windows DPAPI); the store is a settings locker (≤64 KB,
+no secrets).
+
+The status line next to the sync button always reflects one of these states, so it never
+claims a completed sync that did not happen:
+
+- **Not syncing** - signed out.
+- **Connecting...** - a sign-in or retry is in progress.
+- **Signed in, first sync didn't finish** - authenticated, but the very first sync has not
+  completed yet; retry with one click, no browser needed.
+- **Offline** - the last attempt could not reach the server at all (no connection), and is
+  retried automatically.
+- **Sync pending** - the server was reached but a save could not be written; retried
+  automatically, and the message names why when one is known.
+- **Synced** - caught up, optionally showing who is signed in, or that another device's
+  changes were just pulled in.
+
+Disconnecting always removes your local sign-in immediately; if the copy stored in your
+account could not be deleted (for example because the server could not be reached), you are
+told so rather than being given a blanket "disconnected" message.
+
+The same page's **Export Settings** and **Import Settings** buttons save or apply the entire
+settings tree to a JSON file by hand; **`SageThumbs2K.exe --export-settings <file>`** and
+**`--import-settings <file>`** do the same round trip headlessly, for scripted deployment
+across a fleet of installs. Importing a settings file fully replaces your settings rather
+than merging them: anything the imported file doesn't include gets removed, matching what
+most people expect import to do. Your sign-in is left alone either way, on both the app and
+the CLI round trip.
