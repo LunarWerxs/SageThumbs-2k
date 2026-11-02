@@ -1,0 +1,208 @@
+# Run the COMPILED ARM64 test binaries natively on the public repo's free windows-11-arm runner.
+#
+# The source repo is private and gets no ARM runner, so ci.yml's arm64-native job cross-compiles
+# the ARM64 debug EXEs, DLL and test executables there, packs them with the data they read at run
+# time, and uploads the pack as an asset of a DRAFT release on this repo. It then dispatches this
+# workflow with the draft's tag. A draft is visible only to accounts with write access, and nothing
+# here is published: the draft is deleted at the end, pass or fail.
+#
+# This workflow never checks out source. It runs no build. Its artifacts are none: the pack and the
+# binaries stay in the run's temp folder and are removed with the runner.
+#
+# Expected pack layout (written by scripts/arm64-bundle.ps1 in the private repo):
+#   manifest.json   targetDir, iniName, the tests to skip, the test executables and their folders
+#   files/<L>/...   every file, under the drive letter it has on the private runner
+#   harness/...     scripts/test-installed-shell-surfaces.ps1 and its probe
+name: ARM64 tests
+# The dispatched run is titled with its tag, so the private job finds OUR run by title.
+run-name: ${{ format('ARM64 tests {0}', inputs.tag) }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Draft release tag that holds arm64-tests.zip (e.g. arm64-tests-1234)'
+        required: true
+        type: string
+
+permissions:
+  # write, not read: a DRAFT release is only visible to a token with push access, and the draft
+  # is deleted at the end of this run.
+  contents: write
+
+jobs:
+  test:
+    timeout-minutes: 60
+    name: run the compiled ARM64 tests natively
+    runs-on: windows-11-arm
+    steps:
+      - name: Resolve the tag
+        id: tag
+        shell: pwsh
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          $tag = $env:TAG
+          if ($tag -notmatch '^arm64-tests-\d+$') { throw "not a test bundle tag: '$tag'" }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      - name: Confirm this really is ARM64 silicon
+        shell: pwsh
+        run: |
+          $arch = $env:PROCESSOR_ARCHITECTURE
+          Write-Host "PROCESSOR_ARCHITECTURE = $arch"
+          if ($arch -ne 'ARM64') { throw "expected ARM64 host, got '$arch'" }
+
+      - name: Download the test bundle (draft release)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          $repo = '${{ github.repository }}'
+          # By asset id from the release list: /releases/tags/ never returns a DRAFT.
+          $assetId = gh api --paginate "repos/$repo/releases" `
+            --jq ".[] | select(.tag_name == `"$env:TAG`") | .assets[] | select(.name == `"arm64-tests.zip`") | .id" 2>&1
+          if ($LASTEXITCODE -ne 0 -or -not "$assetId".Trim()) { throw "no arm64-tests.zip on draft $env:TAG: $assetId" }
+          $assetId = ("$assetId" -split "`n")[0].Trim()
+          $zip = Join-Path $env:RUNNER_TEMP 'arm64-tests.zip'
+          foreach ($try in 1..4) {
+            try {
+              Invoke-WebRequest -Uri "https://api.github.com/repos/$repo/releases/assets/$assetId" `
+                -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/octet-stream'; 'X-GitHub-Api-Version' = '2022-11-28' } `
+                -OutFile $zip -MaximumRedirection 5
+              break
+            }
+            catch { if ($try -eq 4) { throw }; Write-Warning "download attempt $try failed: $($_.Exception.Message)"; Start-Sleep -Seconds (15 * $try) }
+          }
+          if (-not (Test-Path $zip) -or (Get-Item $zip).Length -lt 1MB) { throw "could not download asset $assetId from $env:TAG" }
+          $stage = Join-Path $env:RUNNER_TEMP 'arm64-stage'
+          Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive -LiteralPath $zip -DestinationPath $stage -Force
+          "stage=$stage" >> $env:GITHUB_ENV
+          Write-Host ("downloaded {0:N2} MB" -f ((Get-Item $zip).Length / 1MB))
+
+      - name: Recreate the paths the binaries were built against
+        shell: pwsh
+        run: |
+          # The test executables have absolute paths compiled in (CARGO_MANIFEST_DIR, CARGO_BIN_EXE_*),
+          # so each file goes back to the same absolute path it had on the private runner. A drive
+          # letter this runner lacks is substituted to the matching folder of the pack.
+          $manifest = Get-Content (Join-Path $env:stage 'manifest.json') -Raw | ConvertFrom-Json
+          $files = Join-Path $env:stage 'files'
+          foreach ($letter in @(Get-ChildItem $files -Directory | ForEach-Object Name)) {
+            $drive = "${letter}:"
+            if (Test-Path "$drive\") {
+              # An existing drive: the pack is copied onto it.
+              Copy-Item -Path (Join-Path $files "$letter\*") -Destination "$drive\" -Recurse -Force
+            } else {
+              # A missing drive: the pack folder itself becomes the drive (nothing to copy).
+              subst $drive (Join-Path $files $letter)
+              if ($LASTEXITCODE) { throw "subst $drive failed" }
+            }
+          }
+          if (-not (Test-Path $manifest.targetDir)) { throw "target dir $($manifest.targetDir) was not recreated" }
+          Write-Host "target dir: $($manifest.targetDir)"
+
+      - name: Run the compiled test binaries natively
+        id: tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $manifest = Get-Content (Join-Path $env:stage 'manifest.json') -Raw | ConvertFrom-Json
+          $passed = 0; $failed = 0; $ignored = 0; $filtered = 0; $broken = @(); $ran = 0
+          $skipArgs = @($manifest.skip | ForEach-Object { '--skip', $_ })
+          foreach ($test in $manifest.tests) {
+            $ran++
+            $log = Join-Path $env:RUNNER_TEMP ('test-' + [IO.Path]::GetFileNameWithoutExtension($test.exe) + '.log')
+            Push-Location $test.cwd
+            try { & $test.exe @skipArgs *> $log; $code = $LASTEXITCODE } finally { Pop-Location }
+            $text = "$(Get-Content $log -Raw)"
+            foreach ($m in [regex]::Matches($text, 'test result: \w+\. (\d+) passed; (\d+) failed; (\d+) ignored; \d+ measured; (\d+) filtered out')) {
+              $passed += [int]$m.Groups[1].Value; $failed += [int]$m.Groups[2].Value; $ignored += [int]$m.Groups[3].Value; $filtered += [int]$m.Groups[4].Value
+            }
+            if ($code -ne 0) { $broken += (Split-Path $test.exe -Leaf); Write-Host "::group::$(Split-Path $test.exe -Leaf) (exit $code)"; Write-Host $text; Write-Host '::endgroup::' }
+          }
+          Write-Host "native ARM64: $ran test binaries, $passed passed, $failed failed, $ignored ignored, $filtered filtered out (need source)"
+          "passed=$passed" >> $env:GITHUB_OUTPUT
+          "failed=$failed" >> $env:GITHUB_OUTPUT
+          "ignored=$ignored" >> $env:GITHUB_OUTPUT
+          $summary = "**ARM64 native tests:** $ran binaries, $passed passed, $failed failed, $ignored ignored, $filtered filtered out (need source)"
+          if ($env:GITHUB_STEP_SUMMARY) { Add-Content $env:GITHUB_STEP_SUMMARY $summary }
+          if ($broken) { throw "test binaries failed: $($broken -join ', ')" }
+          if ($failed -gt 0) { throw "$failed test(s) failed" }
+
+      - name: The engine-less payload holds (ARM64 PE, no ImageMagick)
+        shell: pwsh
+        run: |
+          $manifest = Get-Content (Join-Path $env:stage 'manifest.json') -Raw | ConvertFrom-Json
+          $target = $manifest.targetDir
+          foreach ($leaf in 'SageThumbs2K.exe', 'st2k.exe', 'sagethumbs2k.dll') {
+            $artifact = Join-Path $target $leaf
+            if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) { throw "Missing ARM64 artifact: $artifact" }
+            $bytes = [System.IO.File]::ReadAllBytes($artifact)
+            if ($bytes.Length -lt 64 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) { throw "Not a PE file: $artifact" }
+            $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+            if ($peOffset -lt 0 -or $peOffset + 6 -gt $bytes.Length) { throw "Invalid PE header offset: $artifact" }
+            $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+            if ($machine -ne 0xaa64) { throw ('Expected ARM64 PE machine 0xAA64; {0} is 0x{1:X4}' -f $artifact, $machine) }
+          }
+          if (Get-ChildItem -LiteralPath $target -Filter magick.exe -File -Recurse -ErrorAction SilentlyContinue) {
+            throw 'This ARM64 validation must not stage ImageMagick.'
+          }
+          & (Join-Path $target 'st2k.exe') --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Native ARM64 st2k smoke test failed.' }
+
+      - name: Prove portable mode on native ARM64
+        shell: pwsh
+        run: |
+          $manifest = Get-Content (Join-Path $env:stage 'manifest.json') -Raw | ConvertFrom-Json
+          $target = $manifest.targetDir
+          $drop = Join-Path $env:RUNNER_TEMP 'arm64-portable'
+          Remove-Item $drop -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $drop | Out-Null
+          Copy-Item (Join-Path $target 'st2k.exe') $drop
+          Copy-Item (Join-Path $target 'SageThumbs2K.exe') $drop
+          # The marker filename comes from the bundle's manifest (read from the Rust const at pack
+          # time), so a rename cannot make this proof quietly fall back to HKCU and pass.
+          $iniName = $manifest.iniName
+          if (-not $iniName) { throw 'manifest.json has no iniName' }
+          Set-Content (Join-Path $drop $iniName) -Value @('[Settings]', 'Width=137', 'Height=137', 'MaxSize=42')
+
+          $before = Get-ItemProperty 'HKCU:\Software\SageThumbs2K' -EA SilentlyContinue
+          $report = & (Join-Path $drop 'st2k.exe') doctor 2>&1 | Out-String
+          if ($report -notmatch 'Max thumbnail size\s+137 px') { Write-Host $report; throw 'ARM64 portable: doctor did not report the ini thumbnail size (137 px).' }
+          if ($report -notmatch 'Max file size\s+42 MB') { Write-Host $report; throw 'ARM64 portable: doctor did not report the ini max file size (42 MB).' }
+          $after = Get-ItemProperty 'HKCU:\Software\SageThumbs2K' -EA SilentlyContinue
+          if ($after.Width -eq 137 -or $after.MaxSize -eq 42 -or (($null -eq $before) -ne ($null -eq $after))) {
+            throw 'ARM64 portable wrote to HKCU. That is the one thing it must never do.'
+          }
+          Remove-Item (Join-Path $drop $iniName)
+          $plain = & (Join-Path $drop 'st2k.exe') doctor 2>&1 | Out-String
+          if ($plain -match 'Max thumbnail size\s+137 px') { throw 'ARM64 negative control failed: still reading the ini after deleting it.' }
+          Write-Host 'ARM64 portable: ini honored, HKCU untouched, falls back without the marker.'
+
+      - name: Prove the registered ARM64 shell surfaces (thumbnail + preview)
+        shell: pwsh
+        run: |
+          $manifest = Get-Content (Join-Path $env:stage 'manifest.json') -Raw | ConvertFrom-Json
+          & (Join-Path $env:stage 'harness\test-installed-shell-surfaces.ps1') `
+              -TargetDir $manifest.targetDir `
+              -ArtifactDir (Join-Path $env:RUNNER_TEMP 'arm64-shell-surfaces')
+
+      # The draft is deleted pass or fail. Only a DRAFT with this exact tag is removed, never a
+      # published release.
+      - name: Delete the draft bundle release
+        if: always()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          $repo = '${{ github.repository }}'
+          $isDraft = gh release view $env:TAG --repo $repo --json isDraft --jq .isDraft 2>$null
+          if ($LASTEXITCODE -ne 0) { Write-Host "no release $env:TAG to delete"; exit 0 }
+          if ($isDraft -ne 'true') { throw "$env:TAG is not a draft; refusing to delete it" }
+          gh release delete $env:TAG --repo $repo --yes
+          if ($LASTEXITCODE) { throw "could not delete the draft $env:TAG" }
+          Write-Host "deleted draft $env:TAG"
