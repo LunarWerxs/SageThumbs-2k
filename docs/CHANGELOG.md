@@ -17,6 +17,7 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 **Fixed**
 
+- **A subscription keeps working for a while when the licence server cannot be reached.** It used to need the server every time.
 - **An update that needs Windows restarted first says so, even when other programs also have files waiting for that restart.** It used to miss our own waiting file whenever another program (a browser update, say) had queued a delete ahead of it, and then started a silent update that stalled on the installer's "restart your computer" box.
 - **A video keeps its own shape when the preview window changes size.** Full screen, a drag-resize and leaving full screen used to leave a small clip as a narrow strip or stretch it; the picture now scales to fit at its own aspect with black bars.
 
