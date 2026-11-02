@@ -163,6 +163,81 @@ function Wait-Setup($Proc, [string]$What, [string]$Log = $setupLog) {
     throw "$What did not finish within ${TimeoutSec}s. Setup's windows:`n$windows`nSetup's log ends:`n$(Get-SetupLogTail $Log)"
 }
 
+# One entry of Windows' restart-time rename list, as it names a file: "*1\??\C:\...", where "*<n>"
+# and "!" are flags. True when the path is under the install folder or is setup's own
+# Temp\_iu*.tmp; a rename counts when either end does.
+function Test-OwnRestartPath([string]$Path, [string]$Dir) {
+    if (-not $Path) { return $false }
+    $p = $Path -replace '^[*!\d]+', '' -replace '^\\\?\?\\', ''
+    if ($p.StartsWith($Dir.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    return $p -match '(?i)\\Temp\\_iu[^\\]*\.tmp$'
+}
+
+# Splits one REG_MULTI_SZ rename list into Keep and Drop. The list is pairs (source, destination)
+# and a delete's destination is the empty string, so a pair is kept or dropped whole. An unpaired
+# last string is kept as it is.
+function Select-OwnRestartEntries([string[]]$Entries, [string]$Dir) {
+    $keep = [Collections.Generic.List[string]]::new()
+    $drop = [Collections.Generic.List[string]]::new()
+    for ($i = 0; $i -lt $Entries.Count; $i += 2) {
+        $end = [Math]::Min($i + 1, $Entries.Count - 1)
+        $pair = [string[]]$Entries[$i..$end]
+        $mine = @($pair | Where-Object { Test-OwnRestartPath $_ $Dir }).Count -gt 0
+        if ($mine) { $drop.AddRange($pair) } else { $keep.AddRange($pair) }
+    }
+    [pscustomobject]@{ Keep = $keep.ToArray(); Drop = $drop.ToArray() }
+}
+
+# The self-hosted CI box keeps what a restart would clear: setup queues the files it cannot
+# replace for the restart, and no restart comes between runs, so the next baseline install fails
+# on "a previous installation was not completed". Put the box back to a restarted state: stop our
+# own SageThumbs2K processes, uninstall silently, move what is still locked out of the install
+# folder into a trash folder beside it, and drop only our entries from the restart list. Other
+# programs' entries are kept byte for byte, and the registry is read with the .NET API so an empty
+# string (a delete's destination) is not lost.
+function Reset-SelfHostedInstall {
+    Get-Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.ProcessName -like 'SageThumbs2K*' -and $_.Path -and $_.Path.StartsWith($installDir + '\', [StringComparison]::OrdinalIgnoreCase) } |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+    $unins = Join-Path $installDir 'unins000.exe'
+    if (Test-Path -LiteralPath $unins -PathType Leaf) {
+        Write-Host '  [self-update] self-hosted box: silent uninstall of the earlier install'
+        $u = Start-Process -FilePath $unins -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru
+        if (-not $u.WaitForExit($TimeoutSec * 1000)) { $u.Kill(); throw "The silent uninstall did not finish within ${TimeoutSec}s." }
+    }
+    $trash = Join-Path $env:ProgramData 'st2k-ci-trash'
+    Remove-Item -LiteralPath $trash -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $installDir) {
+        New-Item -ItemType Directory -Force -Path $trash | Out-Null
+        $n = 0
+        foreach ($f in @(Get-ChildItem -LiteralPath $installDir -Recurse -File -Force)) {
+            $n++
+            try { Move-Item -LiteralPath $f.FullName -Destination (Join-Path $trash ('{0:D3}-{1}' -f $n, $f.Name)) -Force -ErrorAction Stop }
+            catch { throw "Could not move $($f.FullName) out of the install folder: $($_.Exception.Message)" }
+        }
+        Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "  [self-update] self-hosted box: moved $n locked or leftover file(s) to $trash"
+    }
+    $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager', $true)
+    if (-not $key) { return }
+    try {
+        foreach ($name in 'PendingFileRenameOperations', 'PendingFileRenameOperations2') {
+            $entries = $key.GetValue($name)
+            if ($entries -isnot [string[]]) { continue }
+            $sel = Select-OwnRestartEntries $entries $installDir
+            if ($sel.Drop.Count -eq 0) { continue }
+            Write-Host "  [self-update] self-hosted box: $name drops $($sel.Drop.Count / 2) of our entries, keeps $($sel.Keep.Count / 2)"
+            if ($sel.Keep.Count) { $key.SetValue($name, [string[]]$sel.Keep, [Microsoft.Win32.RegistryValueKind]::MultiString) }
+            else { $key.DeleteValue($name, $false) }
+        }
+    }
+    finally { $key.Close() }
+}
+
+# A CI run on the persistent self-hosted box must not inherit an earlier run's leftovers. The
+# gate is the runner itself: a developer's PC never gets this reset.
+if ($env:GITHUB_ACTIONS -eq 'true' -and $env:RUNNER_ENVIRONMENT -eq 'self-hosted') { Reset-SelfHostedInstall }
+
 if (-not (Test-Path -LiteralPath $installedExe -PathType Leaf)) {
     Write-Host "  [self-update] baseline: fresh silent install of $(Split-Path -Leaf $Setup)"
     $baselineLog = Join-Path ([IO.Path]::GetTempPath()) "st2k-selfupdate-baseline-$PID.log"
