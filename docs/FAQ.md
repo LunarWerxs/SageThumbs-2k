@@ -404,7 +404,7 @@ works.
 <summary><b>Can I use this at work?</b></summary>
 
 The licence is PolyForm Noncommercial 1.0.0. It is free for personal use, and commercial use
-needs a commercial licence per Windows installation: a subscription at US$5 a month or US$50 a year, the same price for home and business use. It gives commercial (work) use, priority support, and every paid feature added from now on. Subscribe monthly at
+needs a commercial licence per Windows installation: a subscription at US$5 a month or US$50 a year. It gives commercial (work) use, priority support, and every paid feature added from now on. Subscribe monthly at
 <https://go.lunarwerx.com/sagethumbs/buy/monthly> or yearly at
 <https://go.lunarwerx.com/sagethumbs/buy> (card via Stripe); manage or cancel at
 <https://go.lunarwerx.com/sagethumbs/manage>, signing in with the email you paid with. Licences bought before 2026-11-01 keep the terms they were sold under, with no price. One seat key per

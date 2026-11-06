@@ -6,9 +6,32 @@ listing. (This file is organized by feature area for end-user-facing
 documentation.)
 
 > **What it is:** a modern, crash-isolated Windows 11 shell extension (Rust) that
-> rebuilds the abandoned SageThumbs (Explorer thumbnails for 364 file types plus
+> rebuilds the abandoned SageThumbs (Explorer thumbnails for 366 file types plus
 > a rich right-click image toolkit) and folds in XnShell/XnView-style conversion.
 > Free for personal use (PolyForm Noncommercial 1.0.0).
+
+> **Free, Supporter and Business:** thumbnails, Explorer's preview pane and the whole
+> right-click toolkit work on every copy. Supporter, the home plan (US$2 a month or US$20 a
+> year), adds the tools the original never had: Quick preview (the Space-bar viewer, every
+> kind of file in it), the screenshot tool (overlay, instant capture, hotkeys), OCR (the
+> right-click text verbs, searchable PDFs, the preview and capture buttons, `st2k ocr`),
+> settings sync across PCs (signing in and out stay free: the sign-in also carries a licence)
+> and the MCP server's tools for AI assistants (`st2k --mcp`; the plain `st2k` command line
+> stays free). Each
+> has its own 14-day trial, which starts the first time that feature is used, with a notice
+> that says so (no card, no sign-up, nothing to cancel), so a trial used up on one never costs
+> another. Once a feature's trial is over, reaching for it opens the pay screen: what Supporter
+> adds, the price, Become a supporter, Enter a licence key, a short note from the developer on
+> why the plan exists, and for Quick preview and screenshots a Turn off link that gives Space or
+> Print Screen back to Windows. Settings ▸ Licence opens on the plan: Free (with each running
+> trial and its days left), Supporter or Business, and Become a supporter until it is paid. A
+> Supporter key (told apart by the product in Pay's signed certificate) unlocks all five
+> and is never a work licence; Business installs and Business licences (US$5 a month or US$50 a
+> year per installation) get everything (`st2k_base::plan`, `st2k_appkit::paywall`). A key
+> redeemed while signed in to Connections is linked to that account, so another PC signed in to
+> the same account gets the licence while it has an installation left; the Plan section then
+> says "Linked to your Connections account". The licence counts offline for seven days after
+> each check, and each trial runs once per PC, reinstalls included.
 
 ---
 
@@ -18,20 +41,20 @@ SageThumbs draws Explorer thumbnails for file types Windows can't, via a tiered
 decoder (`image` crate → Windows WIC → a trimmed bundled ImageMagick → resvg for
 SVG), with embedded-cover/first-page extraction for containers.
 
-**364 registered extensions, in seven categories** (also how the Options list is
+**366 registered extensions, in seven categories** (also how the Options list is
 grouped):
 
 | Category | Examples | How |
 |---|---|---|
-| **Image** (225) | png, jpg, gif, bmp, tiff, webp, heic/heif/**heics/heifs/hif**, avif/**avifs** (AVIF sequences, first frame), psd, **xcf** (GIMP), **psp/pspimage + pspbrush/pspframe/psptube/pspshape/pspselection/pspmask/tub** (the Paint Shop Pro family, incl. LZ77 composites), **iff/ilbm/lbm** (Amiga ILBM), **c4d** (Cinema 4D preview), **cdr/cdt/cmx** (CorelDRAW DISP preview), tga, **dds** (every block format BC1 to BC7, incl. BC6H HDR, natively), **vtf** (Valve Source-engine textures) and **ktx** (Khronos KTX 1 textures: S3TC, RGTC, BPTC and plain RGB/RGBA; the ETC and ASTC mobile formats are not read), exr, ico, **ani** (animated cursors, first frame), **icns** (Apple), **six/sixel** (DEC SIXEL terminal graphics, decoded natively), **jxr/wdp/hdp/wmp** (JPEG XR / HD Photo), jp2/**jpf/jpx**, hdr/**rgbe/xyze**, svg/svgz, **wmf/emf/emz/wmz** (metafiles), **swf** (Adobe Flash movies: drawn from the movie's own shapes and pictures, past an opening preloader), **sketch/procreate/skp/3dm/dwg/max/c4d/xd/cdr/cdt** (design/CAD/3D), **dxf** (the preview AutoCAD and BricsCAD save into the file; most DXF files from other programs carry none and keep the stock icon), **blend/.blend1–32** (Blender + auto-saves), **ai** (Illustrator), **eps** (embedded preview), **f3d** (Autodesk Fusion 360), **stl/obj/ply** (3D-print models, RENDERED: parsed and flat-shaded by SageThumbs' own tiny software rasterizer, since a mesh has no baked-in preview to extract), **apk/apks/xapk/apkm** (Android packages: the launcher icon named by the app manifest, resolved through the compiled resource table), **nupkg/vsix** (NuGet and Visual Studio / VS Code packages: the icon the package manifest names), … | image crate / WIC / ImageMagick / resvg (SVG) / manifest+resource-table lookup (APK) |
+| **Image** (227) | png, jpg, gif, bmp, tiff, webp, heic/heif/**heics/heifs/hif**, avif/**avifs** (AVIF sequences, first frame), psd, **xcf** (GIMP), **psp/pspimage + pspbrush/pspframe/psptube/pspshape/pspselection/pspmask/tub** (the Paint Shop Pro family, incl. LZ77 composites), **iff/ilbm/lbm** (Amiga ILBM), **neo** (Atari ST NEOchrome, low resolution), **pcraft** (PhotoCraft, flattened preview), **c4d** (Cinema 4D preview), **cdr/cdt/cmx** (CorelDRAW DISP preview), tga, **dds** (every block format BC1 to BC7, incl. BC6H HDR, natively), **vtf** (Valve Source-engine textures) and **ktx** (Khronos KTX 1 textures: S3TC, RGTC, BPTC and plain RGB/RGBA; the ETC and ASTC mobile formats are not read), exr, ico, **ani** (animated cursors, first frame), **icns** (Apple), **six/sixel** (DEC SIXEL terminal graphics, decoded natively), **jxr/wdp/hdp/wmp** (JPEG XR / HD Photo), jp2/**jpf/jpx**, hdr/**rgbe/xyze**, svg/svgz, **wmf/emf/emz/wmz** (metafiles), **swf** (Adobe Flash movies: drawn from the movie's own shapes and pictures, past an opening preloader), **sketch/procreate/skp/3dm/dwg/max/c4d/xd/cdr/cdt** (design/CAD/3D), **dxf** (the preview AutoCAD and BricsCAD save into the file; most DXF files from other programs carry none and keep the stock icon), **blend/.blend1–32** (Blender + auto-saves), **ai** (Illustrator), **eps** (embedded preview), **f3d** (Autodesk Fusion 360), **stl/obj/ply** (3D-print models, RENDERED: parsed and flat-shaded by SageThumbs' own tiny software rasterizer, since a mesh has no baked-in preview to extract), **apk/apks/xapk/apkm** (Android packages: the launcher icon named by the app manifest, resolved through the compiled resource table), **nupkg/vsix** (NuGet and Visual Studio / VS Code packages: the icon the package manifest names), … | image crate / WIC / ImageMagick / resvg (SVG) / manifest+resource-table lookup (APK) |
 | **Camera RAW** (34) | cr2/cr3, nef, arw, dng, raf, orf, rw2, pef, x3f, **bay/cap/dcs/drf/ori/ptx/pxn**, … | WIC (Raw Image Extension) / ImageMagick / embedded-JPEG preview |
 | **Ebook & comics** (12) | epub, mobi/azw/azw3, **prc** (Mobipocket), fb2/fbz, cbz, cb7, **cbr**, **cbt**, **phz** (zip comic) | native-Rust cover extraction (zip/7z/tar/**rar** via the pure-Rust `rars` crate + hand-parsed MOBI); an oversized CB7 received through a name-less shell stream keeps its stock icon rather than risking an expensive 7z directory scan |
 | **Document** (46) | **pdf** (page 1), **djv/djvu** (pure-Rust `djvu-rs` codec), **doc/docx/docm + dot/dotx** (Word), **xls/xlsx/xlsm/xlsb + xlt/xltx** (Excel), **ppt/pptx/pptm + pps/ppsx + pot/potx** (PowerPoint), **odt/ods/odp/odg/…** (OpenDocument), **key/pages/numbers** (Apple iWork), **indd** (InDesign), **vsd/vsdx/vsdm + vstx/vssx** (Visio drawings, templates and stencils: a stencil shows a preview only when Visio saved one with it, which most do not), **pub** (Publisher), **ggb** (GeoGebra), **xmind** (XMind mind maps: the map picture XMind saves) | OS `Windows.Data.Pdf` (PDF); pure-Rust `djvu-rs` (DjVu); embedded preview extraction (Office OOXML `docProps/thumbnail` + legacy OLE `\x05SummaryInformation` / iWork / InDesign / Visio / Publisher) |
 | **Audio** (18) | mp3, flac, ogg, opus, m4a, wma, ape, wavpack, musepack, **wav, aiff, aiff-c, dsf** (DSD) | embedded album art via `lofty`; **plus a drawn waveform for raw-PCM WAV/AIFF/AIFF-C with no cover art**, and a hand-rolled ASF parser for WMA (cover art + tags) which `lofty` can't read |
-| **Video** (26) | **mkv** (Matroska), **webm**, mp4/m4v, mov, avi, wmv, …  | a representative frame (30 % in by default, not the intro; adjustable in Settings ▸ Appearance) via the OS **Media Foundation** codecs. MP4/MOV (`moov`) and Matroska/WebM (Cues) parse the container's own index to read just the one keyframe nearest the chosen point (single-digit MB); AVI/WMV let MF's demuxer seek over a block-caching stream, never streaming the whole movie. **Four codec families Windows does not ship are decoded by SageThumbs itself**, in pure Rust and in a separate short-lived process: **FLV** (H.264 handed to Windows; VP6 and Sorenson Spark decoded here), **VP9 Profile 2/3** (10- and 12-bit HDR, which Windows declines even with its own VP9 extension installed), **10-bit H.264** (High 10, the usual choice for anime encodes; Windows' H.264 decoder stops at 8-bit) and **MPEG-1/2** in program, elementary and transport streams (VideoCD-era `.mpg`, bare `.m1v`/`.m2v`, DVD-style `.vob`, and MPEG-2 inside `.ts`/`.m2ts`/`.mts` recordings: Windows opens none of the first two on any edition and the rest only with a Store add-on; decoded here whenever Windows declines. Interlaced field-coded recordings are the one shape still left to the OS). |
+| **Video** (26) | **mkv** (Matroska), **webm**, mp4/m4v, mov, avi, wmv, …  | a representative frame (30 % in by default, not the intro; adjustable in Settings ▸ Appearance) via the OS **Media Foundation** codecs. MP4/MOV (`moov`) and Matroska/WebM (Cues) parse the container's own index to read just the one keyframe nearest the chosen point (single-digit MB); AVI/WMV let MF's demuxer seek over a block-caching stream, never streaming the whole movie. **Five codec families Windows does not ship are decoded by SageThumbs itself**, in pure Rust and in a separate short-lived process: **FLV** (H.264 handed to Windows; VP6 and Sorenson Spark decoded here), **VP9 Profile 2/3** (10- and 12-bit HDR, which Windows declines even with its own VP9 extension installed), **10-bit H.264** (High 10, the usual choice for anime encodes; Windows' H.264 decoder stops at 8-bit) and **MPEG-1/2** in program, elementary and transport streams (VideoCD-era `.mpg`, bare `.m1v`/`.m2v`, DVD-style `.vob`, and MPEG-2 inside `.ts`/`.m2ts`/`.mts` recordings: Windows opens none of the first two on any edition and the rest only with a Store add-on; decoded here whenever Windows declines. Interlaced field-coded recordings are the one shape still left to the OS). **Resolume DXV3** `.mov` (the DXD3 codec of Resolume Alley, Wire and Arena) has its frame 1 decoded here: DXT1 and DXT5 are decoded, and the YCoCg high-quality modes are not yet. |
 | **Archive** (3) | **zip**, **rar**, **7z** | the images INSIDE the archive, including SVG: a single cover, or by default a contact-sheet collage of up to four (Settings ▸ Ebook/comic). Identified generic archives honor **Max file size** before their directory is parsed; an oversized 7z is also rejected safely when its shell stream has no filename. ZIP/RAR and non-solid 7z read only the picked images; 7z extraction is single-threaded with an 8 MiB aggregate image budget. Solid 7z scans only a small bounded prefix and falls back to the stock icon when its images are buried too deeply. No readable image (or encrypted) keeps the stock icon |
 
-*Counts sum to **364** (canonical source: `formats::FORMATS.len()`; `st2k formats` prints
+*Counts sum to **366** (canonical source: `formats::FORMATS.len()`; `st2k formats` prints
 it). DjVu (`.djv/.djvu`) thumbnails are decoded by the **maintained pure-Rust `djvu-rs`
 crate** (MIT, no C, no GPL): the page's pre-rendered thumbnail when present, else the
 rendered first page (IW44 background + anti-aliased JB2 text + foreground palette),
@@ -201,6 +224,7 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
   so any PDF viewer can search the document and select or copy its text while it still
   looks exactly like the images. Also `st2k pdf --searchable` and the MCP `pdf` tool's
   `searchable` argument.
+- **OCR language**: Settings ▸ Screenshots ▸ OCR language chooses which installed Windows OCR pack reads the text (default: the Windows profile languages). The screenshot OCR, Copy text, Combine into searchable PDF and quick preview use it; `st2k ocr --lang` and `st2k pdf --searchable --lang` override it. An uninstalled language is refused with the Windows setting named, never swapped for another.
 - **Combine into CBZ (comic)**: selected images → one `.cbz` comic archive (a ZIP,
   stored uncompressed), pages natural-sorted by name (page 2 before page 10). A
   **`ComicInfo.xml`** goes in as the first entry with the page count and each page's
@@ -241,6 +265,7 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
     and **copy-vs-move**. Tags read via `lofty`. A progress bar tracks the sort and
     the dialog stays responsive while it works.
 - **Copy text (OCR)**: extract text from the image to the clipboard.
+- **Stay on top (pin)**: the screenshot toolbar's pin button leaves the capture on screen as a borderless always-on-top window at its captured size, without saving it first. Drag, wheel-zoom, Ctrl+C, Ctrl+S, Esc or double-click to close.
 - **Image info**: a verbose, **copyable** metadata window: file size & type, image
   format, colour depth/channels, dimensions, and **every EXIF tag** the file carries
   (camera, lens, exposure, software, date, GPS with a map link, …), scrollable, far
@@ -300,6 +325,13 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
   folder (writes a hidden square `.ico` + `desktop.ini`, marks the folder
   customized, and refreshes Explorer (the same mechanism as Explorer's own
   Customize ▸ Change Icon).
+- **Use folder.ico icons** (on the folder and drive right-click menu once it is switched on under
+  Settings ▸ Appearance): the folder and every folder inside it takes the icon from its own
+  `folder.ico` (any case), and a folder without one whose name matches a **Folder icons by name**
+  rule takes that rule's icon. A folder's own `folder.ico` always comes first. It merges into each
+  `desktop.ini` the way Set as folder icon does, so an existing `InfoTip` or other line is kept,
+  stops after 100,000 folders on a whole drive, and says in a notification how many folders took
+  an icon and how many could not.
 - **Set as wallpaper ▸** Stretched · Tiled · Centered · Filled · Fitted · Spanned.
 - **Set as lock screen** - the same decode path as wallpaper, then Windows' own lock-screen setting.
 - **Settings**: opens the Settings window (same as the Start-menu shortcut), so
@@ -372,7 +404,7 @@ plus these viewer-only extras:
   or "Still frame: HEVC video needs the HEVC Video Extensions from the Microsoft Store". Codec
   packs such as K-Lite cannot fill that gap, because they plug into DirectShow, not the Media
   Foundation the preview plays through.
-- **Animated GIF / APNG / animated WebP** play frame-by-frame (respecting each frame's delay).
+- **Animated GIF / APNG / animated WebP / animated JPEG XL** play frame-by-frame (respecting each frame's delay).
 - **Font specimens** for `.ttf`/`.otf`/`.ttc` **and `.woff`**: the font's own name, a pangram at
   several sizes, and an A–Z / a–z / 0–9 glyph sheet, all rendered in the font itself (via the OS
   text stack). A `.woff` web font is just an sfnt with compressed tables, so it is unpacked on the
@@ -601,12 +633,18 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   corner, which the two separate switches this replaced could not guarantee. **The installer
   asks this once on a first install**, and it is changeable here at any time. When the corner
   holds a SageThumbs format mark, **Format mark size** picks how big it is drawn (Small, the
-  original, or Medium or Large for reading the format at a glance); it scales with the tile,
-  so the choice looks the same in every Explorer view. Alongside it:
+  original, or Medium or Large for reading the format at a glance); it grows more slowly than
+  the tile, so it stays readable on small icons and never covers a big preview's corner. Alongside it:
   **paint a checkerboard behind transparent thumbnails** (off by default; Explorer normally
   shows the folder background through them), **its colours** (Automatic, Dark so white images
   stand out, or any two of your own from the Windows colour picker; the same colours draw the
   right-click and Quick preview checkerboards) and **use a video's cover art instead of a frame**.
+  Last on the page: the switch that puts **Use folder.ico icons** on the folder right-click menu
+  (off by default, since it writes a `desktop.ini` into the folders it walks), and **Folder icons
+  by name…**, an editor of one rule per line (`node_modules = C:\Icons\npm.ico`; `*` stands for
+  any letters, `?` for one) with an **Add an icon file…** button that puts a picked `.ico`'s path
+  at the cursor. Done saves, Cancel and Esc leave the saved rules alone; a portable copy keeps
+  them in its `.ini`.
 - **File types:** purely the per-format list, with search, bulk select and **Defaults**.
 - **Right-click menu:** enable the menu, **show it on all file types** (so it's there everywhere; an
   unsupported file gets a condensed file-utility set: Files to folder / Sort into folders
@@ -682,6 +720,11 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   screen: a dialog you can't select text in, a video frame, a screenshared document.
   Recognition uses Windows' built-in engine, so it adds nothing to the download. A slashed
   zero that engine reads as `ø`/`Ø` comes out as `0` inside any word that has a digit in it.
+  **On a portable copy only**, **Start with Windows, in the tray** (off by default) starts that
+  copy's tray helper at sign-in, so the hotkeys and Quick preview are ready without Settings
+  opening; it adds a sign-in task pointing at the portable folder, and unticking it deletes that
+  task again (never one that starts an installed copy). An installed copy's helper already starts
+  at sign-in whenever something uses it.
 - **Screenshot files** (its own page, next to Screenshots): what a saved capture looks like.
   **Save screenshots as** PNG (the default), JPEG (with its own **quality** setting; a
   transparent capture is laid on white), WebP (lossless), or one of two **HDR formats** that
@@ -690,7 +733,10 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   a `cLLI` light-level chunk) and **JPEG XR HDR** (lossless scRGB half-float, the format
   Windows' own Game Bar saves HDR screenshots in). Annotations are laid into the HDR file at
   the monitor's SDR white, so they look as they did in the editor; a capture with no HDR
-  monitor saves in the HDR formats too, at the standard SDR white. The **Screenshot file name** is a
+  monitor saves in the HDR formats too, at the standard SDR white. With an HDR format picked, **Copy**
+  puts a capture that had HDR light on the clipboard as a PNG HDR too, beside the usual bitmap:
+  browsers, Discord and other programs that paste PNG take the HDR picture, the rest the bitmap.
+  The **Screenshot file name** is a
   template: `{yyyy}` `{MM}` `{dd}` `{HH}` `{mm}` `{ss}` `{ms}` insert the capture's date and
   time, `{app}` the program that was in front (`Desktop` when nothing was), and `/` or `\`
   start a subfolder, created when needed. The default, `Screenshot {yyyy}-{MM}-{dd}
@@ -753,7 +799,7 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   **another app owns your chosen chord**, the status line says so ("hotkey in use by
   another app") instead of pretending everything works, and it clears itself within a
   minute of that app letting go. Quitting from the tray icon disables it for good (until
-  you re-enable it here).
+  you re-enable it here), and closes a Settings window that is still open.
 - **Updates:** a **Check for updates** button (plus an *Automatically check for updates*
   toggle) asks GitHub whether a newer release exists. With the toggle on, SageThumbs also
   checks on a schedule of its own, and again whenever you open it - **no background service
@@ -803,7 +849,7 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   thumbnail. A copy that once held a key is never stopped by a network outage, only by a
   revocation, and then with the same 3 days of notice. `st2k doctor` reports the state.
 - **Plan, updates window and renewal:** a commercial licence is a subscription per installation,
-  US$5 a month or US$50 a year, the same price for home and business use. It gives commercial
+  US$5 a month or US$50 a year. It gives commercial
   (work) use, priority support, and every paid feature added from now on. Home use stays free and
   keeps updating. Licences bought before 2026-11-01 keep the terms they were sold under: for those,
   the Licence page shows when their 12 months of updates end ("Updates until \<date\>", or
@@ -812,6 +858,13 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   published after it, and says so with the renewal link instead of installing; nothing else changes.
   The version already installed keeps working, with every feature, indefinitely, and security
   releases are still offered to every licensed installation regardless of the window.
+- **Business note (Settings banner):** when this PC keeps thumbnailing business formats (Visio,
+  InDesign, SolidWorks, film scans, and similar), a banner at the top of Settings names the most
+  used ones and their count, with **See Business** (opens the business shop) and **Not now**.
+  It shows only when the copy has been installed at least 7 days, the count reaches 25 since the
+  last time it was shown, the copy is not on a Business plan, and at least 30 days have passed
+  since the last showing. Thumbnails stay free; the banner never blocks anything.
+  `st2k usage` prints the per-format counts behind it.
 
 ---
 
@@ -943,7 +996,7 @@ genuinely-outstanding work.)*
 > PDF is searchable and its text can be selected and copied.
 
 **Idea:** because SageThumbs already bundles real image
-capabilities (364-format decode incl. RAW/HEIC/ebook covers, ImageMagick, WIC, the
+capabilities (366-format decode incl. RAW/HEIC/ebook covers, ImageMagick, WIC, the
 WinRT PDF + OCR engines, convert/resize/rotate/strip/PDF), expose those to AI
 agents and scripts so users don't need to install a separate toolkit. **Do not
 bundle anything new**; only surface existing functions.
@@ -952,15 +1005,16 @@ bundle anything new**; only surface existing functions.
 1. ✅ **CLI shipped** as a standalone **`st2k.exe`** (console subsystem): verbs
    `convert`, `rotate`, `strip`, `info` (JSON to stdout), `ocr` (text to stdout), `pdf`
    (combine), **`cbz`** (combine into a comic-book archive), `thumbnail` (render any of
-   the 364 types to PNG), **`batch`** (bulk thumbnail/convert over many files/folders in
+   the 366 types to PNG), **`batch`** (bulk thumbnail/convert over many files/folders in
    ONE process, fanned out across all CPU cores, with `--recurse` to walk subfolders and
    a richer `info` mode that includes audio tag data), `formats`. All logic lives in the
    `lib` (`verbs`, `strip`, `ocr`, `topdf`, `decode`, `parallel`); the CLI is a thin
    arg-parser over the same functions the menu uses. (Shipped as a separate binary, not a
    flag on the Options app.)
-2. ✅ **MCP server mode** (`st2k --mcp`, stdio JSON-RPC 2.0): exposes **15** MCP
+2. ✅ **MCP server mode** (`st2k --mcp`, stdio JSON-RPC 2.0; a Supporter feature whose
+   14-day trial starts on the first tool call, never on start-up or `tools/list`): exposes **15** MCP
    tools (`tools/list` + `tools/call`) so an agent auto-discovers and calls them: the
-   core verbs (now including **`cbz`**) plus **`view`** (which decodes any of the 364
+   core verbs (now including **`cbz`**) plus **`view`** (which decodes any of the 366
    formats to a PNG **image block**) so an AI agent can actually *see* the file,
    **`compress`**, and the diagnostic/maintenance tools **`doctor`**, **`prebuild`**, and
    **`register_status`**. Newline-delimited stdio, spawned on demand by the client (not
@@ -979,7 +1033,11 @@ verbs require an explicit output argument (`rotate`/`resize` write an `(edited)`
 
 > **New.** In **Settings ▸ Data & Backup**, a **"Sync settings…"** button lets you sign in
 > with a Connections account and sync your SageThumbs preferences across your PCs. It's
-> **opt-in and off by default**; no network happens unless you click it.
+> **opt-in and off by default**; no network happens unless you click it. Syncing is a
+> Supporter feature with its own 14-day trial, which starts on the first sync; past it with no
+> licence, the sign-in stands (it is also how a licence bought on another PC reaches this one),
+> nothing syncs, the row reads "Signed in, not syncing" with a **Sign out** button, and a fresh
+> sign-in opens the pay screen.
 
 Sign-in opens your real browser (standard OAuth 2.0 + PKCE; SageThumbs never sees your
 password), and from then on your portable settings (thumbnail limits/quality, menu layout

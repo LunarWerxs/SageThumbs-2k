@@ -7,15 +7,58 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 4.0.0
 
 **TL;DR**
 
+**New**
+
+- **Pin a screenshot on top**
+- **A screenshot copies as HDR (#74)**
+- **Folders can take their icons from a `folder.ico`**
+- **A portable copy can start with Windows, in the tray**
+- **Atari ST NEOchrome `.neo` pictures get thumbnails (#77)**
+- **PhotoCraft `.pcraft` projects get thumbnails (#75)**
+- **OCR in other languages**
+- **Resolume DXV3 `.mov` files get thumbnails (#72)**
+
+**Changed**
+
+- **The format mark is a bigger share of a small thumbnail and a smaller share of a big one**
+
 **Fixed**
 
+- **An animated JPEG XL plays in Quick preview (#76)**
+- **Exit from the tray icon closes an open Settings window too**
+- **An update that needs a Windows restart says so**
+- **The key-bind guide strip no longer covers the screenshot toolbar (#73)**
+- **A video keeps its own shape when the preview window changes size**
+- **Thumbnails in a OneDrive folder come back on their own when OneDrive resumes sync (#71)**
+- **Old Excel and Publisher files keep their thumbnail's shape**
+- **The About window's text and logo fit at every scaling**
+- **A Settings line fits in Greek at 150% and 200%**
+
+**Everything in 4.0.0**
+
+- **Pin a screenshot on top.** The screenshot toolbar has a pin button: it closes the capture and keeps the selection, annotations included, on screen as a small always-on-top window. Drag it, zoom it with the wheel, Ctrl+C copies it, Ctrl+S saves it, Esc or a double-click closes it, and several can stay open.
+- **A screenshot copies as HDR.** With PNG HDR or JPEG XR HDR picked as the save format, Copy puts a capture that had HDR light on the clipboard twice: the usual bitmap every program pastes, and a 16-bit PNG HDR that browsers, Discord and other programs that paste PNG take instead, so its colours and brightness survive without saving a file first (#74).
+- **Folders can take their icons from a `folder.ico`.** Switch on "Add "Use folder.ico icons" to the folder right-click menu" on the Appearance page, then right-click a folder or drive and pick **Use folder.ico icons**: that folder and every folder inside it takes the icon from its own `folder.ico`. **Folder icons by name…** on the same page sets icons for folders that have none, by name, with `*` and `?` wildcards (`node_modules = C:\Icons\npm.ico`). Whatever else a folder's `desktop.ini` says is kept.
+- **A portable copy can start with Windows, in the tray.** "Start with Windows, in the tray" on the Screenshots page starts the screenshot hotkey and Quick preview at sign-in without opening Settings. Unticking it removes the sign-in task again. An installed copy already starts its tray helper at sign-in whenever something uses it.
+- **Atari ST NEOchrome `.neo` pictures get thumbnails.** Low-resolution NEOchrome files (GitHub #77) are decoded natively with the palette they carry. Medium and high resolution files are not read.
+- **PhotoCraft `.pcraft` projects get thumbnails.** The picture is the flattened preview PhotoCraft saves inside the file (GitHub #75), so the layers are not composited.
+- **OCR in other languages.** Settings ▸ Screenshots ▸ OCR language picks the language that the screenshot OCR, the right-click Copy text verb, Combine into searchable PDF and quick preview's copy-text read. The list is the OCR packs Windows already has installed, and the default is the Windows profile languages. `st2k ocr --lang` and `st2k pdf --searchable --lang` override it. A language Windows does not have is never swapped for another one: the page says where to add it.
+- **Resolume DXV3 `.mov` files get thumbnails.** Clips in Resolume's DXV3 codec (Alley, Wire, Arena) used to show the plain icon, because Windows has no decoder for it. SageThumbs 2K now decodes the first frame itself, in its own short-lived process, for the DXT1 and DXT5 modes; the YCoCg high-quality modes still show the plain icon (#72).
+- **The format mark is a bigger share of a small thumbnail and a smaller share of a big one.** It used to grow in step with the tile, so it was hard to read on small icons and covered a big preview's corner at the largest Explorer views; it now grows more slowly than the tile, and Small, Medium and Large keep their order.
+- **An animated JPEG XL plays in Quick preview.** Space used to show a still picture of a `.jxl` animation, where an animated GIF plays. Every frame now plays for its own duration, the same as GIF (#76).
+- **Exit from the tray icon closes an open Settings window too.** It used to leave Settings up, and the tray icon stayed away until you pressed Save.
 - **An update that needs Windows restarted first says so, even when other programs also have files waiting for that restart.** It used to miss our own waiting file whenever another program (a browser update, say) had queued a delete ahead of it, and then started a silent update that stalled on the installer's "restart your computer" box.
+- **The key-bind guide strip no longer covers the screenshot toolbar on a whole-display capture.** With the selection filling the screen there was no room above or below the bar, so both were pushed to the top edge and painted over each other; the toolbar now sits on the selection's bottom edge in that case (#73).
 - **A video keeps its own shape when the preview window changes size.** Full screen, a drag-resize and leaving full screen used to leave a small clip as a narrow strip or stretch it; the picture now scales to fit at its own aspect with black bars.
-- For installations on the paid plan: it is now a subscription, US$5 a month or US$50 a year per installation, the same for home and business use, and it keeps working for a while when the licence server cannot be reached. Licences already sold keep their terms.
+- **Thumbnails in a OneDrive folder come back on their own when OneDrive resumes sync.** OneDrive could put its own thumbnail handler back when sync resumed, and then files such as `.clip` showed a stock icon there until you signed out and back in. SageThumbs now notices within seconds and links itself back in (#71).
+- **Old Excel and Publisher files keep their thumbnail's shape.** A legacy `.xls` or `.pub` whose thumbnail is a drawing came out stretched to your screen's shape (16:9 on a wide display, 4:3 on an older one); it now keeps the shape the file records.
+- **The About window's text and logo fit at every scaling.** Its licence line sat in a one-line box, so "No licence key on this computer." lost its end in 14 languages, and a longer state (the business evaluation's days left, a Supporter key's thank-you) lost it in English too. It now runs the card's full width, and the card grows to fit it. The logo and the LunarWerx wordmark are drawn at your display's scaling too: at 150% and 200% they sat small in a corner of their space.
+- **A Settings line fits in Greek at 150% and 200%.** The Licence page's "using it at work?" line was cut off at those scalings.
+- The home licence, Supporter (US$2 a month or US$20 a year), now covers Quick preview, the screenshot tool, OCR (the right-click OCR items and Combine into searchable PDF included), settings sync across PCs and the MCP server's tools for AI assistants, each free for 14 days from the first time you use it; thumbnails, Explorer's preview pane and the rest of the right-click menu stay free. The business licence is now US$5 a month or US$50 a year per computer, and Settings mentions it on a PC that keeps thumbnailing business formats such as Visio, InDesign and SolidWorks files.
 
 ## 3.10.0
 

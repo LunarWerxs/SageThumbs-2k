@@ -6,7 +6,7 @@ full text is reproduced below.
 **In plain terms:** you may use, copy, modify, and share SageThumbs 2K for any
 **noncommercial** purpose, free of charge. **Commercial use requires a separate
 license** - to arrange one, buy it at <https://go.lunarwerx.com/sagethumbs/buy>
-(a subscription at US$5 a month or US$50 a year per Windows installation, the same price for home and business use; one seat key per installation, redeemed under Settings ▸ Licence; monthly at <https://go.lunarwerx.com/sagethumbs/buy/monthly>). A copy installed for business use may be evaluated in full for 7 days before a key is required. Licences bought before 2026-11-01 keep the terms they were sold under, with no price. Security fixes are delivered to every licensed installation regardless. For volume or site terms, open
+(a subscription at US$5 a month or US$50 a year per Windows installation; one seat key per installation, redeemed under Settings ▸ Licence; monthly at <https://go.lunarwerx.com/sagethumbs/buy/monthly>). A copy installed for business use may be evaluated in full for 7 days before a key is required. Licences bought before 2026-11-01 keep the terms they were sold under, with no price. Security fixes are delivered to every licensed installation regardless. For volume or site terms, open
 an issue on the project's GitHub.
 
 Copyright © 2026 Lunarwerx.
