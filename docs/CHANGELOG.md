@@ -7,6 +7,24 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## 4.0.1
+
+**TL;DR**
+
+**Fixed**
+
+- **Video format marks are back to their 3.x size (fixes #79)**
+- **A video's thumbnail is never larger than the video (fixes #80)**
+- **Resolume DXV3 clips whose width is not a multiple of 16 draw upright (fixes #78)**
+- **HDR screenshots pasted into Discord keep their colours (#74)**
+
+**Everything in 4.0.1**
+
+- **Video format marks are back to their 3.x size.** 4.0.0 drew the mark a smaller share of a big thumbnail, but Windows makes one big thumbnail and shrinks it for every smaller view, so a video's mark came out at about half the size of the EPUB or picture mark beside it (#79). From 256 px up the mark is the same share of every thumbnail again; a small icon keeps the bigger mark 4.0.0 gave it.
+- **A video's thumbnail is never larger than the video.** With a big "Max thumbnail size" and a viewer that asks for big thumbnails (XYplorer's floating preview, say), a 988x720 clip came back blown up to 1280x933. A video's frame is now treated like a picture's own pixels: shrunk to fit, never enlarged (#80). Covers inside ebooks and other documents still fill the thumbnail, as before.
+- **Resolume DXV3 clips whose width is not a multiple of 16 draw upright.** DXV3 stores a 1080x1080 clip as 1088x1088, and SageThumbs read it at 1080, so the picture came out sheared into diagonal streaks. It now reads the stored size and trims it. The thumbnail also comes from the same point in the clip as every other video (30% in unless changed in Settings) instead of the first frame (#78).
+- **HDR screenshots pasted into Discord keep their colours.** Discord misreads the colour tag the PNG HDR copy carried and showed the picture washed out until it was opened (#74). The copy on the clipboard now describes its colours with an embedded BT.2020 PQ colour profile instead, which Discord reads; the saved PNG HDR file carries both.
+
 ## 4.0.0
 
 **TL;DR**
