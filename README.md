@@ -77,7 +77,7 @@ SageThumbs 2K is a crash-isolated Rust shell extension for Windows 11 that adds 
 
 ## The story
 
-The original **SageThumbs** was a Windows legend. It made Explorer show thumbnails for *hundreds* of formats nothing else could. Then it stopped: no updates since ~2017, built on the proprietary, frozen **GFL** library.
+The original **SageThumbs** was a Windows legend. It made Explorer show thumbnails for *hundreds* of formats nothing else could. Then it stopped: no updates since ~2019, built on the proprietary, frozen **GFL** library.
 
 **SageThumbs 2K rebuilds it from scratch in safe Rust** (a maintained decode pipeline, real crash isolation, and a native Windows 11 look) while keeping the one thing that made it great: **thumbnails for the files nothing else will show.**
 
@@ -265,7 +265,7 @@ free download built and maintained by one person.
 <details>
 <summary><b>What are the system requirements?</b></summary>
 
-Windows 11, 64-bit. It ships as a native x64 installer, plus a separately built native ARM64
+Windows 10 or 11, 64-bit. It ships as a native x64 installer, plus a separately built native ARM64
 installer for Windows on Arm with the same format coverage. There's also a portable zip for
 per-user use with no admin rights. No other software is required: the installer bundles
 everything it needs, including the ImageMagick engine used for the more obscure formats.
@@ -333,7 +333,7 @@ after 3.0. Click **More info**, then **Run anyway**.
 <details>
 <summary><b>How is it different from the original SageThumbs, or a tool like MysticThumbs?</b></summary>
 
-It's a clean-room rebuild of the classic, decade-abandoned SageThumbs (2004-2017, GPLv2, no
+It's a clean-room rebuild of the classic, decade-abandoned SageThumbs (2004-2019, GPLv2, no
 GFL reused), written from scratch in memory-safe Rust. Compared to a codec-pack style
 thumbnailer like MysticThumbs, its thumbnail provider runs out-of-process and panic-guarded, so
 a corrupt or hostile file can't take down Explorer the way an in-process crash can.
@@ -370,7 +370,7 @@ SageThumbs 2K is a **clean-room rewrite**, **not** a derivative of the GPLv2 C++
 
 ## 🙏 Credits
 
-A from-scratch successor to Nikolay Raspopov's original **[SageThumbs](https://github.com/raspopov/SageThumbs)** (2004–2017, GPLv2, now unmaintained), rebuilt clean-room in Rust, with our thanks for the classic that inspired it. Built on [image-rs](https://github.com/image-rs/image), [resvg](https://github.com/linebender/resvg), [windows-rs](https://github.com/microsoft/windows-rs), [djvu-rs](https://crates.io/crates/djvu-rs), and [ImageMagick](https://imagemagick.org/).
+A from-scratch successor to Nikolay Raspopov's original **[SageThumbs](https://github.com/raspopov/SageThumbs)** (2004–2019, GPLv2, now unmaintained), rebuilt clean-room in Rust, with our thanks for the classic that inspired it. Built on [image-rs](https://github.com/image-rs/image), [resvg](https://github.com/linebender/resvg), [windows-rs](https://github.com/microsoft/windows-rs), [djvu-rs](https://crates.io/crates/djvu-rs), and [ImageMagick](https://imagemagick.org/).
 
 With thanks to the projects that shaped specific features:
 
