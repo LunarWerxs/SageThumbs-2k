@@ -614,11 +614,18 @@ right away.
 Reached from the Start-menu shortcut (`SageThumbs 2K`); the window is titled
 **Settings**. Native Win32, dark-mode aware, 36 languages. **Redesigned in 0.7.0**: a
 Windows 11-style **category rail** (General · Appearance · File types · Ebook/comic ·
-Right-click menu · Screenshots · Screenshot files · Quick action · Advanced · Quick preview ·
+Right-click menu · Screenshots · Screenshot files · Quick action · Repair & updates · Quick preview ·
 Data & Backup · Licence) on
 the left with a content page on the right: **toggle switches**, category icons, and a titled
-header per page. Everyday knobs up front; Diagnostics / Updates / Backup tuck under
-**Advanced**. (Fixed-size window; the old single long scroll is gone.)
+header per page. Everyday knobs up front; Diagnostics / Updates / the hotkey service sit under
+**Repair & updates**. (Fixed-size window; the old single long scroll is gone.)
+
+**Advanced switch**: a small switch beside the search box on every page. Off, the window shows a
+**Basic** view of the common options on nine pages (Ebook/comic, Screenshot files and Quick action
+are Advanced only) with a line at the foot saying so; on, every option. It applies at once and is
+remembered. A fresh install starts on Basic, a copy that already existed keeps the full view.
+Opening a hidden page or picking a search result Basic hides turns it on; options Basic hides keep
+their values, and Save and Reset Settings treat them as before.
 
 **Search all settings** (1.9.0): the box at the top right of the window matches every switch
 on every page, by its label *and* by its description text, and lists the hits as

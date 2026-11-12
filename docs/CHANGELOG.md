@@ -15,7 +15,26 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 - **VectorCraft `.vectorcraft` files get thumbnails (#83)**
 
+**Changed**
+
+- **Settings opens with the common options; an Advanced switch shows the rest**
+- **The Settings "Advanced" page is now called "Repair & updates"**
+- **The "Menu preview" option sits right under the right-click menu switch**
+
 **Everything in Unreleased**
+
+- **Settings has an Advanced switch (top right of every page, left of the search box).** Off, the
+  window shows a Basic view: the options most people change, on nine of the twelve pages (the
+  Ebook/comic, Screenshot files and Quick action pages are Advanced only), with a note at the foot
+  saying so. On shows every option, as before. The switch applies at once and is remembered; every
+  copy that already existed keeps the full view, only a fresh install starts on Basic. Opening a
+  page, or picking a search result, that Basic hides turns Advanced on. Options hidden by Basic keep
+  the values they have, and Save and Reset Settings treat them as before.
+
+- **The Settings page called "Advanced" is now "Repair & updates"**, which is what it holds
+  (diagnostics, rebuilding the thumbnail cache, repairing file associations, updates, the hotkey
+  service). The "Menu preview" dropdown moved up to sit under "Enable the right-click menu", the
+  switch it belongs to.
 
 - **VectorCraft `.vectorcraft` files (and the former `.drawcraft` name) get thumbnails.** The
   thumbnail is the file's embedded preview picture when it has one, else page one of the PDF
