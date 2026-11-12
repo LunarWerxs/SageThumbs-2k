@@ -22,7 +22,7 @@ chasing down every contributor.
 
 SageThumbs 2K is an independent, **from-scratch reimagining** of the classic
 **SageThumbs** by Nikolay Raspopov (GPL-2.0-or-later,
-<https://github.com/raspopov/SageThumbs>), which has been unmaintained since 2017.
+<https://github.com/raspopov/SageThumbs>), which has been unmaintained since 2019.
 SageThumbs 2K is a clean-room rewrite in Rust and contains **none of the original's
 source code** - the decode/thumbnail pipeline, the shell-extension implementation,
 and the tooling are all original work. Our thanks to Raspopov for the project that

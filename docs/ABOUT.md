@@ -6,7 +6,7 @@
 
 ## What it is
 
-A crash-isolated Rust shell extension for Windows 11 that draws File Explorer thumbnails, Details-pane columns, and a large reading-pane preview for 349 file types Windows cannot render natively (camera RAW, PSD, HEIC/AVIF, ebooks/comics, video, CAD/3D, DjVu, MS Office, audio). It adds a right-click image toolkit (convert, resize, lossless rotate, combine-to-PDF/CBZ, OCR, eyedropper) and an opt-in Space-bar QuickLook-style previewer with video/audio playback, syntax highlighting, PDF paging, SQLite/email/3D-model viewing and more. It also ships a CLI and MCP server (st2k.exe) so scripts and AI agents get the same decode/convert engine offline. A clean-room, from-scratch Rust revival of the decade-abandoned SageThumbs, free for personal use with a paid commercial license.
+A crash-isolated Rust shell extension for Windows 11 that draws File Explorer thumbnails, Details-pane columns, and a large reading-pane preview for 349 file types Windows cannot render natively (camera RAW, PSD, HEIC/AVIF, ebooks/comics, video, CAD/3D, DjVu, MS Office, audio). It adds a right-click image toolkit (convert, resize, lossless rotate, combine-to-PDF/CBZ, OCR, eyedropper) and an opt-in Space-bar QuickLook-style previewer with video/audio playback, syntax highlighting, PDF paging, SQLite/email/3D-model viewing and more. It also ships a CLI and MCP server (st2k.exe) so scripts and AI agents get the same decode/convert engine offline. A clean-room, from-scratch Rust revival of the long-abandoned SageThumbs, free for personal use with a paid commercial license.
 
 ## Things not to forget
 
