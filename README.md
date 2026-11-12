@@ -6,11 +6,11 @@
 
 ### Real thumbnails where Windows shows a blank icon.
 
-A modern, **crash-isolated** Rust shell extension for **Windows 11**: the clean-room revival of the legendary (but decade-abandoned) [SageThumbs](https://sagethumbs.en.lo4d.com/).
+A **Windows 11** shell extension that adds Explorer thumbnails, a right-click image toolkit and Quick preview for files Windows can't show. It is a **crash-isolated**, clean-room Rust rebuild of the original [SageThumbs](https://github.com/raspopov/SageThumbs), which has not been updated since 2017.
 
 [![Windows 11](https://img.shields.io/badge/Windows%2011-0078D6?logo=windows11&logoColor=white)](#-install)
 [![Built with Rust](https://img.shields.io/badge/Rust-DEA584?logo=rust&logoColor=222)](#-how-it-works)
-![Formats](https://img.shields.io/badge/formats-368-2ea44f)
+![Formats](https://img.shields.io/badge/formats-366-2ea44f)
 [![Latest release](https://img.shields.io/github/v/release/LunarWerxs/SageThumbs-2k?sort=semver)](https://github.com/LunarWerxs/SageThumbs-2k/releases)
 [![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange)](#-license)
 [![CI](https://github.com/LunarWerxs/SageThumbs-2k/actions/workflows/ci.yml/badge.svg)](https://github.com/LunarWerxs/SageThumbs-2k/actions)
@@ -18,7 +18,7 @@ A modern, **crash-isolated** Rust shell extension for **Windows 11**: the clean-
 
 <a href="https://sourceforge.net/projects/sagethumbs-2k/"><img src="https://a.fsdn.com/con/app/syndication/badge_img_direct/oss-rising-star/oss-rising-star/?variant_id=sf" alt="SourceForge Rising Star award" width="110" /></a>
 
-[**⬇ Download**](https://github.com/LunarWerxs/SageThumbs-2k/releases) · [Features](#-features) · [Formats](#-supported-formats) · [FAQ](https://github.com/LunarWerxs/SageThumbs-2k/blob/main/docs/FAQ.md) · [Changelog](https://github.com/LunarWerxs/SageThumbs-2k/blob/main/docs/CHANGELOG.md)
+[**⬇ Download**](https://github.com/LunarWerxs/SageThumbs-2k/releases) · [Website](https://sagethumbs.lunarwerx.com/) · [Features](#-features) · [Formats](#-supported-formats) · [FAQ](https://github.com/LunarWerxs/SageThumbs-2k/blob/main/docs/FAQ.md) · [Changelog](https://github.com/LunarWerxs/SageThumbs-2k/blob/main/docs/CHANGELOG.md)
 
 <br/>
 
@@ -44,13 +44,13 @@ A modern, **crash-isolated** Rust shell extension for **Windows 11**: the clean-
 
 </div>
 
-SageThumbs 2K is a crash-isolated Rust shell extension for Windows 11 that adds File Explorer thumbnails, a right-click image toolkit, and a QuickLook-style preview for 368 file types Windows can't render natively, including camera RAW, Photoshop PSD, HEIC/AVIF, video, ebooks, comics, and the long tail of obscure formats.
+SageThumbs 2K is for anyone whose folders show blank icons: RAW shooters, Photoshop users, and comic and ebook collectors. It covers 366 file types Windows can't render natively, including camera RAW, Photoshop PSD, HEIC/AVIF, video, ebooks and comics. **Free for home use.** Work use needs a licence: US$5 a month or US$50 a year per PC, as the [website](https://sagethumbs.lunarwerx.com/) states.
 
 ---
 
 ## TL;DR
 
-- 🖼️ Explorer thumbnails for **368 file types it ignores**: camera RAW, Photoshop, HEIC/AVIF, **video (MKV, WebM, MP4, MOV…)**, JPEG-XR, MS Office, DjVu, ebooks & comics, 3D-print files, and the obscure long tail.
+- 🖼️ Explorer thumbnails for **366 file types it ignores**: camera RAW, Photoshop, HEIC/AVIF, **video (MKV, WebM, MP4, MOV…)**, JPEG-XR, MS Office, DjVu, ebooks & comics, 3D-print files, and the obscure long tail.
 - ☁️ **Works in OneDrive, Synology Drive and other cloud folders**, where Windows normally asks only the cloud app for thumbnails. Online-only files are never downloaded just to draw one.
 - 🛡️ **A corrupt or malicious file can't crash Explorer**: runs out-of-process, panic-guarded, with a sandboxed decoder.
 - ⚡ **Fast even on huge files**: camera RAW thumbnails come from the embedded preview instead of a slow demosaic (3–13× quicker), multi-gigabyte Photoshop files and archives are read straight off the disk, and no file is allowed to hang a folder.
@@ -87,7 +87,7 @@ The original **SageThumbs** was a Windows legend. It made Explorer show thumbnai
 
 |  |  |
 |---|---|
-| 🖼️ **368 formats** | Camera RAW (Canon/Nikon/Sony/Fuji/…), PSD, GIMP XCF, DICOM, OpenEXR, FITS, HEIC/AVIF, JPEG-2000/XL/**XR**, Targa, SGI, and more |
+| 🖼️ **366 formats** | Camera RAW (Canon/Nikon/Sony/Fuji/…), PSD, GIMP XCF, DICOM, OpenEXR, FITS, HEIC/AVIF, JPEG-2000/XL/**XR**, Targa, SGI, and more |
 | 📚 **Ebooks & comics** | EPUB, MOBI/AZW (Kindle), FB2, CBZ/CB7/CBR/CBT: real covers in Explorer (a native-Rust [DarkThumbs](https://github.com/fire-eggs/DarkThumbs) port). Plain ZIP/RAR/7Z archives within the configured file-size limit get a contact-sheet thumbnail of the images inside, too |
 | 🎨 **Art / CAD / 3D / design** | PSD/PSB, Affinity, Clip Studio, Krita, OpenRaster, Blender, 3MF, FreeCAD, G-code, **SketchUp, Rhino, AutoCAD DWG, 3ds Max, Adobe XD, InDesign, Visio, CorelDRAW, Fusion 360 (.f3d)**: preview pulled straight from inside the file (no host app needed) |
 | 📄 **DjVu** | Pure-Rust, zero-GPL decode via [`djvu-rs`](https://crates.io/crates/djvu-rs); scanned books show their text |
@@ -97,7 +97,7 @@ The original **SageThumbs** was a Windows legend. It made Explorer show thumbnai
 | ⚡ **Parallel batch** | Multi-file Convert / Resize / Rotate / Strip and Combine-to-PDF fan out across **all CPU cores** (6–15× faster): a tiny dependency-free scoped thread pool, no rayon bloat in the shell DLL |
 | 🎛️ **Make the menu yours** | The Settings "Menu items" list lets you **drag-reorder** every right-click entry *and* its group dividers: the menu mirrors your layout exactly (WYSIWYG). Tick items off to hide them, or hit **Reset order** for the default |
 | 🤖 **CLI + MCP server** | `st2k.exe`: `thumbnail · convert · batch · rotate · ocr · pdf · cbz · …` as a scriptable/AI-agent toolbox (`st2k --mcp`); **`batch`** parallel-processes whole folders in one process. The MCP server adds **`view`** (decode any supported format to a PNG block so an AI agent can *see* the file) and **`compress`** tools |
-| 📇 **Details pane & columns** | An **IPropertyStore** handler surfaces image dimensions, EXIF camera info and audio tags in Explorer's Details pane, hover tooltips, and sortable/groupable columns, for the 368 formats Windows can't read itself. Read-only and panic-isolated, like the thumbnailer |
+| 📇 **Details pane & columns** | An **IPropertyStore** handler surfaces image dimensions, EXIF camera info and audio tags in Explorer's Details pane, hover tooltips, and sortable/groupable columns, for the 366 formats Windows can't read itself. Read-only and panic-isolated, like the thumbnailer |
 | 🎨 **Colour management** | Embedded **ICC** profiles and wide-gamut images (**Display P3 / Adobe RGB**) render in correct sRGB instead of over-saturated; AVIF/HEIC read their `colr` box (incl. the iPhone-HEIC CICP Display-P3 signal), and **CMYK JPEGs** are colour-managed through their embedded profile; pure-Rust, no C deps |
 | 🔧 **Repair file associations** | One button in **Settings ▸ Diagnostics** re-registers SageThumbs for every enabled format when another app has hijacked the thumbnails, then clears the thumbnail cache |
 | 🛡️ **Crash-isolated** | Out-of-process, `catch_unwind` under `panic = "abort"`, sandboxed ImageMagick child (CPU-time budget + kill-timeout), decompression-bomb guards |
@@ -218,7 +218,7 @@ Most thumbnail handlers are a weekend hack. This one's been put through the wrin
 ## 🗂 Supported formats
 
 <details open>
-<summary><strong>368 extensions</strong> across Image, RAW, Ebook/comics, Document, Audio and Video</summary>
+<summary><strong>366 extensions</strong> across Image, RAW, Ebook/comics, Document, Audio and Video</summary>
 
 - **RAW**: 3fr, arw, cr2/cr3/crw, dng, erf, iiq, mef, mrw, nef/nrw, orf, pef, raf, rw2, sr2/srw, x3f, …
 - **Pro / scientific**: dcm (DICOM), dpx, cin, exr, fits, hdr, pfm
@@ -244,9 +244,9 @@ Most thumbnail handlers are a weekend hack. This one's been put through the wrin
 
 Yes, for personal use, under the [PolyForm Noncommercial License 1.0.0](#-license): thumbnails,
 Explorer's preview pane and the right-click menu (its OCR items aside).
-**Supporter** (home use, **US$2 a month** or **US$20 a year**) adds Quick preview (press Space on any file), the screenshot tool, OCR, settings sync across PCs and the tools AI assistants use;
-each one is free for 14 days from the first time you use it, no card or sign-up, and the Business subscription below includes all five. Commercial
-use needs a Business license per Windows installation ([Terms of Service](https://terms.connections.icu/public/terms/sagethumbs-2k)). It is a subscription: **US$5 a month** or **US$50 a year**, per installation. It covers that installation for as long as the subscription is paid. Paying for one month covers one month; it does not buy a permanent licence. When it ends, that installation is no longer licensed for commercial use, and SageThumbs 2K asks for a key again. **To start the free 7-day business trial, choose Business when the installer asks:** every feature works for 7 days with no key, account or card. It includes commercial (work) use, every Supporter feature, priority support, and every paid feature added later. Home use stays free and keeps updating. Security fixes reach every licensed installation. Licences bought before 1 November 2026 keep the terms they were sold under: they are permanent and do not expire. Subscribe [yearly](https://go.lunarwerx.com/sagethumbs/buy) or [monthly](https://go.lunarwerx.com/sagethumbs/buy/monthly); manage or cancel at [go.lunarwerx.com/sagethumbs/manage](https://go.lunarwerx.com/sagethumbs/manage)
+**Supporter** (home use, **US$2 a month** or **US$20 a year**) adds Quick preview (press Space on any file), the screenshot tool and OCR;
+each one is free for 14 days from the first time you use it, no card or sign-up, and the Business subscription below includes all three. Commercial
+use needs a Business license per Windows installation: a subscription at **US$5 a month** or **US$50 a year**. It gives commercial (work) use, every Supporter feature, priority support, and every paid feature added from now on. Home use stays free and keeps updating. Security fixes are delivered to every licensed installation regardless. Licences bought before 2026-11-01 keep the terms they were sold under, with no price. Subscribe [yearly](https://go.lunarwerx.com/sagethumbs/buy) or [monthly](https://go.lunarwerx.com/sagethumbs/buy/monthly); manage or cancel at [go.lunarwerx.com/sagethumbs/manage](https://go.lunarwerx.com/sagethumbs/manage)
 (the checkout page calls what it emails you a "redemption code"; that is the seat key below,
 same thing). For volume or site licenses, purchase orders or bank transfer,
 [request a quote](https://github.com/LunarWerxs/SageThumbs-2k/issues/new?template=licence_quote.yml).
@@ -254,9 +254,9 @@ A business license comes as a seat key (`esk_...`); redeem it under
 **Settings ▸ Licence** and the app takes it from there. The installer asks whether a copy is
 for personal or business use, and that answer only changes by reinstalling, there's no toggle
 for it in Settings. A portable copy has no installer to ask, and counts as business use as soon
-as a key is redeemed on it. A business copy starts its 7-day trial with every feature; after
-that it asks for a key for 3 more days, then thumbnails, previews, the Details pane and the
-right-click menu stop on that computer until one is entered. Once a key is in, the license check runs quietly in the background and
+as a key is redeemed on it. A business copy starts a 7-day evaluation with every feature; after
+that it asks for a key for 3 more days, then thumbnails, previews and the right-click menu stop
+until one is entered. Once a key is in, the license check runs quietly in the background and
 tolerates being offline for about a week. Personal use has no ads and no paywall, just a single
 free download built and maintained by one person.
 
@@ -353,7 +353,7 @@ in Settings works around that, because Windows delivers hotkeys differently than
 <details>
 <summary><b>How many formats does it support, and can more be added?</b></summary>
 
-368 as of this README, across image, camera RAW, ebook/comic, document, audio, and video; run
+366 as of this README, across image, camera RAW, ebook/comic, document, audio, and video; run
 `st2k formats` for the live, per-category count. New formats are considered when they can be
 read without a heavy dependency, many "project" file formats bake in a preview image that's
 cheap to extract. Request one through Send Feedback in the app or a GitHub issue.
@@ -364,7 +364,7 @@ cheap to extract. Request one through Send Feedback in the app or a GitHub issue
 
 ## 📜 License
 
-**[PolyForm Noncommercial License 1.0.0](https://github.com/LunarWerxs/SageThumbs-2k/blob/main/.github/LICENSE.md)**: free to use, modify, and share for any **noncommercial** purpose. **Commercial use requires a separate license** ([Terms of Service](https://terms.connections.icu/public/terms/sagethumbs-2k)), per Windows installation. It is a subscription: **US$5 a month** or **US$50 a year**, per installation. It covers that installation for as long as the subscription is paid. Paying for one month covers one month; it does not buy a permanent licence. When it ends, that installation is no longer licensed for commercial use, and SageThumbs 2K asks for a key again. It includes commercial (work) use, every Supporter feature, priority support, and every paid feature added later. Security fixes reach every licensed installation. Licences bought before 1 November 2026 keep the terms they were sold under: they are permanent and do not expire. Subscribe [yearly](https://go.lunarwerx.com/sagethumbs/buy) or [monthly](https://go.lunarwerx.com/sagethumbs/buy/monthly) (card via Stripe; one key per installation is emailed on payment). It comes as a seat key (`esk_...`), redeemed under **Settings ▸ Licence**. For volume or site licences, purchase orders or bank transfer, [request a quote](https://github.com/LunarWerxs/SageThumbs-2k/issues/new?template=licence_quote.yml). The installer asks Personal or Business up front and that choice only changes by reinstalling. To start the free 7-day business trial, choose Business when the installer asks: every feature works for 7 days with no key, account or card, then 3 days of reminders, then thumbnails, previews, the Details pane and the right-click menu stop on that computer until a key is entered; once it is, the background license check tolerates about a week offline. © 2026 Lunarwerx.
+**[PolyForm Noncommercial License 1.0.0](https://github.com/LunarWerxs/SageThumbs-2k/blob/main/.github/LICENSE.md)**: free to use, modify, and share for any **noncommercial** purpose. **Commercial use requires a separate license**, per Windows installation: a subscription at **US$5 a month** or **US$50 a year**. It gives commercial (work) use, priority support, and every paid feature added from now on. A subscription stops entitling the machine when it ends. Security fixes are delivered to every licensed installation regardless. Licences bought before 2026-11-01 keep the terms they were sold under, with no price. Subscribe [yearly](https://go.lunarwerx.com/sagethumbs/buy) or [monthly](https://go.lunarwerx.com/sagethumbs/buy/monthly) (card via Stripe; one key per installation is emailed on payment). It comes as a seat key (`esk_...`), redeemed under **Settings ▸ Licence**. For volume or site licences, purchase orders or bank transfer, [request a quote](https://github.com/LunarWerxs/SageThumbs-2k/issues/new?template=licence_quote.yml). The installer asks Personal or Business up front and that choice only changes by reinstalling; a business copy gets a 7-day evaluation with every feature, then 3 days of reminders, then thumbnails and previews stop until a key is entered; once it is, the background license check tolerates about a week offline. © 2026 Lunarwerx.
 
 SageThumbs 2K is a **clean-room rewrite**, **not** a derivative of the GPLv2 C++ original, and it uses **no GFL**. Every decoder is pure-Rust or an OS codec (RAR/CBR comics use the pure-Rust [`rars`](https://crates.io/crates/rars) crate, no proprietary UnRAR), so the project's own code is entirely original and its dependencies are permissively licensed, which is what lets us license it as we choose. The optional bundled ImageMagick (for the exotic long tail) ships under its own permissive license and runs only as a sandboxed subprocess.
 
