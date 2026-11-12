@@ -237,12 +237,28 @@ jobs:
             throw "the portable marker $iniName is missing from the zip - it IS the switch"
           }
           Set-Content (Join-Path $env:drop $iniName) -Value @('[Settings]', 'MaxSize=42', 'Width=137', 'Height=137')
+          # Anchored on the doctor's own labels (as arm64-tests.yml does): a bare '137' also
+          # matches inside a hash, a timing or a path.
           $report = & $st2k doctor 2>&1 | Out-String
-          if ($report -notmatch '137') {
+          if ($LASTEXITCODE -ne 0) { Write-Host $report; throw "st2k doctor failed (exit $LASTEXITCODE)" }
+          if ($report -notmatch 'Max thumbnail size\s+137 px') {
             Write-Host $report
-            throw 'portable ini was ignored: doctor did not report the ini values'
+            throw 'portable ini was ignored: doctor did not report the ini thumbnail size (137 px)'
           }
-          Write-Host 'portable ini honoured on ARM64'
+          if ($report -notmatch 'Max file size\s+42 MB') {
+            Write-Host $report
+            throw 'portable ini was ignored: doctor did not report the ini max file size (42 MB)'
+          }
+          # Negative control: without the marker the value must be gone, or the 137 came from
+          # somewhere other than the ini.
+          Remove-Item -LiteralPath (Join-Path $env:drop $iniName)
+          $plain = & $st2k doctor 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { Write-Host $plain; throw "st2k doctor failed without the ini (exit $LASTEXITCODE)" }
+          if ($plain -match 'Max thumbnail size\s+137 px') {
+            Write-Host $plain
+            throw 'negative control failed: doctor still reports 137 px after the ini was deleted'
+          }
+          Write-Host 'portable ini honoured on ARM64, and the value goes away without it'
 
   # The x64 row is the release's x64 self-update gate on a clean machine, with files held the
   # way a scanner holds them (-Hold): release.ps1 [4d/6] runs the same harness on the release

@@ -139,8 +139,10 @@ appear in the **bottom/side Details pane**, the **Properties ▸ Details** tab, 
 tooltip**, and as **sortable / groupable columns**; and the columns are *offered* in the
 "Choose columns…" picker for those file types, not just reachable by search. (Camera RAW
 even gets its GPS location, which Windows itself leaves blank.) It's **read-only** (it never
-writes back to your files) and **crash-isolated** behind the same panic boundary as the
-thumbnail provider, so a malformed file can't take down Explorer.
+writes back to your files) and **crash-isolated**: like the thumbnail provider, Windows runs
+it in its own isolated host rather than inside Explorer, so a malformed file can't take down
+Explorer or a program's file dialog. It reads only the headers and tags it needs, under a
+quarter-second time limit per file.
 
 **Very big files get their real picture.** A file past 256 MB is never loaded whole, on any
 surface (Explorer tile, preview pane, Quick preview, `st2k`), and still shows what the same
@@ -197,6 +199,10 @@ Resize / Rotate / Strip and Combine-to-PDF fan out across every CPU core via a t
 dependency-free scoped thread pool (`crates/base/src/parallel.rs`), 6–15× faster than the old
 one-at-a-time pass, with no rayon weight added to the in-Explorer DLL. Each worker
 initializes COM, which incidentally fixed HEIC/RAW silently failing in the Convert path.
+Every verb that reads your pictures, Combine and Sort by dimensions included, does the
+reading in a separate `st2k.exe` helper, so a damaged file can end the helper but never
+Explorer; a helper silent for 5 minutes is ended and its file reported as failed. Each
+output claims its own name before it is written, so two jobs never land on one file.
 
 - **Convert into ▸** PNG · JPG · WebP · WebP (lossless) · **AVIF** · BMP · GIF · TIFF ·
   Icon (.ico); one-click, writes a new file next to the original (never overwrites). EXIF/XMP/IPTC
@@ -299,7 +305,10 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
   APP11 segments or a PNG `caBX` chunk), so ordinary metadata scrubbers leave it
   in the file. A **JPEG XT** HDR extension layer wears the same APP11 marker and
   is deliberately left alone. Image info shows whether a file carries Content
-  Credentials before you decide to strip them.
+  Credentials before you decide to strip them. The stripped copy replaces the original only
+  if the file is unchanged since it was read; a swap interrupted half-way is finished or put
+  back, never left with the original missing. A file in any other format is skipped before
+  it is read, and the result note names it.
 
   *(These four were a "Tools ▸" submenu; they're now individual top-level entries:
   show/hide + reorder each like any other menu item.)*
@@ -317,7 +326,10 @@ initializes COM, which incidentally fixed HEIC/RAW silently failing in the Conve
   **Recent uploads** (the button in that window, Settings ▸ Screenshots, the tray menu, or
   `st2k upload-history`) lists every link you uploaded with the time it has left, or when it
   expired. The expiry comes from each host's published policy at the moment of upload; a
-  custom host of your own shows none.
+  custom host of your own shows none. **Delete from host** in Recent uploads removes a
+  mistaken upload from the host's server, so its link stops working for everyone. It is
+  offered only for uploads to hosts that hand back a deletion token (x0.at and other
+  0x0-style hosts); for the rest the link simply runs out on the host's schedule.
   Upload hosts are third-party, best-effort services: availability is not guaranteed, and
   some may reject traffic from datacentres or VPNs. SageThumbs shows the host's failure
   reason when an upload is refused.
@@ -639,12 +651,12 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   shows the folder background through them), **its colours** (Automatic, Dark so white images
   stand out, or any two of your own from the Windows colour picker; the same colours draw the
   right-click and Quick preview checkerboards) and **use a video's cover art instead of a frame**.
-  Last on the page: the switch that puts **Use folder.ico icons** on the folder right-click menu
-  (off by default, since it writes a `desktop.ini` into the folders it walks), and **Folder icons
-  by name…**, an editor of one rule per line (`node_modules = C:\Icons\npm.ico`; `*` stands for
-  any letters, `?` for one) with an **Add an icon file…** button that puts a picked `.ico`'s path
-  at the cursor. Done saves, Cancel and Esc leave the saved rules alone; a portable copy keeps
-  them in its `.ini`.
+  Two more, both off by default. **Files with no picture of their own: show a format tile** draws a
+  file that reads fine but holds no picture (an MP3 with no cover art, a ZIP with no images) as a
+  tile with its format written large in that format's colour, instead of the program's icon; a
+  corrupt or unreadable file still shows the icon. **Show the video's resolution on its thumbnail**
+  writes the video's display size, such as `1920×1080`, in the thumbnail's top-left corner, on
+  thumbnails at least 96 pixels across their longer side; the format mark stays bottom-right.
 - **File types:** purely the per-format list, with search, bulk select and **Defaults**.
 - **Right-click menu:** enable the menu, **show it on all file types** (so it's there everywhere; an
   unsupported file gets a condensed file-utility set: Files to folder / Sort into folders
@@ -694,6 +706,12 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   skip scanlation filler (credits/logos; on by default). **Contact-sheet thumbnails for ZIP/RAR/7z**:
   on by default, showing a collage of up to four images pulled from a plain archive;
   switch it off for a single first-image thumbnail, classic CBXShell-style.
+  Under **Folder icons** on the same page: the switch that puts **Use folder.ico icons** on the
+  folder right-click menu (off by default, since it writes a `desktop.ini` into the folders it
+  walks), and **Folder icons by name…**, an editor of one rule per line
+  (`node_modules = C:\Icons\npm.ico`; `*` stands for any letters, `?` for one) with an **Add an
+  icon file…** button that puts a picked `.ico`'s path at the cursor. Done saves, Cancel and Esc
+  leave the saved rules alone; a portable copy keeps them in its `.ini`.
 - **Screenshots:** enable the capture hotkey (default Ctrl+PrtScn; a plain PrtScn
   preset is offered) for the region editor, **plus an optional second "quick-save"
   hotkey** that grabs the whole screen straight to the clipboard + a saved file
@@ -821,13 +839,15 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   repo** (with the GitHub mark), a live **"Up to date" / update-available pill** that
   re-checks on click, and a **Send feedback** pill, plus the licence, copyright, and the
   clickable LunarWerx Studios wordmark. Opens **centered over the Settings window**. The
-  Settings main view also carries a small author credit and a promo banner.
+  Settings main view also carries a small author credit.
 - **Send feedback:** the pill on the About card opens a box for a suggestion, a bug report,
   or a "please support this format" request, sent straight to the developer without needing
   a GitHub account. Choose the category, write the message, tick **I promise I am not being
   a jerk** (Send stays greyed out until you do), hit Send. The email field is **optional**
   and labelled as such: leave it blank and the message still gets through, you simply don't
-  get a reply. The box also links to the GitHub issue tracker for anyone who'd
+  get a reply. A line under the message says what goes with it: the app version and the
+  Windows build, so a bug report arrives with what it needs. The box also links to the
+  GitHub issue tracker for anyone who'd
   rather file it in public, and if the send can't get through your text is copied to the
   clipboard so nothing is lost.
 - **Licence:** shows whether the copy is running as personal or business, a field to enter
@@ -1045,7 +1065,9 @@ and toggles, hotkeys, language, container preferences) follow you to any machine
 into. Only an explicit **allowlist** of portable preferences syncs; **never** file paths,
 secrets, or per-machine state, and never your images. Your settings always stay on your PC
 too; the cloud is only a sync layer, so the app works fully offline / signed out; disconnect
-anytime (it removes the cloud copy). **The shell-extension DLL never touches the network**:
+anytime (it removes the cloud copy). Each setting merges on its own, so a change made on one
+PC is never undone by an older copy from another, and a few per-machine choices (the
+Prebuild folder verb, the legacy badge switch) stay on the PC where you set them. **The shell-extension DLL never touches the network**:
 all sign-in/sync code lives in the Settings app only, preserving the crash-isolation guarantee.
 The refresh token is stored encrypted (Windows DPAPI); the store is a settings locker (≤64 KB,
 no secrets).
@@ -1074,4 +1096,7 @@ settings tree to a JSON file by hand; **`SageThumbs2K.exe --export-settings <fil
 across a fleet of installs. Importing a settings file fully replaces your settings rather
 than merging them: anything the imported file doesn't include gets removed, matching what
 most people expect import to do. Your sign-in is left alone either way, on both the app and
-the CLI round trip.
+the CLI round trip. So is anything a shared settings file could use to send your files
+elsewhere: an import never changes the upload hosts, the licence mode, a save folder on a
+network share, or a switch that loads web content, and Settings lists by name any it left
+unchanged. When you are signed in to sync, the imported settings go to your other PCs at once.

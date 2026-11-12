@@ -7,6 +7,127 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## 4.1.0
+
+**TL;DR**
+
+**New**
+
+- **Files with no picture of their own can get a format tile (#82)**
+- **A video's thumbnail can show its resolution (#80)**
+- **Settings warns about mismatched file types and skipped import values**
+- **Recent uploads gain a Delete from host button**
+
+**Changed**
+
+- **The folder.ico icon settings moved to the Ebook/comic page**
+- **Imported settings reach your other PCs straight away**
+- **Importing settings no longer changes upload hosts, network folders or remote-content switches**
+- **Settings sync merges each setting separately and keeps some local**
+- **Feedback form says the app version and Windows build go with it**
+- **HTML previews open links only on click and web images load per document**
+- **Crashing files are skipped for 2 minutes; locked files retry at once**
+- **Context menu preview picture comes from Windows' own cache**
+- **Pixelate blurs each block evenly**
+- **`st2k batch` numbers a clashing name "(2)", as Explorer does**
+- **Combine to PDF/CBZ and Sort by dimensions read pictures outside Explorer**
+- **Disconnect signs this PC out at the sign-in server, not just on this PC**
+
+**Fixed**
+
+- **Resolume DXV clips in the high-quality modes get a thumbnail (fixes #81)**
+- **Portrait photos from Canon CR3, Fuji RAF, Nikon NRW, Samsung SRW and Sony SR2/SRF raws are upright**
+- **Import Settings accepts UTF-8 files and never deletes settings on failure**
+- **Explorer shows badge, checkerboard and folder changes straight away**
+- **Settings fixes: folder icon rules, search and OCR language**
+- **Portable copies keep their settings and no longer affect other users**
+- **Sign-in and sign-out are more reliable**
+- **Update checks and installs no longer clash, freeze or stall**
+- **Rename and Files to folder dialogs behave correctly**
+- **Prebuild retries, cloud files and summaries behave correctly**
+- **Viewers stay responsive with huge GIFs, PDF zoom and printing**
+- **Cloud folder thumbnails keep correct badges and sync behavior**
+- **Transparent EXR, PSD and video thumbnails are no longer invisible**
+- **Explorer stays up and no longer restarts unexpectedly**
+- **A damaged file can no longer close Explorer through the Details pane**
+- **Preview pane stays responsive when dialogs close or decodes run slow**
+- **Uninstall removes right-click and icon changes for every user**
+- **Setup works for each user, including laptops on battery**
+- **Setup keeps custom install folders and system file-type icons safe**
+- **Screenshot command line never deletes files it did not create**
+- **Screenshot tool keeps captures, cleans temp files and redo works**
+- **Screenshot editor and uploads report results accurately**
+- **Uploads of unusual files finish intact and never send twice**
+- **Markdown, video and text previews render correctly**
+- **SQLite and syntax highlighting previews respect work limits**
+- **iPhone HEVC videos get thumbnails again**
+- **Canon EOS R6 Mark III raws no longer turn magenta in full-size views**
+- **Strip metadata never loses your original file**
+- **Damaged or hostile image files can no longer exhaust memory or hang a decode**
+- **Preview pane gives up on a stalled cloud or network file instead of hanging**
+- **Convert, resize, email and compress never write over another file**
+- **Right-click file commands: case-only rename, folder icons, failure lists and compress counts**
+- **Text reading (OCR) reads rotated phone photos upright**
+- **3D models, EXR, JPEG 2000 and other previews draw correctly on unusual files**
+- **A short or damaged file can no longer close Explorer by reading past its end**
+- **Toolbar icons sit centred in their buttons**
+
+**Everything in 4.1.0**
+
+- **Files with no picture of their own can get a format tile (#82).** An MP3 with no cover art, or a ZIP with no images, reads fine but has no picture, so Explorer showed the program's icon. With **Files with no picture of their own: show a format tile** on (Settings, Appearance, off by default) it gets a tile with its format written large in that format's colour. A corrupt or unreadable file still shows the icon.
+- **A video's thumbnail can show its resolution (#80).** With **Show the video's resolution on its thumbnail** on (Settings, Appearance, off by default) a video's thumbnail carries its display size, such as `1920×1080`, in the top-left corner. It is drawn only on thumbnails at least 96 pixels across their longer side, so the small Explorer sizes stay clean.
+- **The folder.ico icon settings moved to the Ebook/comic page.** Settings' Appearance page needed the room for the two new switches above, so **Add "Use folder.ico icons" to the folder right-click menu** and **Folder icons by name…** now sit on the Ebook/comic page under **Folder icons**, beside the other choices about a file's cover picture.
+- **Resolume DXV clips in the high-quality modes get a thumbnail (#81).** DXV stores its frames in one of a few texture modes, and SageThumbs read only the two standard ones, so a clip saved in the high-quality mode (with or without transparency) showed the player's icon. Both high-quality modes are decoded now.
+- **Portrait photos from more camera raws are upright.** A camera that is held upright records the turn in the raw file, and SageThumbs missed it in three places: a Canon CR3 keeps it in its own metadata box, a Fuji RAF keeps it in its preview picture's data, and for a raw over 16 MB (Nikon NRW, Samsung SRW, Sony SR2 and SRF) the quick path that reads only the preview picture left it behind. Those portraits showed sideways; they are upright now.
+- **Settings warns about mismatched file types and skipped import values.** Windows can end up with a different set of file types than the one you chose, for example after an admin prompt was answered with another account. Settings now warns you when that happens. After Import Settings, Settings also lists the values it left unchanged because they could send data off this PC.
+- **Recent uploads gain a Delete from host button.** Until now, Recent uploads had no button to remove a mistaken upload. The new Delete from host button removes it from hosts that support deletion.
+- **Imported settings reach your other PCs straight away.** Imported settings did not reach your other PCs straight away before. Now they are sent to them as soon as you import the file.
+- **Importing settings no longer changes upload hosts, network folders or remote-content switches.** Before, importing a settings file could change the upload host, the licence mode, the network save folders and the remote-content switches. Now an import leaves those alone.
+- **Settings sync merges each setting separately and keeps some local.** Before, a change on one PC could be reverted by another. Now each setting merges on its own, so a change on one PC stays. The Prebuild folder verb setting and the legacy badge setting no longer sync between PCs, and network switches that arrive by sync can only be fully on or off.
+- **Feedback form says the app version and Windows build go with it.** Before, the feedback form did not say which app version and Windows build went with your message. It now says so on the form.
+- **HTML previews open links only on click and web images load per document.** Now an HTML preview opens a link in your browser only when you click it. The Load web images setting in the preview pane applies only to the current document. HTML files on a network share show as plain source text.
+- **Crashing files are skipped for 2 minutes; locked files retry at once.** Before, a file that crashed or hung the thumbnail host was retried by every new host, and a locked or still-downloading file showed an icon for 2 minutes. Now a file that crashes or hangs is skipped for 2 minutes, and a locked or still-downloading file is tried again at once.
+- **Context menu preview picture comes from Windows' own cache.** The preview in the right-click menu no longer decodes big pictures inside Explorer. It skips pictures over 64 megapixels and takes the picture from Windows' own thumbnail cache.
+- **Pixelate blurs each block evenly.** In the screenshot tool, Pixelate used to keep one exact pixel from each block. Now it averages each block, so the blur looks even.
+- **`st2k batch` numbers a clashing name "(2)", as Explorer does.** When an output name was taken, the command line wrote `photo (1).webp`, while Convert and every other verb wrote `photo (2).webp`. It now names it the same way they do, and a folder where every name answers "taken", such as a broken network share, ends with an error instead of trying names forever.
+- **Combine to PDF/CBZ and Sort by dimensions read pictures outside Explorer.** Every other right-click command already read your pictures in a separate helper, so a damaged file could crash the helper but not Explorer. Combine and Sort by dimensions now do the same, and a helper that stops responding is ended after 5 minutes and reported as failed.
+- **Import Settings accepts UTF-8 files and never deletes settings on failure.** Before, a file saved as UTF-8 with BOM was not accepted. A failed import could also delete your settings before the new ones were written. Now the file is accepted, and a failed import leaves your current settings in place.
+- **Explorer shows badge, checkerboard and folder changes straight away.** Importing a settings file now applies its folder verbs, overlay and checkerboard to Explorer even when no format changed. Badge and checkerboard settings pulled from your other PCs now reach Explorer and refresh the cached thumbnails. Turning on a format that takes over Windows' own thumbnails also refreshes them.
+- **Settings fixes: folder icon rules, search and OCR language.** If saving the folder icon rules fails, Settings now shows a message and the popup stays open with your text. The changed dot for folder icons now shows on Ebook/comic, where those controls are. In Settings search, Enter opens the highlighted result and the arrow keys move from it, and installing an OCR language pack while Settings is open no longer saves the wrong language.
+- **Portable copies keep their settings and no longer affect other users.** Before, turning a format on or off in a portable copy registered that copy for every user on the PC. Now the change stays in that copy. Thumbnails in a portable copy no longer rewrite the settings file for every picture, and deleting the settings file while the app runs no longer brings it back.
+- **Sign-in and sign-out are more reliable.** Sign-out now tells you if the saved sign-in could not be removed from this PC, and signing out really deletes the stored sign-in. Sign-in no longer fails when the browser connects before it sends its request. A failed token fetch while you are signed in no longer unlinks your account.
+- **Update checks and installs no longer clash, freeze or stall.** About, Check for updates and the offer for a retired version now share one guard, so only one install runs at a time. The retired-version update downloads on a background thread. Every web request now has an overall time limit, so a slow server cannot hang it.
+- **Rename and Files to folder dialogs behave correctly.** Pressing Enter in Rename with a pattern no longer starts a rename that the preview has blocked. Cancel during a failed Files to folder move now closes the dialog.
+- **Prebuild retries, cloud files and summaries behave correctly.** Retry failed no longer writes duplicate copies of sizes that already converted. The Prebuild summary stays open when some files were built only partly or were cloud-only. A retry now forces a real render, so a large size cannot be reported as built from a smaller one. Re-running pre-build on a library first built small-size-first now builds the large thumbnails. The command-line prebuild skips an online-only cloud file instead of downloading it.
+- **Viewers stay responsive with huge GIFs, PDF zoom and printing.** Animated GIFs with a huge declared size are refused before they are decoded, in the preview and the viewer. PDF zoom keeps the same page and spot in view. Printing no longer freezes the viewer on a slow full-quality decode. A Markdown file with pictures next to it no longer freezes the preview while they load: each one shows a placeholder and appears when it is ready, the way web images already did.
+- **Cloud folder thumbnails keep correct badges and sync behavior.** A file with an accented or Asian-script name in a OneDrive folder no longer crashes the cloud thumbnail host when the PC has more than one sync folder. With thumbnails off, files in OneDrive folders no longer get the format badge, and a locked Business copy no longer stamps its badge on cloud-folder thumbnails. Turning cloud thumbnails off gives the folder back its own thumbnail provider, and the cloud watcher stops retrying for sync folders it is not allowed to write.
+- **Transparent EXR, PSD and video thumbnails are no longer invisible.** Before, a fully transparent EXR, PSD or video thumbnail was cached as an invisible picture. Now it is not cached that way.
+- **Explorer stays up and no longer restarts unexpectedly.** Batch Convert, Strip and Compress no longer close Explorer when Windows refuses a new thread. Overlapping right-click menu calls now fail cleanly, and a forced Explorer restart no longer restarts the shell again at the next sign-in. Folder windows reopen reliably after a thumbnail-cache rebuild, and after an update that needed a restart the shell extension registers once at the next start, not at every start.
+- **A damaged file can no longer close Explorer through the Details pane.** The part that fills in dimensions, camera details and audio tags for the Details pane, hover tips, columns and file dialogs used to run inside Explorer and every program that shows a file dialog, so a crash there closed that program. Windows now runs it in its own isolated host, the way the thumbnails already ran. It reads only the headers and tags it needs, with a time limit for each file, and an oversized or hostile audio tag stops at a size cap.
+- **Preview pane stays responsive when dialogs close or decodes run slow.** Closing a file dialog can no longer hang the preview pane. Waiting for a decode slot and decoding now share one 12-second budget. The preview follows the host to a new parent window, and a licence-locked preview no longer leaves the previous file on screen. There is no longer a memory leak when the host closes the pane mid-render.
+- **Uninstall removes right-click and icon changes for every user.** Uninstall now removes the folder right-click entries and the thumbnail-slot and file-type-icon changes for every signed-in user, not only the console user. It closes SageThumbs 2K for every signed-in user first, so the program folder is removed and cloud folders keep their thumbnails. Leftover empty file-type entries no longer stay in Windows after you turn formats off or uninstall.
+- **Setup works for each user, including laptops on battery.** Per-user install and uninstall steps now also run on a laptop on battery. Open SageThumbs 2K Settings from the last Setup page now opens the window as you, not as the administrator who approved setup. Setup warns you when Windows refused part of the shell extension's registration. Running Setup again no longer copies one user's thumbnail-corner choice to everyone on the PC.
+- **Setup keeps custom install folders and system file-type icons safe.** A custom install folder outside Program Files can now be written only by administrators. A Windows file-type icon that points only to a module is no longer overwritten.
+- **Screenshot command line never deletes files it did not create.** The command-line upload and text-reading (OCR) options now delete only the app's own capture hand-off, never a file a caller names. Without a licence, the OCR option deletes only its own capture hand-off as well.
+- **Screenshot tool keeps captures, cleans temp files and redo works.** A bad upload-host setting no longer deletes the only copy of a screenshot. Uploads work even when the settings folder cannot be written. A failed temp write no longer leaves part of a screen capture in the Windows temp folder, and old capture files past the first 4,096 entries of a cluttered temp folder are now cleaned up. Redo after deleting or moving an annotation works again, and the overlay no longer stays blank for the whole session after one failed frame.
+- **Screenshot editor and uploads report results accurately.** The editor's failed Copy no longer says "Screenshot saved". Its save-failure message no longer says the image is on the clipboard. The upload result no longer says the link is on the clipboard when the copy failed, and a good upload is no longer reported as failed just because the reply echoed the word "http" before the link.
+- **Uploads of unusual files finish intact and never send twice.** Upload list files get a fresh unique name and never write over an existing file. A file whose contents looked like the upload's own separator no longer uploads cut short. An upload whose reply was lost after the host accepted it no longer sends a second copy to another public host.
+- **Markdown, video and text previews render correctly.** Markdown links no longer slow down on long runs of characters, and each link is capped at 4 KB. Table cells with a hard break are sized correctly, long runs of combining marks wrap with their base character, and an unfinished HTML tag no longer hides the text after it. Markdown images must really be the format their extension names, and each local decode has a time limit. Saved video frame names now round the time correctly, and the mute button's focus ring covers the full strip.
+- **SQLite and syntax highlighting previews respect work limits.** The SQLite preview stops reading pages once its work budget is spent, cache hits included, and always says when a table was cut short. It also finds the row ID column in more table layouts. Syntax highlighting caps the tokens it keeps in memory, and lines past the cap are processed again when shown. Batch highlighting no longer treats words such as "remove" as comments.
+- **iPhone HEVC videos get thumbnails again.** An iPhone `.mov` starts with a different first block than the video check expected, so it was turned away before any decoder ran and the tile stayed blank. It now gets its thumbnail. On a PC without Microsoft's free HEVC Video Extensions, the Doctor page now says that add-on is what's missing.
+- **Canon EOS R6 Mark III raws no longer turn magenta in full-size views.** The full-size preview, Quick preview and Convert had Windows develop the raw itself, and Windows has no colour profile for this camera yet, so the picture came out magenta. When the camera's own full-size JPEG is inside the file, that is used instead. Thumbnails were already right.
+- **Strip metadata never loses your original file.** If the final swap failed half-way, or the file was saved again or deleted while it was being stripped, the original could be lost or an older copy could come back. Now an interrupted swap is finished or rolled back, and a file that changed since it was read is left alone. Files Strip metadata can't handle are skipped up front with a note saying why.
+- **Damaged or hostile image files can no longer exhaust memory or hang a decode.** Crafted DjVu, PaintShop Pro, GIMP, Flash, Office (OLE), AVIF/HEIC, DXV, PLY, FITS, RAR, PSD, Rhino, G-code and APK files could make a decode allocate gigabytes or loop for a long time. Each now stops at a size or work limit. Helper programs that SageThumbs starts now close when it does, and a PDF render that times out is cancelled instead of left running.
+- **Preview pane gives up on a stalled cloud or network file instead of hanging.** Reading the start of a file and reading a whole file for the preview now each have a time limit (15 and 30 seconds), so a cloud file that never finishes downloading or a dead network share shows an error instead of a frozen pane. A damaged AVI header no longer crashes the video check.
+- **Convert, resize, email and compress never write over another file.** If reserving the output name failed for any reason other than "already exists", these commands could still write onto that name. Each now claims its own output name first, so two conversions to the same name get separate files.
+- **Right-click file commands: case-only rename, folder icons, failure lists and compress counts.** Renaming a file by changing only its letter case now works. Set folder icon is all-or-nothing: if `desktop.ini` can't be written, no stray icon is left behind, and a small source picture is centred at its own size instead of being blown up. The failure message now names the files that failed (the first 10, then a count). Compress says how many images couldn't reach the target size and flags other failures, Combine to searchable PDF says which pages have no searchable text, and watermarks keep 16-bit pictures at 16-bit.
+- **Text reading (OCR) reads rotated phone photos upright.** A photo taken with the phone turned was read sideways when it didn't need scaling down. Both paths now follow the photo's rotation tag.
+- **3D models, EXR, JPEG 2000 and other previews draw correctly on unusual files.** ASCII PLY models with double-precision points render, and binary PLY files with extra per-face data are declined instead of drawing garbage triangles. Large EXR and JPEG 2000 previews stay within their requested size. GIMP half-float layers, APK icon densities, Amiga ILBM masks and G-code thumbnails that end mid-character are read correctly.
+- **A short or damaged file can no longer close Explorer by reading past its end.** Some of the code that runs inside Explorer, the preview pane and the thumbnail host read a file's fields by position without first checking the file was long enough, so one truncated file could close the whole host. Every such read now checks its range and treats a short file as unreadable, and the build refuses any new unchecked read in that code.
+- **Disconnect signs this PC out at the sign-in server.** Before, Disconnect only deleted the sign-in saved on this PC, so the sign-in stayed valid on the server until it expired. Disconnect still deletes the cloud copy of your synced settings, then revokes the sign-in at the server, then deletes the local copy even when the server can't be reached. The renewed sign-in it uses for the delete is no longer saved to this PC.
+- **Toolbar icons sit centred in their buttons.** The preview and screenshot toolbars' icons are scaled to one size when the icon font is built, but each scaled icon kept its old left margin, and Windows places an icon by that margin, so 24 of them drew up to two pixels right of centre. The margins now follow the scaled shapes, and the font build refuses an icon whose margin disagrees with its shape.
+- **Licence:** the updater checks your licence covers an update before downloading it, Renew opens the renewal page without your key in its address (the key is copied for you to paste), and licence certificate and reminder checks behave correctly.
+
 ## 4.0.1
 
 **TL;DR**

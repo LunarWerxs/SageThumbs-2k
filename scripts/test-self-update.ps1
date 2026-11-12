@@ -188,6 +188,20 @@ function Select-OwnRestartEntries([string[]]$Entries, [string]$Dir) {
     [pscustomobject]@{ Keep = $keep.ToArray(); Drop = $drop.ToArray() }
 }
 
+# The uninstaller's second phase in the process snapshot $All: Inno's unins000.exe copies itself
+# to Temp\_iu*.tmp, starts that copy and exits, and the copy does the real uninstall. Found by
+# ancestry from $Root (the unins000.exe this run started), so nobody else's process matches.
+function Select-UninstallPhase([int]$Root, $All) {
+    $ids = [Collections.Generic.List[int]]::new()
+    $ids.Add($Root)
+    for ($i = 0; $i -lt $ids.Count; $i++) {
+        foreach ($c in @($All)) {
+            if ([int]$c.ParentProcessId -eq $ids[$i] -and -not $ids.Contains([int]$c.ProcessId)) { $ids.Add([int]$c.ProcessId) }
+        }
+    }
+    return , @(@($All) | Where-Object { [int]$_.ProcessId -ne $Root -and $ids.Contains([int]$_.ProcessId) -and $_.Name -like '_iu*.tmp' })
+}
+
 # The self-hosted CI box keeps what a restart would clear: setup queues the files it cannot
 # replace for the restart, and no restart comes between runs, so the next baseline install fails
 # on "a previous installation was not completed". Put the box back to a restarted state: stop our
@@ -202,8 +216,20 @@ function Reset-SelfHostedInstall {
     $unins = Join-Path $installDir 'unins000.exe'
     if (Test-Path -LiteralPath $unins -PathType Leaf) {
         Write-Host '  [self-update] self-hosted box: silent uninstall of the earlier install'
+        $deadline = (Get-Date).AddSeconds($TimeoutSec)
         $u = Start-Process -FilePath $unins -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru
         if (-not $u.WaitForExit($TimeoutSec * 1000)) { $u.Kill(); throw "The silent uninstall did not finish within ${TimeoutSec}s." }
+        # unins000.exe exits once its Temp\_iu*.tmp copy is running; the copy does the deleting.
+        # Moving files out of the folder while it still runs raced it ("Could not move").
+        while ($true) {
+            $phase = Select-UninstallPhase $u.Id @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, Name)
+            if ($phase.Count -eq 0) { break }
+            if ((Get-Date) -gt $deadline) {
+                $phase | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+                throw "The silent uninstall's second phase ($($phase[0].Name)) did not finish within ${TimeoutSec}s."
+            }
+            Start-Sleep -Seconds 1
+        }
     }
     $trash = Join-Path $env:ProgramData 'st2k-ci-trash'
     Remove-Item -LiteralPath $trash -Recurse -Force -ErrorAction SilentlyContinue
