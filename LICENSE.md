@@ -5,8 +5,9 @@ full text is reproduced below.
 
 **In plain terms:** you may use, copy, modify, and share SageThumbs 2K for any
 **noncommercial** purpose, free of charge. **Commercial use requires a separate
-license** - to arrange one, buy it at <https://go.lunarwerx.com/sagethumbs/buy>
-(a subscription at US$5 a month or US$50 a year per Windows installation; one seat key per installation, redeemed under Settings ▸ Licence; monthly at <https://go.lunarwerx.com/sagethumbs/buy/monthly>). A copy installed for business use may be evaluated in full for 7 days before a key is required. Licences bought before 2026-11-01 keep the terms they were sold under, with no price. Security fixes are delivered to every licensed installation regardless. For volume or site terms, open
+license** under the SageThumbs 2K Terms of Service, which state the price:
+<https://terms.connections.icu/public/terms/sagethumbs-2k>. To arrange one, buy it at <https://go.lunarwerx.com/sagethumbs/buy>
+(a subscription at US$5 a month or US$50 a year per Windows installation; one seat key per installation, redeemed under Settings ▸ Licence; monthly at <https://go.lunarwerx.com/sagethumbs/buy/monthly>). It covers that installation for as long as the subscription is paid. Paying for one month covers one month; it does not buy a permanent licence. When it ends, that installation is no longer licensed for commercial use. To start the free 7-day business trial, choose Business when the installer asks: every feature works for 7 days with no key, account or card; after that it asks for a key for 3 more days, then thumbnails, previews, the Details pane and the right-click menu stop on that computer until a key is entered. Licences bought before 1 November 2026 keep the terms they were sold under: they are permanent and do not expire. Security fixes reach every licensed installation. For volume or site terms, open
 an issue on the project's GitHub.
 
 Copyright © 2026 Lunarwerx.

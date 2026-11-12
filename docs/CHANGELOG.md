@@ -7,6 +7,23 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## Unreleased
+
+**TL;DR**
+
+**New**
+
+- **VectorCraft `.vectorcraft` files get thumbnails (#83)**
+
+**Everything in Unreleased**
+
+- **VectorCraft `.vectorcraft` files (and the former `.drawcraft` name) get thumbnails.** The
+  thumbnail is the file's embedded preview picture when it has one, else page one of the PDF
+  VectorCraft embeds by default, drawn by the same PDF renderer `.ai` files use. Files saved
+  without either show the stock icon. Compressed (gzip) files are read too. (#83)
+
+- **Licence: the readme, licence file and feature list now say plainly that a Business licence is a subscription that lasts while it is paid, how to start the 7-day business trial, and that Supporter covers all five features, settings sync and the AI assistant tools included.**
+
 ## 4.1.0
 
 **TL;DR**
