@@ -7,13 +7,14 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 4.2.0
 
 **TL;DR**
 
 **New**
 
 - **VectorCraft `.vectorcraft` files get thumbnails (#83)**
+- **DSDIFF `.dff` audio gets album-art thumbnails**
 
 **Changed**
 
@@ -21,7 +22,16 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 - **The Settings "Advanced" page is now called "Repair & updates"**
 - **The "Menu preview" option sits right under the right-click menu switch**
 
-**Everything in Unreleased**
+**Fixed**
+
+- **Six translations name the screenshot tool one way**
+
+**Everything in 4.2.0**
+
+- **DSDIFF (`.dff`) audio gets album-art thumbnails.** The DSDIFF file (Philips' DSD Interchange
+  File Format) is read by hand, the way `.dsf` already is: its ID3v2 tag is found whether it sits
+  inside the file's form or after it, and the largest front-cover picture is shown. Files with no
+  cover keep the default icon.
 
 - **Settings has an Advanced switch (top right of every page, left of the search box).** Off, the
   window shows a Basic view: the options most people change, on nine of the twelve pages (the
@@ -33,15 +43,22 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 
 - **The Settings page called "Advanced" is now "Repair & updates"**, which is what it holds
   (diagnostics, rebuilding the thumbnail cache, repairing file associations, updates, the hotkey
-  service). The "Menu preview" dropdown moved up to sit under "Enable the right-click menu", the
-  switch it belongs to.
+  service).
+
+- **The "Menu preview" option sits right under the right-click menu switch.** The dropdown moved up
+  to sit under "Enable the right-click menu", the switch it belongs to.
 
 - **VectorCraft `.vectorcraft` files (and the former `.drawcraft` name) get thumbnails.** The
   thumbnail is the file's embedded preview picture when it has one, else page one of the PDF
   VectorCraft embeds by default, drawn by the same PDF renderer `.ai` files use. Files saved
   without either show the stock icon. Compressed (gzip) files are read too. (#83)
 
-- **Licence: the readme, licence file and feature list now say plainly that a Business licence is a subscription that lasts while it is paid, how to start the 7-day business trial, and that Supporter covers all five features, settings sync and the AI assistant tools included.**
+- **Danish, German, Persian, Russian, Slovenian and Thai use one name for the screenshot tool.** A
+  few lines on the Supporter and trial screens named it with a second word or spelling (German, for
+  example, said both "Screenshot-Werkzeug" and "Screenshot-Tool"). Each of the six now uses the
+  name its feature list shows.
+
+- **Licence:** a subscription's Licence page shows its paid-through date and a Manage billing button, and every licensed copy is offered every update. A copy installed for home use can start the 7-day business trial there, with no reinstall.
 
 ## 4.1.0
 

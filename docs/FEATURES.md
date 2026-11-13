@@ -6,7 +6,7 @@ listing. (This file is organized by feature area for end-user-facing
 documentation.)
 
 > **What it is:** a modern, crash-isolated Windows 11 shell extension (Rust) that
-> rebuilds the abandoned SageThumbs (Explorer thumbnails for 368 file types plus
+> rebuilds the abandoned SageThumbs (Explorer thumbnails for 369 file types plus
 > a rich right-click image toolkit) and folds in XnShell/XnView-style conversion.
 > Free for personal use (PolyForm Noncommercial 1.0.0).
 
@@ -42,7 +42,7 @@ SageThumbs draws Explorer thumbnails for file types Windows can't, via a tiered
 decoder (`image` crate → Windows WIC → a trimmed bundled ImageMagick → resvg for
 SVG), with embedded-cover/first-page extraction for containers.
 
-**368 registered extensions, in seven categories** (also how the Options list is
+**369 registered extensions, in seven categories** (also how the Options list is
 grouped):
 
 | Category | Examples | How |
@@ -51,11 +51,11 @@ grouped):
 | **Camera RAW** (34) | cr2/cr3, nef, arw, dng, raf, orf, rw2, pef, x3f, **bay/cap/dcs/drf/ori/ptx/pxn**, … | WIC (Raw Image Extension) / ImageMagick / embedded-JPEG preview |
 | **Ebook & comics** (12) | epub, mobi/azw/azw3, **prc** (Mobipocket), fb2/fbz, cbz, cb7, **cbr**, **cbt**, **phz** (zip comic) | native-Rust cover extraction (zip/7z/tar/**rar** via the pure-Rust `rars` crate + hand-parsed MOBI); an oversized CB7 received through a name-less shell stream keeps its stock icon rather than risking an expensive 7z directory scan |
 | **Document** (46) | **pdf** (page 1), **djv/djvu** (pure-Rust `djvu-rs` codec), **doc/docx/docm + dot/dotx** (Word), **xls/xlsx/xlsm/xlsb + xlt/xltx** (Excel), **ppt/pptx/pptm + pps/ppsx + pot/potx** (PowerPoint), **odt/ods/odp/odg/…** (OpenDocument), **key/pages/numbers** (Apple iWork), **indd** (InDesign), **vsd/vsdx/vsdm + vstx/vssx** (Visio drawings, templates and stencils: a stencil shows a preview only when Visio saved one with it, which most do not), **pub** (Publisher), **ggb** (GeoGebra), **xmind** (XMind mind maps: the map picture XMind saves) | OS `Windows.Data.Pdf` (PDF); pure-Rust `djvu-rs` (DjVu); embedded preview extraction (Office OOXML `docProps/thumbnail` + legacy OLE `\x05SummaryInformation` / iWork / InDesign / Visio / Publisher) |
-| **Audio** (18) | mp3, flac, ogg, opus, m4a, wma, ape, wavpack, musepack, **wav, aiff, aiff-c, dsf** (DSD) | embedded album art via `lofty`; **plus a drawn waveform for raw-PCM WAV/AIFF/AIFF-C with no cover art**, and a hand-rolled ASF parser for WMA (cover art + tags) which `lofty` can't read |
+| **Audio** (19) | mp3, flac, ogg, opus, m4a, wma, ape, wavpack, musepack, **wav, aiff, aiff-c, dsf** (DSD), **dff** (DSDIFF) | embedded album art via `lofty`; **plus a drawn waveform for raw-PCM WAV/AIFF/AIFF-C with no cover art**, and a hand-rolled ASF parser for WMA (cover art + tags) which `lofty` can't read |
 | **Video** (26) | **mkv** (Matroska), **webm**, mp4/m4v, mov, avi, wmv, …  | a representative frame (30 % in by default, not the intro; adjustable in Settings ▸ Appearance) via the OS **Media Foundation** codecs. MP4/MOV (`moov`) and Matroska/WebM (Cues) parse the container's own index to read just the one keyframe nearest the chosen point (single-digit MB); AVI/WMV let MF's demuxer seek over a block-caching stream, never streaming the whole movie. **Five codec families Windows does not ship are decoded by SageThumbs itself**, in pure Rust and in a separate short-lived process: **FLV** (H.264 handed to Windows; VP6 and Sorenson Spark decoded here), **VP9 Profile 2/3** (10- and 12-bit HDR, which Windows declines even with its own VP9 extension installed), **10-bit H.264** (High 10, the usual choice for anime encodes; Windows' H.264 decoder stops at 8-bit) and **MPEG-1/2** in program, elementary and transport streams (VideoCD-era `.mpg`, bare `.m1v`/`.m2v`, DVD-style `.vob`, and MPEG-2 inside `.ts`/`.m2ts`/`.mts` recordings: Windows opens none of the first two on any edition and the rest only with a Store add-on; decoded here whenever Windows declines. Interlaced field-coded recordings are the one shape still left to the OS). **Resolume DXV3** `.mov` (the DXD3 codec of Resolume Alley, Wire and Arena) has the frame at the chosen point decoded here, at any frame size: DXT1 and DXT5 are decoded, and the YCoCg high-quality modes are not yet. |
 | **Archive** (3) | **zip**, **rar**, **7z** | the images INSIDE the archive, including SVG: a single cover, or by default a contact-sheet collage of up to four (Settings ▸ Ebook/comic). Identified generic archives honor **Max file size** before their directory is parsed; an oversized 7z is also rejected safely when its shell stream has no filename. ZIP/RAR and non-solid 7z read only the picked images; 7z extraction is single-threaded with an 8 MiB aggregate image budget. Solid 7z scans only a small bounded prefix and falls back to the stock icon when its images are buried too deeply. No readable image (or encrypted) keeps the stock icon |
 
-*Counts sum to **368** (canonical source: `formats::FORMATS.len()`; `st2k formats` prints
+*Counts sum to **369** (canonical source: `formats::FORMATS.len()`; `st2k formats` prints
 it). DjVu (`.djv/.djvu`) thumbnails are decoded by the **maintained pure-Rust `djvu-rs`
 crate** (MIT, no C, no GPL): the page's pre-rendered thumbnail when present, else the
 rendered first page (IW44 background + anti-aliased JB2 text + foreground palette),
@@ -860,15 +860,17 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   clipboard so nothing is lost.
 - **Licence:** shows whether the copy is running as personal or business, a field to enter
   and redeem a seat key (`esk_...`), and a **Check now** button to re-verify immediately. For a
-  business copy with no key redeemed yet, this is also where the evaluation lives, alongside
+  business copy with no key redeemed yet, this is also where the trial lives, alongside
   the launch notice and the strip across every Settings page (days left, an **Open licence**
-  button and a **Buy a licence…** button). The line shows one of: the evaluation and its days
-  left, the evaluation ended and the date thumbnails stop, stopped (a key is required), no key
+  button and a **Buy a licence…** button). The line shows one of: the trial and its days
+  left, the trial ended and the date thumbnails stop, stopped (a key is required), no key
   entered, licensed (with the last verified date), revoked (with why, when known, and when the
   copy stops), personal use, or - on a machine currently relying on its offline certificate
   rather than a live check - an early warning once that certificate is nearing its own expiry.
   A failed check never moves the "last verified" date forward.
-- **The business trial:** to start it, choose Business when the installer asks. A copy
+- **The business trial:** to start it, choose Business when the installer asks, or press
+  **Start 7-day business trial** under Settings > Licence on a copy installed as Personal
+  (an administrator prompt; going back to Personal needs a reinstall). A copy
   installed for business use works in full for 7 days with no key, account or card, then asks
   for a key for 3 more days, then thumbnails, previews, the Details pane and the right-click
   menu stop on that computer until a key is redeemed; the Quick
@@ -885,13 +887,10 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   every Supporter feature, priority support, and every paid feature added later. Security fixes
   reach every licensed installation. Home use stays free and keeps updating. The binding terms:
   <https://terms.connections.icu/public/terms/sagethumbs-2k>.
-- **Licences bought before 1 November 2026 (updates window and renewal):** these keep the terms
-  they were sold under: they are permanent and do not expire. For those, the Licence page shows when their 12 months of updates end ("Updates until \<date\>", or
-  "Updates ended \<date\>" once it has passed), and a **Renew updates** button appears in the last
-  60 days and stays available afterwards. Once that window has ended the app stops OFFERING builds
-  published after it, and says so with the renewal link instead of installing; nothing else changes.
-  The version already installed keeps working, with every feature, indefinitely, and security
-  releases are still offered to every licensed installation regardless of the window.
+- **Subscriber Licence page:** a copy with a live key shows the date its subscription is paid
+  through ("Paid through \<date\>. Renews automatically.") under the licence status, and a
+  **Manage billing** button that opens the billing page in the browser (payments, card, cancel).
+  Every licensed installation is offered every release.
 - **Business note (Settings banner):** when this PC keeps thumbnailing business formats (Visio,
   InDesign, SolidWorks, film scans, and similar), a banner at the top of Settings names the most
   used ones and their count, with **See Business** (opens the business shop) and **Not now**.
@@ -971,7 +970,9 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   optional Supporter plan adds five extras.") or Business ("For paid work. Try it free for 7
   days with no key or card, then enter a licence key under Settings > Licence. A subscription,
   US$5 a month or US$50 a year per PC: go.lunarwerx.com/sagethumbs/buy"). Your answer is written machine-wide and stays in effect across silent
-  self-updates; changing it means running the installer interactively again, and choosing
+  self-updates; a Personal copy can switch to Business under Settings > Licence (Start 7-day
+  business trial, with an administrator prompt), while going back to Personal means running the
+  installer interactively again, and choosing
   Personal on a computer that was set up for business use asks once whether you are sure.
   See section 4's Licence settings for redeeming a business seat key.
 - Registers the thumbnail provider + context-menu handlers under HKLM (admin);
@@ -1031,7 +1032,7 @@ genuinely-outstanding work.)*
 > PDF is searchable and its text can be selected and copied.
 
 **Idea:** because SageThumbs already bundles real image
-capabilities (368-format decode incl. RAW/HEIC/ebook covers, ImageMagick, WIC, the
+capabilities (369-format decode incl. RAW/HEIC/ebook covers, ImageMagick, WIC, the
 WinRT PDF + OCR engines, convert/resize/rotate/strip/PDF), expose those to AI
 agents and scripts so users don't need to install a separate toolkit. **Do not
 bundle anything new**; only surface existing functions.
@@ -1040,7 +1041,7 @@ bundle anything new**; only surface existing functions.
 1. ✅ **CLI shipped** as a standalone **`st2k.exe`** (console subsystem): verbs
    `convert`, `rotate`, `strip`, `info` (JSON to stdout), `ocr` (text to stdout), `pdf`
    (combine), **`cbz`** (combine into a comic-book archive), `thumbnail` (render any of
-   the 368 types to PNG), **`batch`** (bulk thumbnail/convert over many files/folders in
+   the 369 types to PNG), **`batch`** (bulk thumbnail/convert over many files/folders in
    ONE process, fanned out across all CPU cores, with `--recurse` to walk subfolders and
    a richer `info` mode that includes audio tag data), `formats`. All logic lives in the
    `lib` (`verbs`, `strip`, `ocr`, `topdf`, `decode`, `parallel`); the CLI is a thin
@@ -1049,7 +1050,7 @@ bundle anything new**; only surface existing functions.
 2. ✅ **MCP server mode** (`st2k --mcp`, stdio JSON-RPC 2.0; a Supporter feature whose
    14-day trial starts on the first tool call, never on start-up or `tools/list`): exposes **15** MCP
    tools (`tools/list` + `tools/call`) so an agent auto-discovers and calls them: the
-   core verbs (now including **`cbz`**) plus **`view`** (which decodes any of the 368
+   core verbs (now including **`cbz`**) plus **`view`** (which decodes any of the 369
    formats to a PNG **image block**) so an AI agent can actually *see* the file,
    **`compress`**, and the diagnostic/maintenance tools **`doctor`**, **`prebuild`**, and
    **`register_status`**. Newline-delimited stdio, spawned on demand by the client (not

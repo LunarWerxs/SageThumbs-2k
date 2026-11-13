@@ -404,10 +404,10 @@ works.
 <summary><b>Can I use this at work?</b></summary>
 
 The licence is PolyForm Noncommercial 1.0.0. It is free for personal use, and commercial use
-needs a commercial licence per Windows installation ([Terms of Service](https://terms.connections.icu/public/terms/sagethumbs-2k)). It is a subscription: US$5 a month or US$50 a year, per installation. It covers that installation for as long as the subscription is paid. Paying for one month covers one month; it does not buy a permanent licence. When it ends, that installation is no longer licensed for commercial use, and SageThumbs 2K asks for a key again. To start the free 7-day business trial, choose Business when the installer asks. It includes commercial (work) use, every Supporter feature, priority support, and every paid feature added later. Subscribe monthly at
+needs a commercial licence per Windows installation ([Terms of Service](https://terms.connections.icu/public/terms/sagethumbs-2k)). It is a subscription: US$5 a month or US$50 a year, per installation. It covers that installation for as long as the subscription is paid. Paying for one month covers one month; it does not buy a permanent licence. When it ends, that installation is no longer licensed for commercial use, and SageThumbs 2K asks for a key again. To start the free 7-day business trial, choose Business when the installer asks, or, on a copy installed as Personal, press **Start 7-day business trial** under **Settings ▸ Licence** at any time (Windows asks for an administrator to confirm). Going back to Personal needs a reinstall. A business licence includes commercial (work) use, every Supporter feature, priority support, and every paid feature added later. Subscribe monthly at
 <https://go.lunarwerx.com/sagethumbs/buy/monthly> or yearly at
 <https://go.lunarwerx.com/sagethumbs/buy> (card via Stripe); manage or cancel at
-<https://go.lunarwerx.com/sagethumbs/manage>, signing in with the email you paid with. Licences bought before 1 November 2026 keep the terms they were sold under: they are permanent and do not expire. One seat key per
+<https://go.lunarwerx.com/sagethumbs/manage>, signing in with the email you paid with. One seat key per
 installation arrives by email the moment payment completes
 (the checkout page calls it a "redemption code": same thing, it starts with `esk_`).
 Redeem it yourself, see below. For volume or site licences, purchase orders or bank transfer,
@@ -419,10 +419,12 @@ Redeem it yourself, see below. For volume or site licences, purchase orders or b
 <summary><b>How does a business licence work?</b></summary>
 
 It comes as a seat key (`esk_...`), redeemed under **Settings ▸ Licence**. The installer asks
-up front whether a copy is for personal or business use, and that answer only changes by
-reinstalling, there's no toggle for it in Settings. A portable copy has no installer to ask,
-and counts as business use as soon as a key is redeemed on it. To start the free business
-trial, choose Business when the installer asks: the copy starts a **7-day trial** with every
+up front whether a copy is for personal or business use. A copy installed as Personal can
+switch to Business at any time: **Settings ▸ Licence ▸ Start 7-day business trial** (Windows
+asks for an administrator to confirm). Going back to Personal still needs a reinstall, there's
+no toggle for it in Settings. A portable copy has no installer to ask, and counts as business
+use as soon as a key is redeemed on it. To start the free business trial, choose Business when
+the installer asks, or use that button: the copy starts a **7-day trial** with every
 feature working and no key, account or card; a strip across the Settings window shows the
 days left, with buttons to enter a key or buy one. When the 7 days are up it asks for a key for
 **3 more days**, and after that thumbnails, previews, the Details pane and the right-click menu
