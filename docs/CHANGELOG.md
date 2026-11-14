@@ -7,6 +7,15 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## Unreleased
+
+**TL;DR**
+
+**Fixed**
+
+- 3MF files built only from beams (beam lattice parts) get thumbnails
+- 3MF beam lattices with `ballmode="all"` get a ball at every beam end, as the Beam Lattice spec says
+
 ## 4.2.0
 
 **TL;DR**
