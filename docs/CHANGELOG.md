@@ -7,14 +7,184 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 5.0.0
 
 **TL;DR**
 
+**New**
+
+- **Atari ST DEGAS and Tiny pictures get thumbnails** (`.pi1`-`.pi3`, `.pc1`-`.pc3`, `.tny`, `.tn1`-`.tn3`)
+- **Commodore 64 Koala Paint and FLI pictures get thumbnails** (`.koa`, `.kla`, `.fli`)
+- **GIMP brushes, image hoses and patterns get thumbnails** (`.gbr`, `.gih`, `.pat`)
+- **Seven more classic image formats get thumbnails** (`.wbmp`, `.otb`, `.mtv`, `.aai`, `.avs`, `.hrz`, `.xwd`)
+- **Windows app packages and Chrome extensions show their own icon** (`.appx`, `.msix`, `.appxbundle`, `.msixbundle`, `.crx`)
+- **Text files can show their first page as a thumbnail, off by default** (`.txt`, `.md`, `.json`, `.xml`, `.log`, `.nfo`, `.diz`, `.reg`, `.rtf`, `.csv`, `.ini`)
+- **More names for formats SageThumbs 2K already reads**: JPEG (`.jif`, `.jfi`, `.pjpeg`, `.pjp`, camera `.thm`), BigTIFF (`.btf`, `.tf8`), SGI (`.rgb`, `.rgba`, `.int`, `.inta`), Sun raster (`.im1`, `.im8`, `.im24`, `.im32`), `.epsf`, Illustrator templates (`.ait`), Amiga HAM (`.ham`, `.sham`), Office themes (`.thmx`), OpenDocument drawing templates (`.otg`) and Radiance `.pic`
+- **GoPro `.lrv`, Matroska 3D `.mk3d` and transport-stream `.m2t` / `.trp` videos get frame thumbnails**
+- **Quick preview has a Show in folder button**
+- **Quick preview reloads the picture when the file changes on disk, and F5 reloads it by hand**
+- **Settings warns when Explorer is set to show icons instead of thumbnails, and fixes it in one click**
+- **Settings shows a short What's new note once after an update**
+- **Settings ▸ File types can show only the file types you have ticked** (#85)
+
+**Changed**
+
+- **A smaller install**: the translations are stored compressed, the command-line tool is a small launcher over the one engine (it needs `SageThumbs2K.exe` beside it), and it carries its own icon
+
 **Fixed**
 
-- 3MF files built only from beams (beam lattice parts) get thumbnails
-- 3MF beam lattices with `ballmode="all"` get a ball at every beam end, as the Beam Lattice spec says
+- **The picture tile in the right-click menu is drawn once**
+- **Escape and Cancel close the thumbnail-cache rebuild questions in Settings without rebuilding**
+- **3MF files built only from beams get thumbnails**
+- **3MF beam lattices with `ballmode="all"` get a ball at every beam end**
+- **A damaged 3MF file can no longer keep its thumbnail busy for a long time**
+- **A photo whose metadata lists thousands of people can no longer slow Explorer down**
+- **Ogg audio files (Speex, Vorbis, Opus, FLAC) get their thumbnails faster**
+- **CorelDRAW, Affinity, Paint.NET, Paint Shop Pro and 3-D model files show their program's icon again**
+- **The format mark and the checkerboard reach types whose own program draws their thumbnails**
+- **Illustrator files saved without PDF data show their artwork**
+- **Turning a format off no longer removes a file-type setting another program wrote after SageThumbs 2K**
+- **If the screenshot overlay's drawing engine cannot start, the overlay now says so and closes instead of opening with annotation tools that draw nothing**
+- **`st2k doctor` no longer blames Explorer when run as administrator, and no longer warns about an approved-extensions list Windows 10 and 11 ignore** (#84)
+- **Settings can no longer crash when you switch pages**
+
+**Everything in 5.0.0**
+
+- **Atari ST DEGAS and Tiny pictures get thumbnails.** DEGAS (`.pi1`, `.pi2`, `.pi3`), DEGAS Elite
+  compressed (`.pc1`, `.pc2`, `.pc3`) and Tiny (`.tny`, `.tn1`, `.tn2`, `.tn3`) pictures, in all three
+  ST resolutions, are read by SageThumbs 2K's own decoder, with each picture's own palette. DEGAS
+  Elite files saved without the colour-animation block at the end, as many are, read too.
+
+- **Commodore 64 Koala Paint and FLI pictures get thumbnails** (`.koa`, `.kla`, `.fli`), read by
+  SageThumbs 2K's own decoder in the C64's colours.
+
+- **GIMP brushes, image hoses and patterns get thumbnails** (`.gbr`, `.gih`, `.pat`): the brush or
+  pattern itself, and an image hose's first brush.
+
+- **Seven more classic image formats get thumbnails**, each read by SageThumbs 2K's own decoder:
+  wireless bitmaps (`.wbmp`), Nokia over-the-air bitmaps (`.otb`), MTV ray-tracer pictures (`.mtv`),
+  Dune AAI (`.aai`), AVS X (`.avs`), slow-scan television (`.hrz`) and X Window dumps (`.xwd`).
+
+- **Windows app packages and Chrome extensions show their own icon.** `.appx`, `.msix`, `.appxbundle`
+  and `.msixbundle` show the logo the package manifest names (a bundle, the logo of the app inside
+  it), and `.crx` shows the icon the extension's manifest names, however large the extension is. A
+  package without one keeps the stock icon.
+
+- **Text files can show their first page as a thumbnail, off by default.** With text thumbnails
+  turned on in Settings, `.txt`, `.md`, `.json`, `.xml`, `.log`, `.csv`, `.ini`, `.reg` and `.rtf`
+  files show their opening lines drawn as a page, and `.nfo` and `.diz` files are drawn in the DOS
+  code page they were written in, so their block art lines up. Off, these types are left to Windows
+  as before.
+
+- **More names for formats SageThumbs 2K already reads:** JPEG (`.jif`, `.jfi`, `.pjpeg`, `.pjp`,
+  and the camera `.thm` preview), BigTIFF (`.btf`, `.tf8`), SGI (`.rgb`, `.rgba`, `.int`, `.inta`),
+  Sun raster (`.im1`, `.im8`, `.im24`, `.im32`), `.epsf`, Illustrator templates (`.ait`), Amiga HAM
+  (`.ham`, `.sham`), Office themes (`.thmx`), OpenDocument drawing templates (`.otg`) and Radiance
+  `.pic`. Radiance pictures (`.pic` and `.hdr`) whose header has a line ahead of the `#?RADIANCE`
+  signature, as some renderers write it, now read as well.
+
+- **GoPro `.lrv`, Matroska 3D `.mk3d` and transport-stream `.m2t` / `.trp` videos get frame
+  thumbnails**, read the way their parent formats (MP4, Matroska and MPEG transport streams) are.
+
+- **Quick preview has a Show in folder button.** It opens the file's folder in Explorer with the
+  file selected.
+
+- **Quick preview reloads the picture when the file changes on disk, and F5 reloads it by hand.**
+  Save the file in an editor and the preview shows the new version, at the zoom and scroll you had.
+  A file still being written is waited for, so a half-saved file is never shown.
+
+- **Settings warns when Explorer is set to show icons instead of thumbnails.** When Windows' own
+  "Always show icons, never thumbnails" box (Folder Options, View) is ticked, no program's
+  thumbnails show, which looks like SageThumbs 2K is broken. Settings now says so under every page, and Fix
+  it turns the setting off. If Explorer puts it back, Folder Options opens on its View tab so you
+  can untick the box yourself.
+
+- **Settings shows a short What's new note once after an update**, with a link to that version's
+  release notes. Dismiss hides it until the next update; a fresh install never shows it.
+
+- **Settings ▸ File types can show only the file types you have ticked** (#85). A new switch,
+  **Show only the selected file types**, lists just the ticked formats, so checking what is selected
+  no longer means scrolling the whole list; the search box still narrows it. A type unticked while
+  the switch is on keeps its row until the switch is turned off, so the list does not jump while you
+  edit. It changes only the view, never which types are ticked.
+
+- **A smaller install.** The translations are stored compressed, and only the language in use is
+  unpacked, once, when a SageThumbs 2K program starts. The command-line tool carries its own icon, so
+  the install folder no longer holds a loose icon file; an upgrade removes the old one. The
+  command-line tool `st2k.exe` is now a small launcher that runs the engine already inside
+  `SageThumbs2K.exe`, so the install carries one copy of the engine instead of two. Every command,
+  script and the MCP server work as before, through a symlink to `st2k.exe` too. A copy of
+  `st2k.exe` on its own, away from `SageThumbs2K.exe`, now stops with one line saying so: link to
+  the installed `st2k.exe` instead, or put the install folder on your `PATH`. If the
+  `SageThumbs2K.exe` beside it is older (an update still waiting on a restart), `st2k` says so in
+  one line instead of opening the Settings window.
+
+- **The picture tile in the right-click menu is drawn once.** When a label in the SageThumbs submenu
+  was wider than the picture, Windows could draw the tile twice, side by side. The tile now takes the
+  width of the widest label and shows once.
+
+- **Escape and Cancel close the thumbnail-cache rebuild questions in Settings without rebuilding.**
+  The questions now offer Cancel, which Escape and the close box answer, and Cancel is the default
+  button, so pressing Enter declines too. Only OK or Yes starts the rebuild and the Explorer restart
+  that comes with it.
+
+- **3MF files built only from beams get thumbnails.** A 3MF whose parts are beam lattices, with no
+  ordinary triangle mesh, is drawn as solid rods and balls.
+
+- **3MF beam lattices with `ballmode="all"` get a ball at every beam end**, as the Beam Lattice
+  specification says, instead of only where a ball is listed.
+
+- **A damaged 3MF file can no longer keep its thumbnail busy for a long time.** Lattice beams and
+  balls that point at missing corners or have no usable radius now count against the file's work
+  limit, so a file packed with them gives up quickly instead of tying up Explorer.
+
+- **A photo whose metadata lists thousands of people can no longer slow Explorer down.** The names
+  of the people tagged in a picture are read up to the first 64, and the metadata block is read up to
+  8 MB, so a file built to repeat them endlessly is cut short instead of tying up Explorer.
+
+- **Ogg audio files (Speex, Vorbis, Opus, FLAC) get their thumbnails faster.** An Ogg file was
+  first tried as a video, and only after Windows failed to find a frame in it (about a quarter of a
+  second) did its cover art answer. Ogg audio is now told apart from Ogg video by its first packet,
+  so a Speex file's thumbnail takes about 40 ms instead of about 300 ms. Ogg video (`.ogv`) is read
+  as before.
+
+- **CorelDRAW, Affinity, Paint.NET, Paint Shop Pro and 3-D model files show their program's icon in
+  the thumbnail corner again.** An older version had marked these types as photos, which hides that
+  icon and adds Photos commands that cannot open them, and no later version took the mark back.
+  SageThumbs 2K now removes that old mark.
+
+- **The format mark and the checkerboard reach types whose own program draws their thumbnails.**
+  With the SageThumbs format mark (or the transparency checkerboard) chosen, files whose own program
+  installs a thumbnailer, such as CorelDRAW's `.cdr`, get the mark too: SageThumbs 2K draws those
+  types while that setting is on and hands them back when it is turned off.
+
+- **Illustrator files saved without "Create PDF Compatible File" show their artwork.** Files from
+  Illustrator 2020 and later saved that way showed the Illustrator icon, because their PDF half is
+  only a page of small print. They do carry a small preview of the artwork in their metadata, every
+  artboard side by side, and that preview is the thumbnail now. A file without one still gets the
+  icon, and `st2k doctor` still says why. Illustrator templates (`.ait`) are read the same way.
+
+- **Turning a format off no longer removes a file-type setting another program wrote after SageThumbs 2K.**
+  SageThumbs 2K now removes a file-type setting only while it still holds the value SageThumbs 2K
+  wrote; a value another program wrote over it is left alone.
+
+- **If the screenshot overlay's drawing engine cannot start, the overlay now says so and closes instead of opening with annotation tools that draw nothing.**
+  The overlay used to open anyway and drop every annotation without a word. It now logs the reason
+  and does not open, the same as when the overlay window cannot be created.
+
+- **`st2k doctor` no longer blames Explorer when run as administrator, and no longer warns about
+  an approved-extensions list Windows 10 and 11 ignore** (#84). Run from an administrator
+  terminal over the portable copy, its Explorer check now says to run it again in a normal
+  terminal, because Windows does not load a per-user handler into an administrator program. The
+  five approved-list lines, which warned on every portable copy, are now plain notes: tested on
+  Windows 11, a thumbnail handler missing from that list still loads, even with the policy that
+  once made the list binding switched on, and the doctor says so when that policy is set.
+
+- **Settings can no longer crash when you switch pages.** Settings asks Windows which OCR languages
+  are installed each time it shows a page. When it first asked while a short background task was
+  running, Windows could unload the part that answers once that task ended, and the next page
+  switch then closed Settings with a crash. SageThumbs 2K now keeps that part of Windows loaded for
+  as long as the app runs.
 
 ## 4.2.0
 
