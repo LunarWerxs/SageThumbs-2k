@@ -253,8 +253,9 @@ same thing). For volume or site licenses, purchase orders or bank transfer,
 [request a quote](https://github.com/LunarWerxs/SageThumbs-2k/issues/new?template=licence_quote.yml).
 A business license comes as a seat key (`esk_...`); redeem it under
 **Settings ▸ Licence** and the app takes it from there. The installer asks whether a copy is
-for personal or business use, and that answer only changes by reinstalling, there's no toggle
-for it in Settings. A portable copy has no installer to ask, and counts as business use as soon
+for personal or business use. A copy installed as Personal can switch to Business at any time:
+**Settings ▸ Licence ▸ Start 7-day business trial** (Windows asks an administrator to confirm).
+Going back to Personal needs a reinstall, there's no toggle for it in Settings. A portable copy has no installer to ask, and counts as business use as soon
 as a key is redeemed on it. A business copy starts its 7-day trial with every feature; after
 that it asks for a key for 3 more days, then thumbnails, previews, the Details pane and the
 right-click menu stop on that computer until one is entered. Once a key is in, the license check runs quietly in the background and

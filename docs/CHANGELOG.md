@@ -7,6 +7,20 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## Unreleased
+
+**TL;DR**
+
+**Fixed**
+
+- **MPEG-2 videos whose slices start mid-row get thumbnails**
+
+**Everything in Unreleased**
+
+- **MPEG-2 videos whose slices start mid-row get thumbnails.** The MPEG decoder now reads slices that
+  start partway through a row of macroblocks (H.262 section 6.3.17.1), as conformance streams and some
+  encoders write them. Such a video used to keep its stock icon.
+
 ## 5.0.0
 
 **TL;DR**
