@@ -7,19 +7,26 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
-## Unreleased
+## 5.0.1
 
 **TL;DR**
 
 **Fixed**
 
 - **MPEG-2 videos whose slices start mid-row get thumbnails**
+- **Updating no longer stops on "Unable to execute file ... CreateProcess failed; code 32"**
 
-**Everything in Unreleased**
+**Everything in 5.0.1**
 
 - **MPEG-2 videos whose slices start mid-row get thumbnails.** The MPEG decoder now reads slices that
   start partway through a row of macroblocks (H.262 section 6.3.17.1), as conformance streams and some
   encoders write them. Such a video used to keep its stock icon.
+- **Updating no longer stops on "Unable to execute file ... CreateProcess failed; code 32".** Setup runs
+  the app it has just copied to set up the classic context menu and the other per-user steps. When
+  another program, usually an antivirus scanning the new file, still had it open, Windows refused to
+  start it and setup showed that error at "Setting up the classic context menu...". Setup now waits,
+  for up to 30 seconds and with a status line saying what it waits for, until the file is free, then
+  carries on.
 
 ## 5.0.0
 
