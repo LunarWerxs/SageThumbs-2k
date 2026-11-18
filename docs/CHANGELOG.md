@@ -7,6 +7,62 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## 5.1.0
+
+**TL;DR**
+
+**New**
+
+- **iPhone and iPad app packages (.ipa) show their app icon**, the way .apk shows its launcher icon (#88)
+
+**Changed**
+
+- **Settings: Data & Backup shows your sync sign-in in the Basic view too, either who you are signed in as or an offer to sign in**
+
+**Fixed**
+
+- **Android apps whose launcher icon is an adaptive vector icon show that icon instead of an unrelated picture from inside the app** (an app whose icon does not resolve keeps the stock icon, and no longer gets a random drawable). Its linear and radial gradient fills are drawn, and a fill that cannot be resolved is left empty rather than painted black
+- **Apple-crushed (CgBI) PNGs copied out of iOS apps get a thumbnail**
+- **Comics and archives copied from a Mac no longer lose their thumbnail to macOS `._` sidecar files**
+- **DOS-EPS files whose only preview is WMF get a thumbnail** (drawn by ImageMagick, so on the full install only)
+- **Quick preview: arrowing through a folder no longer gets stuck on a video; the arrows seek only once you start interacting with the clip**
+
+**Everything in 5.1.0**
+
+- **iPhone and iPad app packages (.ipa) show their app icon (#88).** The icon is the one the app's
+  `Info.plist` names (XML or binary), found in its `Payload/<App>.app` folder: the store-size
+  `iTunesArtwork` picture first, then the largest listed `AppIcon` PNG, then the app folder's own
+  `AppIcon*.png`. An IPA that names no readable icon keeps the stock icon, never a picture bundled inside it.
+- **Settings: Data & Backup shows your sync sign-in in the Basic view too.** Signed in, the page says
+  who you are signed in as and offers Stop syncing; signed out, it offers to sign in, in the same words as
+  the sign-in banner. Before, the sync row lived only in the Advanced view.
+- **Android apps whose launcher icon is an adaptive vector icon show that icon instead of an unrelated
+  picture from inside the app.** Some apps ship their launcher icon only as an adaptive icon (a background
+  and a foreground layer) or a vector drawing, with no PNG icon anywhere. The .apk reader used to take some
+  other picture from the app's resources instead. It now draws the icon from its layers, including their
+  linear and radial gradient fills (a sweep gradient is drawn in its first colour); a fill that cannot be
+  resolved is left empty, as Android leaves it, rather than painted black. An app whose launcher icon does
+  not resolve at all keeps the stock icon instead of getting a random picture from its resources.
+- **Apple-crushed (CgBI) PNGs copied out of iOS apps get a thumbnail.** Xcode writes its app icons as
+  CgBI PNGs (raw deflate, BGRA order, premultiplied alpha), which no stock decoder reads. The image tier
+  now decodes them with their true colours, standalone or inside an .ipa.
+- **Comics and archives copied from a Mac no longer lose their thumbnail to macOS `._` sidecar files.**
+  A Mac copying to a FAT, exFAT or SMB drive leaves an AppleDouble `._<name>` file beside each page, and
+  zipping or tarring on Windows keeps them. Those sidecars sorted ahead of the real page and became the
+  cover, but their bytes are an AppleDouble header, not a picture, so the archive got no thumbnail. They
+  are now skipped as junk, like `__MACOSX` and `Thumbs.db`.
+- **DOS-EPS files whose only preview is WMF get a thumbnail.** A DOS-EPS with no TIFF preview used to keep
+  its stock icon. Its WMF preview is now the cover, drawn by the ImageMagick tier. The compact install has
+  no ImageMagick, so it still shows the stock icon for these files.
+- **Quick preview: arrowing through a folder no longer gets stuck on a video.** Before, a video that autoplayed
+  while you arrowed through photos took over ←/→, which then seeked it by 5 s and kept you on that clip. Now a
+  clip you reach by arrowing starts with ←/→ still moving between files; they seek only once you press a
+  transport key (K, P, M, L, Home/End, ↑/↓) or click the transport strip. A clip you open directly still seeks
+  with ←/→ as before.
+- **Licence page:** the plan and licence status come first, with the rest folded behind two tap-to-open
+  rows, and signing in asks the licence server about your account at once, so a licence held by the
+  account shows straight away instead of Free with trials.
+
 ## 5.0.1
 
 **TL;DR**

@@ -6,7 +6,7 @@ listing. (This file is organized by feature area for end-user-facing
 documentation.)
 
 > **What it is:** a modern, crash-isolated Windows 11 shell extension (Rust) that
-> rebuilds the abandoned SageThumbs (Explorer thumbnails for 434 file types plus
+> rebuilds the abandoned SageThumbs (Explorer thumbnails for 435 file types plus
 > a rich right-click image toolkit) and folds in XnShell/XnView-style conversion.
 > Free for personal use (PolyForm Noncommercial 1.0.0).
 
@@ -42,12 +42,12 @@ SageThumbs draws Explorer thumbnails for file types Windows can't, via a tiered
 decoder (`image` crate → Windows WIC → a trimmed bundled ImageMagick → resvg for
 SVG), with embedded-cover/first-page extraction for containers.
 
-**434 registered extensions, in seven categories** (also how the Options list is
+**435 registered extensions, in seven categories** (also how the Options list is
 grouped):
 
 | Category | Examples | How |
 |---|---|---|
-| **Image** (277) | png, jpg, gif, bmp, tiff, webp, heic/heif/**heics/heifs/hif**, avif/**avifs** (AVIF sequences, first frame), psd, **xcf** (GIMP), **psp/pspimage + pspbrush/pspframe/psptube/pspshape/pspselection/pspmask/tub** (the Paint Shop Pro family, incl. LZ77 composites), **iff/ilbm/lbm** (Amiga ILBM), **neo** (Atari ST NEOchrome, low resolution), **pcraft** (PhotoCraft, flattened preview), **vectorcraft/drawcraft** (VectorCraft documents: the embedded preview, else page one of the embedded PDF; gzip-compressed files too), **c4d** (Cinema 4D preview), **cdr/cdt/cmx** (CorelDRAW DISP preview), tga, **dds** (every block format BC1 to BC7, incl. BC6H HDR, natively), **vtf** (Valve Source-engine textures) and **ktx** (Khronos KTX 1 textures: S3TC, RGTC, BPTC and plain RGB/RGBA; the ETC and ASTC mobile formats are not read), exr, ico, **ani** (animated cursors, first frame), **icns** (Apple), **six/sixel** (DEC SIXEL terminal graphics, decoded natively), **jxr/wdp/hdp/wmp** (JPEG XR / HD Photo), jp2/**jpf/jpx**, hdr/**rgbe/xyze**, svg/svgz, **wmf/emf/emz/wmz** (metafiles), **swf** (Adobe Flash movies: drawn from the movie's own shapes and pictures, past an opening preloader), **sketch/procreate/skp/3dm/dwg/max/c4d/xd/cdr/cdt** (design/CAD/3D), **dxf** (the preview AutoCAD and BricsCAD save into the file; most DXF files from other programs carry none and keep the stock icon), **blend/.blend1–32** (Blender + auto-saves), **ai** (Illustrator), **eps** (embedded preview), **f3d** (Autodesk Fusion 360), **stl/obj/ply** (3D-print models, RENDERED: parsed and flat-shaded by SageThumbs' own tiny software rasterizer, since a mesh has no baked-in preview to extract), **apk/apks/xapk/apkm** (Android packages: the launcher icon named by the app manifest, resolved through the compiled resource table), **nupkg/vsix** (NuGet and Visual Studio / VS Code packages: the icon the package manifest names), **appx/msix/appxbundle/msixbundle** (Windows app packages and bundles: the logo the package manifest names), **crx** (Chrome extensions: the icon the extension manifest names), **pi1–pi3/pc1–pc3** (Atari ST DEGAS and DEGAS Elite), **tny/tn1–tn3** (Atari ST Tiny), **koa/kla/fli** (Commodore 64 Koala Paint and FLI), **gbr/gih/pat** (GIMP brushes, image hoses and patterns), **wbmp/otb/mtv/aai/avs/hrz/xwd** (wireless and Nokia bitmaps, MTV ray-tracer, Dune AAI, AVS X, slow-scan television and X Window dumps), all read by SageThumbs' own decoders, and more names the same formats go by: **jif/jfi/pjpeg/pjp/thm** (JPEG), **btf/tf8** (BigTIFF), **rgb/rgba/int/inta** (SGI), **im1/im8/im24/im32** (Sun raster), **epsf** (EPS), **ait** (Illustrator template), **ham/sham** (Amiga HAM), **pic** (Radiance HDR), … | image crate / WIC / ImageMagick / resvg (SVG) / manifest+resource-table lookup (APK) / manifest lookup (app packages, Chrome extensions) |
+| **Image** (278) | png, jpg, gif, bmp, tiff, webp, heic/heif/**heics/heifs/hif**, avif/**avifs** (AVIF sequences, first frame), psd, **xcf** (GIMP), **psp/pspimage + pspbrush/pspframe/psptube/pspshape/pspselection/pspmask/tub** (the Paint Shop Pro family, incl. LZ77 composites), **iff/ilbm/lbm** (Amiga ILBM), **neo** (Atari ST NEOchrome, low resolution), **pcraft** (PhotoCraft, flattened preview), **vectorcraft/drawcraft** (VectorCraft documents: the embedded preview, else page one of the embedded PDF; gzip-compressed files too), **c4d** (Cinema 4D preview), **cdr/cdt/cmx** (CorelDRAW DISP preview), tga, **dds** (every block format BC1 to BC7, incl. BC6H HDR, natively), **vtf** (Valve Source-engine textures) and **ktx** (Khronos KTX 1 textures: S3TC, RGTC, BPTC and plain RGB/RGBA; the ETC and ASTC mobile formats are not read), exr, ico, **ani** (animated cursors, first frame), **icns** (Apple), **six/sixel** (DEC SIXEL terminal graphics, decoded natively), **jxr/wdp/hdp/wmp** (JPEG XR / HD Photo), jp2/**jpf/jpx**, hdr/**rgbe/xyze**, svg/svgz, **wmf/emf/emz/wmz** (metafiles), **swf** (Adobe Flash movies: drawn from the movie's own shapes and pictures, past an opening preloader), **sketch/procreate/skp/3dm/dwg/max/c4d/xd/cdr/cdt** (design/CAD/3D), **dxf** (the preview AutoCAD and BricsCAD save into the file; most DXF files from other programs carry none and keep the stock icon), **blend/.blend1–32** (Blender + auto-saves), **ai** (Illustrator), **eps** (embedded preview), **f3d** (Autodesk Fusion 360), **stl/obj/ply** (3D-print models, RENDERED: parsed and flat-shaded by SageThumbs' own tiny software rasterizer, since a mesh has no baked-in preview to extract), **apk/apks/xapk/apkm** (Android packages: the launcher icon named by the app manifest, resolved through the compiled resource table; adaptive and vector icons are drawn from their layers, and an icon that cannot be resolved keeps the stock icon rather than an unrelated picture from inside the app), **nupkg/vsix** (NuGet and Visual Studio / VS Code packages: the icon the package manifest names), **appx/msix/appxbundle/msixbundle** (Windows app packages and bundles: the logo the package manifest names), **crx** (Chrome extensions: the icon the extension manifest names), **ipa** (iPhone and iPad app packages: the app's icon as its `Info.plist` names it, XML or binary, with Apple's crushed CgBI PNGs decoded), **pi1–pi3/pc1–pc3** (Atari ST DEGAS and DEGAS Elite), **tny/tn1–tn3** (Atari ST Tiny), **koa/kla/fli** (Commodore 64 Koala Paint and FLI), **gbr/gih/pat** (GIMP brushes, image hoses and patterns), **wbmp/otb/mtv/aai/avs/hrz/xwd** (wireless and Nokia bitmaps, MTV ray-tracer, Dune AAI, AVS X, slow-scan television and X Window dumps), all read by SageThumbs' own decoders, and more names the same formats go by: **jif/jfi/pjpeg/pjp/thm** (JPEG), **btf/tf8** (BigTIFF), **rgb/rgba/int/inta** (SGI), **im1/im8/im24/im32** (Sun raster), **epsf** (EPS), **ait** (Illustrator template), **ham/sham** (Amiga HAM), **pic** (Radiance HDR), … | image crate / WIC / ImageMagick / resvg (SVG) / manifest+resource-table lookup (APK) / manifest lookup (app packages, Chrome extensions) |
 | **Camera RAW** (34) | cr2/cr3, nef, arw, dng, raf, orf, rw2, pef, x3f, **bay/cap/dcs/drf/ori/ptx/pxn**, … | WIC (Raw Image Extension) / ImageMagick / embedded-JPEG preview |
 | **Ebook & comics** (12) | epub, mobi/azw/azw3, **prc** (Mobipocket), fb2/fbz, cbz, cb7, **cbr**, **cbt**, **phz** (zip comic) | native-Rust cover extraction (zip/7z/tar/**rar** via the pure-Rust `rars` crate + hand-parsed MOBI); an oversized CB7 received through a name-less shell stream keeps its stock icon rather than risking an expensive 7z directory scan |
 | **Document** (59) | **pdf** (page 1), **djv/djvu** (pure-Rust `djvu-rs` codec), **doc/docx/docm + dot/dotx** (Word), **xls/xlsx/xlsm/xlsb + xlt/xltx** (Excel), **ppt/pptx/pptm + pps/ppsx + pot/potx** (PowerPoint), **odt/ods/odp/odg/…** (OpenDocument), **key/pages/numbers** (Apple iWork), **indd** (InDesign), **vsd/vsdx/vsdm + vstx/vssx** (Visio drawings, templates and stencils: a stencil shows a preview only when Visio saved one with it, which most do not), **pub** (Publisher), **ggb** (GeoGebra), **xmind** (XMind mind maps: the map picture XMind saves), **thmx** (Office themes), **otg** (OpenDocument Graphics templates), and the **text types, off by default** (Settings turns text thumbnails on): **txt, md, json, xml, log, csv, ini, reg, rtf** (the opening lines drawn as a page) and **nfo/diz** (drawn in the DOS code page, so their block art lines up) | OS `Windows.Data.Pdf` (PDF); pure-Rust `djvu-rs` (DjVu); embedded preview extraction (Office OOXML `docProps/thumbnail` + legacy OLE `\x05SummaryInformation` / iWork / InDesign / Visio / Publisher); the text page drawn by SageThumbs itself (text types) |
@@ -55,12 +55,14 @@ grouped):
 | **Video** (30) | **mkv** (Matroska) and **mk3d** (Matroska 3D), **webm**, mp4/m4v and **lrv** (the low-resolution preview MP4 some action cameras record beside the full one), mov, avi, wmv, **m2t/trp** (transport streams), …  | a representative frame (30 % in by default, not the intro; adjustable in Settings ▸ Appearance) via the OS **Media Foundation** codecs. MP4/MOV (`moov`) and Matroska/WebM (Cues) parse the container's own index to read just the one keyframe nearest the chosen point (single-digit MB); AVI/WMV let MF's demuxer seek over a block-caching stream, never streaming the whole movie. **Five codec families Windows does not ship are decoded by SageThumbs itself**, in pure Rust and in a separate short-lived process: **FLV** (H.264 handed to Windows; VP6 and Sorenson Spark decoded here), **VP9 Profile 2/3** (10- and 12-bit HDR, which Windows declines even with its own VP9 extension installed), **10-bit H.264** (High 10, the usual choice for anime encodes; Windows' H.264 decoder stops at 8-bit) and **MPEG-1/2** in program, elementary and transport streams (VideoCD-era `.mpg`, bare `.m1v`/`.m2v`, DVD-style `.vob`, and MPEG-2 inside `.ts`/`.m2ts`/`.mts` recordings: Windows opens none of the first two on any edition and the rest only with a Store add-on; decoded here whenever Windows declines. Interlaced field-coded recordings are the one shape still left to the OS). **Resolume DXV3** `.mov` (the DXD3 codec of Resolume Alley, Wire and Arena) has the frame at the chosen point decoded here, at any frame size: DXT1 and DXT5 are decoded, and the YCoCg high-quality modes are not yet. |
 | **Archive** (3) | **zip**, **rar**, **7z** | the images INSIDE the archive, including SVG: a single cover, or by default a contact-sheet collage of up to four (Settings ▸ Ebook/comic). Identified generic archives honor **Max file size** before their directory is parsed; an oversized 7z is also rejected safely when its shell stream has no filename. ZIP/RAR and non-solid 7z read only the picked images; 7z extraction is single-threaded with an 8 MiB aggregate image budget. Solid 7z scans only a small bounded prefix and falls back to the stock icon when its images are buried too deeply. No readable image (or encrypted) keeps the stock icon |
 
-*Counts sum to **434** (canonical source: `formats::FORMATS.len()`; `st2k formats` prints
+*Counts sum to **435** (canonical source: `formats::FORMATS.len()`; `st2k formats` prints
 it). DjVu (`.djv/.djvu`) thumbnails are decoded by the **maintained pure-Rust `djvu-rs`
 crate** (MIT, no C, no GPL): the page's pre-rendered thumbnail when present, else the
 rendered first page (IW44 background + anti-aliased JB2 text + foreground palette),
 including multipage shared-dictionary pages. EPS thumbnails come only from an embedded
-raster preview: a DOS-EPS TIFF, an EPSI greyscale preview, or a Photoshop JPEG resource.
+preview: a DOS-EPS TIFF, a DOS-EPS WMF (when it has no TIFF; drawn by the ImageMagick tier, so
+the compact install still shows the stock icon for it), an EPSI greyscale preview, or a
+Photoshop JPEG resource.
 SageThumbs never renders PostScript or invokes Ghostscript; a preview-less EPS keeps its
 stock icon. **Autodesk Fusion 360** `.f3d` thumbnails come from the zstd-compressed preview
 inside the archive's ZIP container, inflated by the pure-Rust `ruzstd` decoder (no C dep).
@@ -103,7 +105,7 @@ the various bit-depth and compression variants GIMP writes.
 **Archives get a peek inside:** plain `.zip`, `.rar`, and `.7z` files thumbnail too, drawing
 either a single cover image or (the default) a contact-sheet collage of up to four images
 pulled from inside, using the same smart pick as comic covers: natural filename sort, an
-the front cover preferred (back and variant covers go last), junk like `__MACOSX` and `Thumbs.db` skipped. The file list
+the front cover preferred (back and variant covers go last), junk like `__MACOSX`, `Thumbs.db` and the `._` files a Mac leaves beside each page skipped. The file list
 comes straight from archive metadata. ZIP/RAR and non-solid 7z read only the handful of
 images actually shown. Generic archives identified by filename honor **Max file size** before
 the directory is parsed; an oversized 7z is also refused when the shell supplies a name-less
@@ -409,6 +411,9 @@ plus these viewer-only extras:
   volume are all remembered. It is fully keyboard-driven too: **←/→** seek (with **Ctrl** for 30 s
   and **Shift** for 1 s), **↑/↓** volume, **M** mute, **L** repeat, **K** or **P** pause,
   **Home/End** jump to the ends, **Page Up / Page Down** move to the next file in the folder.
+  A clip you reach by arrowing through a folder leaves **←/→** moving between files until you
+  press one of those keys or click the strip, so flipping through photos never gets stuck on a
+  video; a clip you open directly seeks with **←/→** right away.
   A **button on the strip itself** flips **←/→** to switch files instead of seeking, for anyone
   flipping through a folder of clips rather than watching one. Every control on the strip names
   itself on hover. Audio files (mp3/flac/ogg/…) play through the same transport, with the track's
@@ -424,7 +429,7 @@ plus these viewer-only extras:
   fly and previews exactly like a `.ttf`.
 - **Archive listings** for `.zip`/`.7z`/`.rar` and zip-based packages (.jar, .whl, .nupkg, .appx,
   .msix and the like): a sorted file tree with sizes, read from the central directory / headers
-  only; nothing is extracted. Android packages (.apk) show their app icon instead.
+  only; nothing is extracted. Android packages (.apk) and iOS app packages (.ipa) show their app icon instead.
 - **Local HTML rendering** (opt-in, off by default) in an embedded **locked-down** WebView2:
   JavaScript disabled and **every non-`file://` request blocked**, so a page cannot phone home or
   load remote trackers. A separate opt-in can live-load a `.url` or `.webloc` shortcut's real page
@@ -1034,7 +1039,7 @@ genuinely-outstanding work.)*
 > PDF is searchable and its text can be selected and copied.
 
 **Idea:** because SageThumbs already bundles real image
-capabilities (434-format decode incl. RAW/HEIC/ebook covers, ImageMagick, WIC, the
+capabilities (435-format decode incl. RAW/HEIC/ebook covers, ImageMagick, WIC, the
 WinRT PDF + OCR engines, convert/resize/rotate/strip/PDF), expose those to AI
 agents and scripts so users don't need to install a separate toolkit. **Do not
 bundle anything new**; only surface existing functions.
@@ -1043,7 +1048,7 @@ bundle anything new**; only surface existing functions.
 1. ✅ **CLI shipped** as **`st2k.exe`** (console subsystem, a small launcher over the one engine in `SageThumbs2K.exe --st2k`): verbs
    `convert`, `rotate`, `strip`, `info` (JSON to stdout), `ocr` (text to stdout), `pdf`
    (combine), **`cbz`** (combine into a comic-book archive), `thumbnail` (render any of
-   the 434 types to PNG), **`batch`** (bulk thumbnail/convert over many files/folders in
+   the 435 types to PNG), **`batch`** (bulk thumbnail/convert over many files/folders in
    ONE process, fanned out across all CPU cores, with `--recurse` to walk subfolders and
    a richer `info` mode that includes audio tag data), `formats`. All logic lives in the
    `lib` (`verbs`, `strip`, `ocr`, `topdf`, `decode`, `parallel`); the CLI is a thin
@@ -1052,7 +1057,7 @@ bundle anything new**; only surface existing functions.
 2. ✅ **MCP server mode** (`st2k --mcp`, stdio JSON-RPC 2.0; a Supporter feature whose
    14-day trial starts on the first tool call, never on start-up or `tools/list`): exposes **15** MCP
    tools (`tools/list` + `tools/call`) so an agent auto-discovers and calls them: the
-   core verbs (now including **`cbz`**) plus **`view`** (which decodes any of the 434
+   core verbs (now including **`cbz`**) plus **`view`** (which decodes any of the 435
    formats to a PNG **image block**) so an AI agent can actually *see* the file,
    **`compress`**, and the diagnostic/maintenance tools **`doctor`**, **`prebuild`**, and
    **`register_status`**. Newline-delimited stdio, spawned on demand by the client (not
