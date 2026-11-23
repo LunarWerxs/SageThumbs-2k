@@ -23,8 +23,9 @@ documentation.)
 > that says so (no card, no sign-up, nothing to cancel), so a trial used up on one never costs
 > another. Once a feature's trial is over, reaching for it opens the pay screen: what Supporter
 > adds, the price, Become a supporter, Enter a licence key, a short note from the developer on
-> why the plan exists, and for Quick preview and screenshots a Turn off link that gives Space or
-> Print Screen back to Windows. Settings ▸ Licence opens on the plan: Free (with each running
+> why the plan exists. On the Quick preview and screenshot screens, Not now (or Esc, or the
+> close box) gives Space or Print Screen back to Windows; Buy and Enter a key keep the feature
+> armed, so a redeemed key works at once. Settings ▸ Licence opens on the plan: Free (with each running
 > trial and its days left), Supporter or Business, and Become a supporter until it is paid. A
 > Supporter key (told apart by the product in Pay's signed certificate) unlocks all five
 > and is never a work licence; Business installs and Business licences (US$5 a month or US$50 a
@@ -218,7 +219,10 @@ output claims its own name before it is written, so two jobs never land on one f
   TGA · QOI · PNM · PDF**, plus (on a full install with the bundled ImageMagick)
   **18 more: AVIF · JPEG XL · PSD · DDS · JP2 · PCX · SGI · EXR · HDR · Farbfeld · PAM · PFM · DPX ·
   FITS · XPM · PICT · RAS · PALM**; a per-format **Settings…** button (JPEG quality ·
-  **WebP lossless/lossy + quality** · PNG compression · **AVIF / JPEG XL quality**), a **Resize** checkbox with
+  **WebP lossless/lossy + quality** · PNG compression · **AVIF / JPEG XL quality**), an **estimated output
+  size** under the format that updates as the format or quality changes (the first picture encoded in the
+  background, so you can pick the smallest file that still looks right before converting; shown for the
+  formats SageThumbs writes itself, not the ImageMagick ones or PDF, and skipped for very large files), a **Resize** checkbox with
   presets *or* a custom **W × H**, a **Watermark** option (an image of your choice in a
   corner or the centre, with size and opacity), an output-folder picker, and a progress bar. Batch:
   applies to the whole selection. OneDrive files that are still cloud-only (not yet
@@ -445,7 +449,10 @@ plus these viewer-only extras:
   column is capped and centered like a GitHub page. Web-hosted images (status badges and the like)
   show as labeled chips by default; a **"Load web images"** button appears on the title bar
   whenever the open document actually references any, and fetches and displays them (HTTPS only,
-  size-capped, in the background). Off by default, and your choice is remembered.
+  size-capped, in the background). Off by default, and your choice is remembered; the button stays lit
+  while web images are shown. SVG pictures draw their text (badge labels, diagram captions) with the
+  Windows fonts. HTML `<video>` and `<audio>` tags show as **media cards** with the file name; a click
+  opens the clip in your browser or player.
   Markdown with headings also gets a **collapsible outline sidebar** (a "Contents" panel): a
   clickable, indented list of the headings that jumps to a section on click (and selects it even
   when the page is already at the bottom) and highlights the one you are reading as you scroll.
@@ -931,7 +938,8 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   (vsd/vsdx/vsdm/vstx/vssx), legacy-Office OLE previews (max), classic bitmaps
   (pcx/dcx/dib/ras/sun/sgi/xbm/xpm/xv/wpg/pdb), scientific floats
   (pfm/phm/fl32/mat/vicar/viff/vips/pgx/ph), miff/mng/tiff64, and **DWAA/DWAB-
-  compressed OpenEXR** (uncompressed/ZIP/PIZ/RLE/B44 EXR decode pure-Rust; the
+  compressed OpenEXR** (uncompressed/ZIP/PIZ/RLE/B44 EXR decode pure-Rust, RGB(A), greyscale `Y` and
+  full-resolution luminance-chroma `Y`/`RY`/`BY` layers alike; the
   DWA lossy codecs need the bundled magick (the standard install has it).
 - **Colour-managed thumbnails:** images carrying an embedded ICC profile or a
   wide-gamut tag (Display P3 / Adobe RGB) are converted into sRGB before display, so

@@ -7,6 +7,63 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## 5.2.0
+
+**TL;DR**
+
+**New**
+
+- **Convert shows the estimated size of the output file before you convert, and updates it as you change the format or quality** (for the formats SageThumbs writes itself; #89)
+- **Quick preview: video and audio in a Markdown file show as cards you can click to open** (fixes #93)
+
+**Fixed**
+
+- **SVG text is drawn: badges, diagram labels and chart text in SVG thumbnails and in Markdown previews no longer come out blank** (fixes #92)
+- **Quick preview: the Markdown web-images button stays lit while web images are shown** (#92)
+- **Greyscale OpenEXR files (a single `Y` luminance channel, with or without alpha) get a thumbnail instead of "cannot decode"**
+- **Pre-generating thumbnails scans folders about ten times faster, and the scan line shows the folder it is in** (#91)
+- **Quick preview leaves Outlook alone: pressing Space in Outlook's Attach File dialog no longer loads SageThumbs into Outlook**
+- **An SVG nested hundreds of levels deep is refused instead of crashing Explorer**
+- **The diagnostics report (`st2k doctor`) no longer crashes on some Windows 10 PCs**
+
+**Everything in 5.2.0**
+
+- **Convert shows the estimated output size (#89).** Under the output format, the dialog says how big the
+  converted file will be at the current format and quality, worked out by encoding the first picture in the
+  background as you change them, so you can find the smallest file that still looks right without
+  converting, checking and deleting. With several pictures selected it is the estimate for the first one.
+  It covers the formats SageThumbs writes itself (JPG, PNG, WebP, BMP, GIF, TIFF, ICO, TGA, QOI, PNM);
+  the ImageMagick formats and PDF show no estimate, and very large source files are skipped.
+- **Quick preview: video and audio in a Markdown file show as cards (#93).** A `<video>` or `<audio>` tag
+  (or its `<source>`) used to vanish from the preview. It now shows as a card with the file name; click it
+  to open the video or sound in your browser or player. A poster picture shows on the card when web images
+  are on.
+- **SVG text is drawn (#92).** SVG files rendered their shapes but dropped every piece of text, so a
+  README badge showed two empty coloured blocks and a diagram's boxes had no labels, both in Explorer
+  thumbnails and in Quick preview's Markdown view. The SVG renderer now has the Windows fonts to draw
+  with; they load once, and only for an SVG that contains text.
+- **Quick preview: the Markdown web-images button stays lit while web images are shown (#92).** Like the
+  contents and source buttons, it now shows its on state.
+- **Greyscale OpenEXR files get a thumbnail.** An EXR whose picture is a single `Y` (luminance) channel,
+  for example a greyscale render or a luminance pass, failed with "cannot decode" even though Blender opens
+  it. It now decodes as grey in FLOAT, HALF and UINT, keeps its alpha channel when it has one, and the
+  rarer luminance-chroma layout with full-resolution colour (`Y` with `RY`/`BY`) decodes in colour.
+- **Pre-generating thumbnails scans folders about ten times faster (#91).** The scan asked Windows about
+  every file four separate times; it now reads what the folder listing already returned. A 19,000-file tree
+  went from about 1 s to 0.1 s here, and the gain is larger on USB and network drives. While it scans, the
+  status line shows the folder it is in instead of a fixed "Scanning folders…".
+- **Quick preview leaves Outlook alone.** Pressing Space in an Open or Save dialog loads a small helper into
+  the program that owns the dialog to read the selected file. In Outlook (classic, new Outlook and the
+  Outlook app host) it no longer does: Space is an ordinary key press there.
+- **An SVG nested hundreds of levels deep is refused instead of crashing Explorer.** Drawing an SVG walks
+  its elements one level at a time, and a file nested hundreds of levels deep ran the thumbnail worker out
+  of stack, which closes the whole Explorer window. Such a file is now refused before it is drawn and keeps
+  its stock icon; real drawings nest a few dozen levels at most.
+- **The diagnostics report (`st2k doctor`) no longer crashes on some Windows 10 PCs.** Some of its checks ask
+  Windows for shell information, and on a thread that had not set Windows' COM up for that, Windows 10
+  could crash the report. The report now sets it up for itself.
+- **Licence:** after a Quick preview or screenshot trial ends, choosing Not now on the Supporter screen hands Space or Print Screen back to Windows, so the screen shows once.
+
 ## 5.1.0
 
 **TL;DR**

@@ -408,8 +408,9 @@ needs a commercial licence per Windows installation ([Terms of Service](https://
 <https://go.lunarwerx.com/sagethumbs/buy/monthly> or yearly at
 <https://go.lunarwerx.com/sagethumbs/buy> (card via Stripe); manage or cancel at
 <https://go.lunarwerx.com/sagethumbs/manage>, signing in with the email you paid with. One seat key per
-installation arrives by email the moment payment completes
-(the checkout page calls it a "redemption code": same thing, it starts with `esk_`).
+installation is emailed to the address you used at checkout, usually within a few minutes
+(the checkout page calls it a "redemption code": same thing, it starts with `esk_`). Check your
+spam or junk folder; if it has not arrived, tell us through **Send feedback** in the app's About box.
 Redeem it yourself, see below. For volume or site licences, purchase orders or bank transfer,
 [request a quote](https://github.com/LunarWerxs/SageThumbs-2k/issues/new?template=licence_quote.yml).
 
