@@ -173,14 +173,18 @@ the same panic boundary, so a malformed file yields an empty pane, never a crash
 asks only ONE thumbnail provider for every file, the cloud app's, even for files that are
 fully downloaded, so without help none of the formats above would ever show there. SageThumbs
 links a small provider of its own into that slot and keeps a record of the one it replaced.
-For a file whose bytes are on this PC it draws what it would draw anywhere else (ours for our
-formats, Windows' or another program's handler for theirs); everything else, online-only files
+For a file whose bytes are on this PC it draws what it would draw anywhere else: a file in one of
+our formats is always drawn by SageThumbs first, whatever handler the file type lookup names, and
+other types get Windows' or another program's handler; everything else, online-only files
 included, goes back to the cloud app's own provider, so nothing is ever downloaded just to draw
 a thumbnail. The link is made at install, re-made at sign-in (a cloud app may put its own
 provider back when it starts) and whenever Settings opens, and removed at uninstall.
 Settings ▸ General ▸ **Thumbnails in OneDrive & cloud folders** turns it off and hands every
 slot back. Packaged cloud apps that draw their own thumbnails (Dropbox, iCloud) are left alone.
-`st2k doctor` lists each cloud folder and whether it is linked.
+`st2k doctor` lists each cloud folder and whether it is linked, and `st2k doctor "<file>"` for a
+file in one shows the provider in that folder's slot, whether the file's data is on this PC and
+what SageThumbs will try for it. When a file in one of our formats still ends up with the cloud
+app's answer, the log records why, without verbose logging.
 
 ---
 
@@ -493,6 +497,11 @@ plus these viewer-only extras:
 - **The toolbars are keyboard-reachable.** Tab moves into the caption toolbar and the video
   controls, arrows move along them, Enter or Space presses the focused button, and Escape
   returns to the content. The focused button draws a visible ring.
+- **Supporter at the top of Settings ▸ Quick preview** while the feature is on its free trial or
+  is free: the page says how many trial days are left, or that the free 14 days are over, then
+  the price, with **US$2 a month** as the button and **US$20 a year** as a quiet link beside it
+  (each opens that plan's checkout). Licensed and Business copies see no offer. Choosing Not now on the pay
+  screen hands Space back to Windows, so this row is where it is bought later.
 - **A per-extension blocklist** (**Settings ▸ Quick preview**): list the extensions you never
   want previewed at all. Empty by default, and deliberately separate from the File types page,
   which governs Explorer thumbnails rather than the preview window.
@@ -856,7 +865,8 @@ for good; it points at somewhere you have not looked, and is not a permanent bad
   policy or GitHub itself gets in the way, it **says so** rather than
   failing quietly, and points you at the releases page. You can still grab the installer from
   there by hand if you prefer. The portable copy never installs itself: it points you at the
-  new portable zip.
+  new portable zip and, if you have also installed SageThumbs 2K, tells you to close the portable copy and open
+  the installed one from the Start menu, which updates itself.
 - **About:** a compact card: the eye logo, a **version pill that links to the GitHub
   repo** (with the GitHub mark), a live **"Up to date" / update-available pill** that
   re-checks on click, and a **Send feedback** pill, plus the licence, copyright, and the

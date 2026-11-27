@@ -7,6 +7,56 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## 5.2.1
+
+**TL;DR**
+
+**Fixed**
+
+- **OneDrive: downloaded files in SageThumbs formats (TGA and the rest) get their thumbnail in OneDrive folders instead of a generic icon**
+- **An installed copy no longer calls itself portable**
+- **A `.cbz` (or any supported file) reached through a symbolic link is walked by `st2k prebuild` and `st2k batch`**
+- **The question before a file is uploaded to a public host no longer takes the keyboard, so a key meant for another program cannot answer it**
+- **`st2k thumbnail` and `st2k batch thumbnail` say why a file was skipped on purpose, and what to do about it, instead of only "cannot decode"**
+- **Security hardening: the updater, FB2 ebooks, the live `.url` preview, settings import and the AI assistant tools `pdf` and `cbz`**
+- **Quick preview: Space with nothing selected does nothing, instead of starting the trial or opening the Supporter screen**
+- **The portable copy's update message says what to do if you also installed SageThumbs**
+- **Settings shrinks back when you dismiss a notice, instead of staying tall with an empty band above Close and Save**
+
+**Everything in 5.2.1**
+
+- **The upload question no longer takes the keyboard.** The prompt that asks before a file goes to a public upload host, from
+  Quick preview or the right-click menu, took the keyboard as it appeared, so a key typed into another program could answer
+  it. It now appears without taking the keyboard, and Cancel is the default button once you click into it.
+- **The command line says why a file has no thumbnail on purpose.** A video that Windows' decoder would hang on, an EPS with
+  no usable embedded preview, a macOS `._` companion file and audio with no cover art failed with only "cannot decode".
+  `st2k thumbnail` and each failure line of `st2k batch thumbnail` now give the reason and the fix on one line. Exit codes
+  are unchanged.
+- **A symlinked file is no longer skipped by `st2k prebuild` and `st2k batch`.** The folder walks dropped every link, so a `.cbz` reached through a symbolic link got no thumbnail built. Linked folders are still not entered.
+- **An installed copy no longer calls itself portable.** A `SageThumbs2K.ini` left beside the installed program (a portable zip unpacked over the install, or setup run over a portable folder) made the update say "this is a portable version, download a new one from GitHub". The folder the installer registered now wins over the ini, which is ignored there.
+- **OneDrive: downloaded files in SageThumbs formats get their thumbnail in OneDrive folders.** With "Thumbnails in OneDrive
+  cloud folders" on, a fully downloaded file could still be handed to OneDrive's own thumbnailer, which cannot draw a
+  type like TGA and leaves a generic icon. A downloaded file in one of SageThumbs' formats is now always drawn by
+  SageThumbs first, as it is outside OneDrive; online-only files are still never read. `st2k doctor "<file>"` now says,
+  for a file in a cloud folder, which thumbnail provider the folder uses and what SageThumbs will try for that file, and
+  the log records the cause when a file in one of SageThumbs' formats still ends up with OneDrive's answer.
+- **Security hardening.** The updater keeps its verified installer locked until setup has finished reading it, so
+  another program running as you cannot swap the file between the check and the administrator prompt. A crafted FB2
+  ebook can no longer keep a processor core busy for hours. A web page shown by the live `.url` preview can no longer
+  start a download or open a second window. Importing a settings file never sets the Convert watermark picture to a
+  network path. The AI assistant tools `pdf` and `cbz` keep an existing file unless the call passes `"overwrite": true`,
+  as `thumbnail` and `convert` already did.
+- **Quick preview: Space with nothing selected does nothing.** A stray press in an empty folder, or in Outlook's file
+  dialog, used to start the 14-day trial or open the Supporter screen. That now happens only when there is a file to
+  show.
+- **The portable copy's update message says what to do if you also installed SageThumbs.** Close the portable copy and
+  open the installed one from the Start menu; that one updates itself.
+- **Settings shrinks back when you dismiss a notice.** The "What's new" banner, the sign-in banner, the Business
+  suggestion and the "icons only" warning each make the Settings window taller while they show. Dismissing one (or fixing the
+  "icons only" switch) hid it but left its room as an empty band above Close and Save until Settings was opened
+  again. The window now gives that room back as the notice goes; the page you are on does not move.
+- **Licence:** Supporter can be bought again once the Quick preview trial is over: Settings > Quick preview shows the trial state, the price and US$2 a month / US$20 a year (the monthly plan has its own checkout), and the pay screen and Settings > Licence offer both plans. Quick preview and screenshots switch back on by themselves once you are a Supporter (after a trial, Not now switched them off and paying did not bring them back, 5.2.0 included), and Not now never switches them off while your Supporter status cannot be confirmed.
+
 ## 5.2.0
 
 **TL;DR**
