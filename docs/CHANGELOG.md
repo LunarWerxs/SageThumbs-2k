@@ -7,6 +7,23 @@ All notable user-facing changes to **SageThumbs 2K**. Newest first.
 > `export-release-notes.ps1`) takes everything under the exact `## <version>` heading as the
 > published release notes; this note is not part of what ships.
 
+## 5.2.2
+
+**TL;DR**
+
+**Fixed**
+
+- **Update notices no longer pop up and disappear a second later**
+
+**Everything in 5.2.2**
+
+- **Update notices stay on screen.** When Windows held a SageThumbs notice back (another notification on screen, Do not
+  disturb, or the burst right after you sign in), the notice was taken down on a timer that had started before it
+  appeared, so it could vanish a second after showing. Each notice now gets its full time from the moment Windows shows
+  it. The screenshot helper's notices (update available, licence reminder, the warning about a program running as
+  administrator) also no longer replace each other: they now show one after another. And the update check no longer runs
+  in two or three places at once when you sign in, so you get one "update available" notice, not several.
+
 ## 5.2.1
 
 **TL;DR**
